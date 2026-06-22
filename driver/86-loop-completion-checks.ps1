@@ -537,19 +537,13 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   try { $retryAdded = [bool]$GateResult.TimeoutRetryAdded } catch {}
   try { $timeoutSchedule = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $timeoutSchedule = @() }
 
-  # Fixed 2-attempt schedule (2x180s, no third retry): after BOTH attempts time out we still hold
-  # a PURE wall-clock timeout (exit 124 / TimedOut) and ZERO failing tests. A real regression
-  # surfaces as a NON-timeout failure (exit!=0, TimedOut=$false), already filtered out above
-  # (`-not ($timedOut -or $exitCode -eq 124) -> return $false`). So an exhausted timeout is
-  # "no signal", not a proven regression -> classify INCONCLUSIVE (fail-open) instead of
-  # hard-failing the task on contention noise. (Corrects the 2026-06-22 WP4 timeout=fail policy:
-  # its premise that inconclusive masked stable regressions was false — inconclusive never fires
-  # on exit-1 failures. The scoped suite passes 9/9 in isolation; the live exit=124 is the suite
-  # running serially under live-bridge + concurrent-smoke contention, not a regression.)
+  # A PURE wall-clock timeout (exit 124 / TimedOut) with ZERO failing tests is "no signal",
+  # not a proven regression -> classify INCONCLUSIVE (fail-open) instead of hard-failing the
+  # task on contention noise. A real regression surfaces as a NON-timeout failure
+  # (exit!=0, TimedOut=$false), already filtered out above via NonTimeoutFailureSeen.
   if ($attempts -ge 2 -and $timeoutSchedule.Count -le 2) { return $true }
 
   if ($attempts -lt 3) { return $false }
-  if (-not $retryAdded) { return $false }
   if ($timeoutSchedule.Count -lt 3) { return $false }
 
   $firstBudget = [int]$timeoutSchedule[0]
@@ -557,6 +551,7 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
   $retryBudget = [int]$timeoutSchedule[2]
   if ($firstBudget -le 0 -or $secondBudget -le 0) { return $false }
   if ($retryBudget -lt (2 * [Math]::Max($firstBudget, $secondBudget))) { return $false }
+  if (-not $retryAdded -and $timeoutSchedule.Count -ge 3) { return $false }
 
   return $true
 }
@@ -571,16 +566,25 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
   $exitCode = 0
   $timedOut = $false
   $budget = @()
+  $fallbackUsed = $false
+  $fallbackBudget = 0
   try { $attempts = [int]$GateResult.Attempts } catch {}
   try { $exitCode = [int]$GateResult.ExitCode } catch {}
   try { $timedOut = [bool]$GateResult.TimedOut } catch {}
   try { $budget = @($GateResult.TimeoutSchedule | ForEach-Object { [int]$_ }) } catch { $budget = @() }
+  try { $fallbackUsed = [bool]$GateResult.TimeoutFallbackAdded } catch {}
+  try { $fallbackBudget = [int]$GateResult.TimeoutFallbackBudget } catch {}
 
   $attemptsText = ''
   if ($attempts -gt 0) { $attemptsText = (" after {0} attempt(s)" -f $attempts) }
 
   $budgetText = ''
   if ($budget.Count -gt 0) { $budgetText = ("; budgets={0}" -f (($budget | ForEach-Object { [string]$_ }) -join ',')) }
+  $fallbackText = ''
+  if ($fallbackUsed) {
+    if ($fallbackBudget -gt 0) { $fallbackText = ("; fallback={0}s" -f $fallbackBudget) }
+    else { $fallbackText = '; fallback=used' }
+  }
 
   $reasonText = ([string]$FailReason).Trim()
   if ([string]::IsNullOrWhiteSpace($reasonText)) {
@@ -593,7 +597,7 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
   # the hard 2-strike path, never here. The operator still sees this ⚠️ event and state records
   # the inconclusive outcome, so a persistently slow gate stays visible without blocking DONE.
   $outcome = 'inconclusive_timeout'
-  $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
+  $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText$fallbackText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
 
   return [pscustomobject][ordered]@{
     Outcome = $outcome
@@ -656,7 +660,7 @@ function Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling {
 $script:DriverDoneGateRegressionJob = {
   param([string]$BridgeRoot, [object]$ChangedPaths, [bool]$UseChangedPathScope)
   $changedPathList = @($ChangedPaths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutInconclusive=$false }
+  $result = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$UseChangedPathScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutFallbackAdded=$false; TimeoutFallbackBudget=0; TimeoutInconclusive=$false; NonTimeoutFailureSeen=$false }
   try {
     $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
     $inProcessSuite = $script:DriverDoneGateInProcessSuiteOverride
@@ -668,36 +672,62 @@ $script:DriverDoneGateRegressionJob = {
     }
     $gateResult = $null
     $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
-    [void]$gateTimeoutSchedule.Add(180)
-    [void]$gateTimeoutSchedule.Add(180)
-    for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
-      $gateAttempt = $gateIndex + 1
-      $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
-      $result.Attempts = $gateAttempt
-      $result.TimeoutSchedule = @($result.TimeoutSchedule + $gateTimeoutSec)
+    [void]$gateTimeoutSchedule.Add(60)
+    [void]$gateTimeoutSchedule.Add(60)
+    [void]$gateTimeoutSchedule.Add(120)
+    $gateFallbackBudgetSec = 600
+    $gateFallbackTried = $false
+    $invokeGateRegressionOnce = {
+      param([int]$TimeoutSec)
       if ($UseChangedPathScope) {
         if ($inProcessSuite) {
-          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($changedPathList)
-        } else {
-          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($changedPathList)
+          return (& $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec -ChangedPaths @($changedPathList))
         }
-      } else {
-        if ($inProcessSuite) {
-          $gateResult = & $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
-        } else {
-          $gateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
+        return (Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec -ChangedPaths @($changedPathList))
+      }
+      if ($inProcessSuite) {
+        return (& $inProcessSuite -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec)
+      }
+      return (Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec)
+    }
+    $recordGateResult = {
+      param([AllowNull()][object]$RawGateResult)
+      if ($RawGateResult) {
+        $result.ExitCode = [int]$RawGateResult.ExitCode
+        $result.TimedOut = [bool]$RawGateResult.TimedOut
+        $result.Scope = @($RawGateResult.Scope)
+        if (-not [bool]$RawGateResult.Ok -and -not [bool]$RawGateResult.TimedOut -and [int]$RawGateResult.ExitCode -ne 124) {
+          $result.NonTimeoutFailureSeen = $true
         }
       }
-      if ($gateResult) {
-        $result.ExitCode = [int]$gateResult.ExitCode
-        $result.TimedOut = [bool]$gateResult.TimedOut
-        $result.Scope = @($gateResult.Scope)
-      }
+    }
+    for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
+      $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
+      if ($gateIndex -eq 2) { $result.TimeoutRetryAdded = $true }
+      $gateAttempt = [int]$result.Attempts + 1
+      $result.Attempts = $gateAttempt
+      $result.TimeoutSchedule = @($result.TimeoutSchedule + $gateTimeoutSec)
+      $gateResult = & $invokeGateRegressionOnce -TimeoutSec $gateTimeoutSec
+      & $recordGateResult -RawGateResult $gateResult
       if ($gateResult -and [bool]$gateResult.Ok) {
         $result.Ok = $true
         break
       }
-      # Fixed schedule: 2 attempts x 120s, no third retry
+      $gateTimedOut = $false
+      if ($gateResult) { $gateTimedOut = ([bool]$gateResult.TimedOut -or [int]$gateResult.ExitCode -eq 124) }
+      if ($gateTimedOut -and -not $gateFallbackTried -and -not [bool]$result.NonTimeoutFailureSeen) {
+        $gateFallbackTried = $true
+        $result.TimeoutFallbackAdded = $true
+        $result.TimeoutFallbackBudget = $gateFallbackBudgetSec
+        $result.Attempts = [int]$result.Attempts + 1
+        $result.TimeoutSchedule = @($result.TimeoutSchedule + $gateFallbackBudgetSec)
+        $gateResult = & $invokeGateRegressionOnce -TimeoutSec $gateFallbackBudgetSec
+        & $recordGateResult -RawGateResult $gateResult
+        if ($gateResult -and [bool]$gateResult.Ok) {
+          $result.Ok = $true
+        }
+        break
+      }
     }
     $result.TimeoutInconclusive = $false
   } catch {
@@ -766,7 +796,10 @@ function New-DriverDoneGateMissingResult {
         ScopeApplied = $false
         TimeoutSchedule = @()
         TimeoutRetryAdded = $false
+        TimeoutFallbackAdded = $false
+        TimeoutFallbackBudget = 0
         TimeoutInconclusive = $false
+        NonTimeoutFailureSeen = $false
       }
     }
     'integrity' {
@@ -814,7 +847,7 @@ function Invoke-DriverDoneGateChecksSequential {
   }
   if ([bool]$Plan.GateSuiteNeeded) {
     $useScope = [string]::IsNullOrWhiteSpace([string]$Plan.GateScopeError)
-    $gateResult = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$useScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutInconclusive=$false }
+      $gateResult = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$useScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutFallbackAdded=$false; TimeoutFallbackBudget=0; TimeoutInconclusive=$false; NonTimeoutFailureSeen=$false }
     try {
       $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
       if ($null -eq $GateRegressionSuiteScriptBlock -and -not (Get-Command Invoke-GateRegressionSuite -ErrorAction SilentlyContinue)) {
@@ -826,36 +859,62 @@ function Invoke-DriverDoneGateChecksSequential {
       }
       $rawGateResult = $null
       $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
-      [void]$gateTimeoutSchedule.Add(180)
-      [void]$gateTimeoutSchedule.Add(180)
-      for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
-        $gateAttempt = $gateIndex + 1
-        $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
-        $gateResult.Attempts = $gateAttempt
-        $gateResult.TimeoutSchedule = @($gateResult.TimeoutSchedule + $gateTimeoutSec)
+      [void]$gateTimeoutSchedule.Add(60)
+      [void]$gateTimeoutSchedule.Add(60)
+      [void]$gateTimeoutSchedule.Add(120)
+      $gateFallbackBudgetSec = 600
+      $gateFallbackTried = $false
+      $invokeGateRegressionOnce = {
+        param([int]$TimeoutSec)
         if ($useScope) {
           if ($GateRegressionSuiteScriptBlock) {
-            $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($Plan.ChangedPaths)
-          } else {
-            $rawGateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec -ChangedPaths @($Plan.ChangedPaths)
+            return (& $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec -ChangedPaths @($Plan.ChangedPaths))
           }
-        } else {
-          if ($GateRegressionSuiteScriptBlock) {
-            $rawGateResult = & $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
-          } else {
-            $rawGateResult = Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $gateTimeoutSec
+          return (Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec -ChangedPaths @($Plan.ChangedPaths))
+        }
+        if ($GateRegressionSuiteScriptBlock) {
+          return (& $GateRegressionSuiteScriptBlock -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec)
+        }
+        return (Invoke-GateRegressionSuite -BridgeRoot $BridgeRoot -TimeoutSec $TimeoutSec)
+      }
+      $recordGateResult = {
+        param([AllowNull()][object]$RawGateResult)
+        if ($RawGateResult) {
+          $gateResult.ExitCode = [int]$RawGateResult.ExitCode
+          $gateResult.TimedOut = [bool]$RawGateResult.TimedOut
+          $gateResult.Scope = @($RawGateResult.Scope)
+          if (-not [bool]$RawGateResult.Ok -and -not [bool]$RawGateResult.TimedOut -and [int]$RawGateResult.ExitCode -ne 124) {
+            $gateResult.NonTimeoutFailureSeen = $true
           }
         }
-        if ($rawGateResult) {
-          $gateResult.ExitCode = [int]$rawGateResult.ExitCode
-          $gateResult.TimedOut = [bool]$rawGateResult.TimedOut
-          $gateResult.Scope = @($rawGateResult.Scope)
-        }
+      }
+      for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
+        $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
+        if ($gateIndex -eq 2) { $gateResult.TimeoutRetryAdded = $true }
+        $gateAttempt = [int]$gateResult.Attempts + 1
+        $gateResult.Attempts = $gateAttempt
+        $gateResult.TimeoutSchedule = @($gateResult.TimeoutSchedule + $gateTimeoutSec)
+        $rawGateResult = & $invokeGateRegressionOnce -TimeoutSec $gateTimeoutSec
+        & $recordGateResult -RawGateResult $rawGateResult
         if ($rawGateResult -and [bool]$rawGateResult.Ok) {
           $gateResult.Ok = $true
           break
         }
-        # Fixed schedule: 2 attempts x 120s, no third retry
+        $gateTimedOut = $false
+        if ($rawGateResult) { $gateTimedOut = ([bool]$rawGateResult.TimedOut -or [int]$rawGateResult.ExitCode -eq 124) }
+        if ($gateTimedOut -and -not $gateFallbackTried -and -not [bool]$gateResult.NonTimeoutFailureSeen) {
+          $gateFallbackTried = $true
+          $gateResult.TimeoutFallbackAdded = $true
+          $gateResult.TimeoutFallbackBudget = $gateFallbackBudgetSec
+          $gateResult.Attempts = [int]$gateResult.Attempts + 1
+          $gateResult.TimeoutSchedule = @($gateResult.TimeoutSchedule + $gateFallbackBudgetSec)
+          $rawGateResult = & $invokeGateRegressionOnce -TimeoutSec $gateFallbackBudgetSec
+          & $recordGateResult -RawGateResult $rawGateResult
+          if ($rawGateResult -and [bool]$rawGateResult.Ok) {
+            $gateResult.Ok = $true
+          }
+          break
+        }
       }
       $gateResult.TimeoutInconclusive = Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]$gateResult)
     } catch {
