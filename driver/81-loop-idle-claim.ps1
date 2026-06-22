@@ -461,6 +461,7 @@ $script:DriverLoopIdleClaimBlock = {
         # tracks "this task survived N driver restarts without closing" and
         # auto-fails the task at $maxRestarts (boot.ps1 resume block).
         $s | Add-Member -NotePropertyName task_restart_count -NotePropertyValue 0 -Force
+        $s | Add-Member -NotePropertyName gate_regression_fail_count -NotePropertyValue 0 -Force
         Clear-AuditorSuppressedHashes -State $s
         Clear-ChunkingState $s
         $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $baseCommit -Force
@@ -1694,6 +1695,7 @@ $script:DriverLoopIdleClaimBlock = {
           if (-not $taskStartedAtMap.Contains([string]$bid)) { $taskStartedAtMap[[string]$bid] = (Get-Date).ToUniversalTime().ToString('o') }
           $s | Add-Member -NotePropertyName task_started_at -NotePropertyValue $taskStartedAtMap -Force
           $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+          $s | Add-Member -NotePropertyName gate_regression_fail_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName progress_fingerprints -NotePropertyValue @() -Force
           $s | Add-Member -NotePropertyName task_loop_count -NotePropertyValue 0 -Force
           $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($batchIdsForState) -Force
