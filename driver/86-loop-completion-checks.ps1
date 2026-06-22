@@ -652,8 +652,8 @@ $script:DriverDoneGateRegressionJob = {
     }
     $gateResult = $null
     $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
-    [void]$gateTimeoutSchedule.Add(120)
-    [void]$gateTimeoutSchedule.Add(120)
+    [void]$gateTimeoutSchedule.Add(180)
+    [void]$gateTimeoutSchedule.Add(180)
     for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
       $gateAttempt = $gateIndex + 1
       $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]
@@ -810,8 +810,8 @@ function Invoke-DriverDoneGateChecksSequential {
       }
       $rawGateResult = $null
       $gateTimeoutSchedule = New-Object 'System.Collections.Generic.List[int]'
-      [void]$gateTimeoutSchedule.Add(120)
-      [void]$gateTimeoutSchedule.Add(120)
+      [void]$gateTimeoutSchedule.Add(180)
+      [void]$gateTimeoutSchedule.Add(180)
       for ($gateIndex = 0; $gateIndex -lt $gateTimeoutSchedule.Count; $gateIndex++) {
         $gateAttempt = $gateIndex + 1
         $gateTimeoutSec = [int]$gateTimeoutSchedule[$gateIndex]

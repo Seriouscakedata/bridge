@@ -124,10 +124,10 @@ STATUS: DONE
     return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths) }
   }
   $timeoutFailRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $timeoutFailSuite
-  Check 'Gate regression timeout fail: fixed schedule is 120,120' (@($script:GateTimeoutFailTimeouts) -join ',' -eq '120,120') $script:GateTimeoutFailTimeouts
+  Check 'Gate regression timeout fail: fixed schedule is 180,180' (@($script:GateTimeoutFailTimeouts) -join ',' -eq '180,180') $script:GateTimeoutFailTimeouts
   Check 'Gate regression timeout fail: no third retry is scheduled' ([int]$timeoutFailRuntime.GateRegression.Attempts -eq 2 -and -not [bool]$timeoutFailRuntime.GateRegression.Ok) $timeoutFailRuntime.GateRegression
   Check 'Gate regression timeout fail: exhausted result is blocking' (-not [bool]$timeoutFailRuntime.GateRegression.TimeoutInconclusive -and -not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $timeoutFailRuntime.GateRegression)) $timeoutFailRuntime.GateRegression
-  $syntheticTimeoutGate = [pscustomobject]@{ Ok=$false; TimedOut=$true; ExitCode=124; RuntimeError=''; Attempts=2; TimeoutRetryAdded=$false; TimeoutSchedule=@(120,120) }
+  $syntheticTimeoutGate = [pscustomobject]@{ Ok=$false; TimedOut=$true; ExitCode=124; RuntimeError=''; Attempts=2; TimeoutRetryAdded=$false; TimeoutSchedule=@(180,180) }
   Check 'Gate regression timeout fail: synthetic exhausted 124 result is blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $syntheticTimeoutGate)) $syntheticTimeoutGate
 
   $script:CapturedGateMessages = @()
@@ -164,7 +164,7 @@ STATUS: DONE
   if ($script:CapturedGateMessages.Count -gt 0) { $timeoutFailMessage = [string]$script:CapturedGateMessages[-1].Text }
   Check 'Gate regression timeout fail runtime: plannerStatus remains DONE' ($plannerStatus -eq 'DONE') $plannerStatus
   Check 'Gate regression timeout fail runtime: previous gate_regression_failed is not cleared' (-not (@($script:ClearedGateFailureKinds) -contains 'gate_regression_failed')) $script:ClearedGateFailureKinds
-  Check 'Gate regression timeout fail runtime: state records timeout_fail' ([string]$script:FakeGateState.gate_regression_last_outcome -eq 'timeout_fail' -and [int]$script:FakeGateState.gate_regression_last_attempts -eq 2 -and (@($script:FakeGateState.gate_regression_last_budgets) -join ',') -eq '120,120') $script:FakeGateState
+  Check 'Gate regression timeout fail runtime: state records timeout_fail' ([string]$script:FakeGateState.gate_regression_last_outcome -eq 'timeout_fail' -and [int]$script:FakeGateState.gate_regression_last_attempts -eq 2 -and (@($script:FakeGateState.gate_regression_last_budgets) -join ',') -eq '180,180') $script:FakeGateState
   Check 'Gate regression timeout fail runtime: event says final timeout_fail outcome' ($timeoutFailMessage.Contains('final outcome=timeout_fail')) $timeoutFailMessage
   Check 'Gate regression timeout fail runtime: handler returns machine outcome' ([string]$timeoutFailRecord.Outcome -eq 'timeout_fail') $timeoutFailRecord
   Check 'Gate regression timeout fail: early timeout remains blocking' (-not (Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult ([pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; RuntimeError=''; Attempts=1; TimeoutRetryAdded=$false; TimeoutSchedule=@(120) }))) $null
@@ -180,7 +180,7 @@ STATUS: DONE
     return [pscustomobject]@{ Ok=$false; ExitCode=124; TimedOut=$true; Scope=@($ChangedPaths) }
   }
   $mixedFailureThenTimeoutRuntime = Invoke-DriverDoneGateChecksSequential -Plan $timeoutRetryPlan -BridgeRoot $root -Channel 'test' -GateRegressionSuiteScriptBlock $mixedFailureThenTimeoutSuite
-  Check 'Gate regression timeout fail: mixed failure then timeout uses fixed schedule' (@($script:GateMixedFailureTimeouts) -join ',' -eq '120,120') $script:GateMixedFailureTimeouts
+  Check 'Gate regression timeout fail: mixed failure then timeout uses fixed schedule' (@($script:GateMixedFailureTimeouts) -join ',' -eq '180,180') $script:GateMixedFailureTimeouts
   Check 'Gate regression timeout fail: mixed failure then timeout remains blocking' (-not [bool]$mixedFailureThenTimeoutRuntime.GateRegression.TimeoutInconclusive) $mixedFailureThenTimeoutRuntime.GateRegression
 }
 
