@@ -9,14 +9,12 @@ Patched files:
 
 Baseline before patch: `691b85e`
 
+Patched commit: `b67c02d`
+
 Implementation note:
 - Reader cleanup now uses a single shared `ReaderJoinTimeoutMs=5000` deadline after process exit/timeout.
 - Recovery terminates the Job Object before reader joins, then on reader deadline uses `CancelSynchronousIo` for the registered native reader thread before closing the read handle.
 - `Thread.Abort` is not used.
-
-Sandbox note:
-- Direct `git add` / `git commit` from the Codex sandbox failed because this worktree's `.git` points to `C:\Users\rafie\.bridge-runtime\bridge-git`, outside the writable sandbox roots.
-- The bridge driver auto-commit path is expected to create the final commit from the same working tree after this turn.
 
 Checks run from `C:\Users\rafie\OneDrive\Documents\bridge`:
 
@@ -45,5 +43,5 @@ tools\self_model_smoke.ps1:
 
 ```text
 smoke.ps1:
-SMOKE OK (585 ps1 ok, endpoints 200)
+SMOKE OK (314 ps1 ok, endpoints 200)
 ```
