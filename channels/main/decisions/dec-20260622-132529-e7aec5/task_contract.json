@@ -1,0 +1,36 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] OKO автообучение (самообучение детектора на статичных камерах). Проект OKO: C:\\Users\\rafie\\bridge-projects\\oko. Полный план в репо: AUTOTRAIN_PLAN.md (5 этапов, durable). НАЧАТЬ с Этапа 1 — память «нормы» камеры (БЕЗ дообучения модели, только подавление ложных): новый модуль src/oko/memory/scene.py + durable SceneModel под runs/scene/\u003ccamera_id\u003e/: (a) background plate (median/EMA по кадрам без движущихся треков); (b) 16x12 spatial-normality grid (какой YOLO-класс нормален в какой ячейке, conf/persistence); (c) furniture registry — durable-персист сигнала _static_track_ids из events/builder.py (сейчас выбрасывается per-event). Врезать в VLM-gate путь в pipeline/live.py: детекция совпала с мебелью И ~0 движения vs plate → НЕ будить VLM. Bootstrap: 2-5 мин warmup. Декомпозировать Этап 1 на АТОМЫ (1 файл/малое изменение, проходит свои тесты); собрать; verify ОБЯЗАН гонять project tests (pytest в bridge-projects/oko), не только bridge-smoke. Юзер одобрил направление и порядок Stage-1-first; архитектор (Claude) ревьюит декомпозицию атомов перед сборкой каждой главы.",
+    "goal":  "Implement a self-learning mechanism for the OKO detector on static cameras to reduce false positives by learning and remembering camera \u0027normality\u0027 (background, normal object presence, static furniture), specifically starting with Stage 1 which focuses on memory without model retraining.",
+    "constraints":  [
+                        "Start implementation with Stage 1 as described.",
+                        "Stage 1 must *not* involve retraining the detection model; its focus is solely on suppressing false positives.",
+                        "Implement a new module at `src/oko/memory/scene.py`.",
+                        "Implement a durable `SceneModel` persisted under `runs/scene/\u003ccamera_id\u003e/`.",
+                        "Decompose Stage 1 into \u0027ATOMS\u0027: each atom must be a small change (1 file/small modification) and pass its own tests.",
+                        "Verification *must* include running `project tests` (`pytest` in `bridge-projects/oko`), not just `bridge-smoke` tests.",
+                        "The architect (Claude) must review the decomposition of atoms before assembling each \u0027chapter\u0027 of the implementation.",
+                        "The system requires a 2-5 minute warmup period for bootstrapping the SceneModel."
+                    ],
+    "known_context":  [
+                          "The project is named OKO and is located at `C:\\Users\\rafie\\bridge-projects\\oko`.",
+                          "A full plan for OKO auto-training (5 durable stages) exists in the repository at `AUTOTRAIN_PLAN.md`.",
+                          "The signal `_static_track_ids` from `events/builder.py` is currently discarded per-event.",
+                          "The user has approved the overall direction and the \u0027Stage 1 first\u0027 order of implementation.",
+                          "The VLM-gate path to be modified is located in `pipeline/live.py`."
+                      ],
+    "output_format":  "A single JSON object matching the TaskContract schema.",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The new module `src/oko/memory/scene.py` is created and integrated into the system.",
+                          "A durable `SceneModel` is correctly instantiated and persisted for each camera under `runs/scene/\u003ccamera_id\u003e/`.",
+                          "The `SceneModel` successfully captures and stores a background plate (median/EMA) based on frames without moving tracks.",
+                          "The `SceneModel` successfully captures and stores a 16x12 spatial-normality grid, indicating normal YOLO classes, confidence, and persistence per cell.",
+                          "The `SceneModel` successfully captures and durably persists the `_static_track_ids` from `events/builder.py` as a \u0027furniture registry\u0027.",
+                          "The VLM-gate in `pipeline/live.py` is modified to prevent VLM activation when a detection matches registered furniture AND there is approximately zero movement relative to the background plate.",
+                          "The system successfully completes a 2-5 minute warmup period, during which `SceneModel` components are initialized.",
+                          "All `project tests` (`pytest` in `bridge-projects/oko`) pass after implementation.",
+                          "The `_static_track_ids` are no longer discarded per-event and are correctly utilized by the `SceneModel`."
+                      ]
+}

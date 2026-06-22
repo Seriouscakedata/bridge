@@ -1,0 +1,173 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "Create SceneModel as a durable, per-camera persistence unit under runs/scene/\u003ccamera_id\u003e/ with three subcomponents: background plate, spatial-normality grid, and furniture registry.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Core Module / Architecture",
+                      "test":  "Verify `src/oko/memory/scene.py` exists, `SceneModel` manages subcomponents, and persists per-camera data.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Persist SceneModel as separate versioned artifacts per component (background plate as .npy/.png, grid.json, furniture.json, meta.json) under runs/scene/\u003ccamera_id\u003e/, written atomically via write-temp-then-rename with a schema_version field and tolerant loaders.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Persistence",
+                      "test":  "Verify `SceneModel.save()` creates versioned artifacts atomically and `SceneModel.load()` tolerates missing/old files.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Background plate is per-cell EMA in steady state, bootstrapped by a short median over a small ring buffer during warmup, and every plate/grid update is GATED on the cell containing no active moving track.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Background Model",
+                      "test":  "Unit test background plate: verify median bootstrap, per-cell EMA update, and no updates when moving tracks are present.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Implement a 16x12 spatial-normality grid that records, per cell, which YOLO classes are considered \u0027normal\u0027 based on confidence-weighted persistence over time.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Normality Grid",
+                      "test":  "Unit test normality grid: verify 16x12 grid accumulates confidence-weighted class persistence per cell.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "The furniture registry keys entries on a spatial+class signature (bbox IoU + YOLO class + persistence/hit-count over time), NOT on raw track_id, and only promotes a static track to \u0027furniture\u0027 after it persists past a threshold spanning the warmup.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Furniture Registry",
+                      "test":  "Unit test furniture registry: verify entries are keyed by spatial+class signature and promoted only after persistence threshold.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "Modify events/builder.py minimally to expose or forward _static_track_ids to SceneModel instead of changing event semantics broadly.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Integration / Data Flow",
+                      "test":  "Integration test: verify `_static_track_ids` are correctly forwarded from `events/builder.py` to `SceneModel`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Integrate SceneModel into pipeline/live.py at the VLM-gate decision point, not earlier in detector inference.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Integration / Suppression Logic",
+                      "test":  "Integration test: verify `SceneModel` is called at the VLM-gate in `pipeline/live.py`.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "VLM-gate suppression in pipeline/live.py is FAIL-OPEN, active only in the READY warmup state, and requires BOTH conditions (furniture IoU-match AND ~0 plate-delta in the detection\u0027s cell); every suppression and every \u0027would-have-woken\u0027 case is counted in a shadow-mode metric.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Suppression Logic / Warmup",
+                      "test":  "End-to-end test: verify VLM-gate is FAIL-OPEN, active only in READY state, requires both conditions, and shadow metrics are logged.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Implement a 2-5 minute warmup/bootstrap period during which the SceneModel initializes its components before VLM suppression becomes active.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Warmup / State Management",
+                      "test":  "Unit test warmup state machine: verify suppression is inactive for 2-5 minutes after initialization.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Decompose Stage 1 into ~8 atoms — (1) SceneModel scaffold+persistence+versioning, (2) background plate, (3) 16x12 grid, (4) furniture registry, (5) builder.py feed of _static_track_ids, (6) SceneStore per-camera lifecycle, (7) warmup state machine + config flags, (8) live.py suppression hook + end-to-end project test — each with unit tests, grouped into chapters the architect reviews before assembly.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Project Management / Process",
+                      "test":  "Process check: verify decomposition into listed atoms/chapters and architect review before assembly.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Verification gates each atom on its own unit tests and gates chapter completion on the full bridge-projects/oko pytest suite plus a new synthetic end-to-end fixture (frames -\u003e tracks -\u003e SceneModel -\u003e suppression decision); bridge-smoke alone is insufficient.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Verification / Testing",
+                      "test":  "CI/CD check: verify unit tests run per atom, and full `pytest` with synthetic E2E fixture runs for chapter completion.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_12",
+                      "statement":  "SceneModel is a pure object (state + load/save, no I/O side effects in update paths); per-camera lifecycle (create/load/throttled-save) is owned by a separate SceneStore, and events/builder.py + pipeline/live.py only call thin read/feed hooks.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Architecture / Design",
+                      "test":  "Unit test `SceneModel` for purity; integration test `SceneStore` for managing `SceneModel` lifecycle.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_13",
+                      "statement":  "Bound resource growth: fixed 16x12 grid per camera, capped furniture registry with LRU/persistence-based eviction, throttled saves (e.g. every N seconds or on warmup-state transition), and periodic compaction.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Resource Management",
+                      "test":  "Load test: verify memory/disk usage remains bounded under long-running scenarios; unit test eviction/throttling logic.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_14",
+                      "statement":  "Capture and durably persist _static_track_ids from events/builder.py as a furniture registry, rather than discarding them per-event.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Furniture Registry / Data Flow",
+                      "test":  "Integration test: verify `_static_track_ids` are captured from `events/builder.py` and durably persisted in the furniture registry.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

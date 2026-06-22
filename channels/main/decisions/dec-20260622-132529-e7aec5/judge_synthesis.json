@@ -1,0 +1,242 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Two-proposal consensus (A,C) on a foundational, well-bounded module. Per-camera persistence under runs/scene/\u003ccamera_id\u003e/ with three clear subcomponents is sound and high-impact; the test names a concrete file/path, giving strong specificity. Three subcomponents add modest complexity, slightly lowering simplicity.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A,B consensus. Atomic write-temp-then-rename, per-component schema_version, and tolerant loaders are best-practice and directly reduce corruption/migration risk. Highly specific (formats, atomicity, versioning). Supporting rather than headline impact; multiple artifacts add slight complexity.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full A,B,C consensus. Per-cell EMA in steady state with median bootstrap and a motion-gated update is standard, correct background modeling; gating on no active moving track prevents plate contamination. EMA + median bootstrap + gating is moderately complex, lowering simplicity.",
+                      "total":  0.8325
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A,C consensus. Fixed 16x12 grid with confidence-weighted class persistence is a reasonable, bounded heuristic and concretely testable. Correctness is good but heuristic (thresholds for \u0027normal\u0027 unspecified), and it contributes only one of the two suppression conditions, capping impact and risk_reduction.",
+                      "total":  0.775
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A,B consensus and a key correctness insight: keying on a spatial+class signature (bbox IoU + YOLO class + persistence) rather than ephemeral track_id is the right model, with promotion only after a warmup-spanning threshold. High implementation cost (IoU matching, dedup, hit-count tracking) lowers feasibility and simplicity.",
+                      "total":  0.7925
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A,C consensus. Minimal, surgical change to events/builder.py to forward _static_track_ids keeps event semantics intact, which is low-cost, simple, and low-risk. Impact is supporting (a data-flow enabler) rather than headline.",
+                      "total":  0.8375
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A,C consensus on the correct integration point: hooking the VLM-gate decision rather than detector inference confines blast radius and keeps detection untouched. Low-cost, simple, and clearly testable.",
+                      "total":  0.8675
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.75,
+                                     "impact":  0.95,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full A,B,C consensus and the payoff atom. Fail-open, READY-state-only, requiring BOTH furniture IoU-match AND ~0 plate-delta, with shadow-mode \u0027would-have-woken\u0027 counters, is an exemplary safety design — maximal impact and risk_reduction with high specificity. Dual conditions + fail-open + shadow metrics + state-gating make it the most complex/costly item, lowering simplicity and feasibility.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A,C consensus. A 2-5 minute warmup before suppression activates prevents premature, under-informed gating and pairs naturally with the READY-state requirement of atom_08. The 2-5 min range is a band rather than a fixed value, slightly reducing specificity.",
+                      "total":  0.8275
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full A,B,C consensus. The ~8-atom decomposition with per-atom unit tests, chapter grouping, and architect review before assembly is sound process that de-risks delivery; it enumerates the exact atoms, giving high specificity. Process work yields indirect (not headline) impact.",
+                      "total":  0.8375
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full A,B,C consensus. Gating atoms on their own unit tests and chapters on the full oko pytest suite plus a synthetic frames-\u003etracks-\u003eSceneModel-\u003edecision E2E fixture is strong verification; correctly notes bridge-smoke alone is insufficient. Building the E2E fixture costs effort, slightly lowering feasibility.",
+                      "total":  0.8375
+                  },
+                  {
+                      "atom_id":  "atom_12",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but a strong design refinement: a pure SceneModel (no I/O in update paths) with lifecycle isolated in a SceneStore and only thin read/feed hooks in builder.py/live.py greatly improves testability and separation of concerns, complementing atoms 01/06/07. Adds a SceneStore layer, modestly lowering simplicity.",
+                      "total":  0.815
+                  },
+                  {
+                      "atom_id":  "atom_13",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.7,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but valuable for a long-running per-camera service: fixed grid, LRU/persistence-based registry eviction, throttled saves, and periodic compaction bound memory/disk growth and protect against unbounded accumulation. Secondary to core functionality, so impact is moderate.",
+                      "total":  0.7975
+                  },
+                  {
+                      "atom_id":  "atom_14",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.85,
+                                     "impact":  0.7,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.75
+                                 },
+                      "penalties":  [
+                                        0.05
+                                    ],
+                      "reason":  "Single-source (C). The motivation — capturing and durably persisting _static_track_ids instead of discarding them per-event — is valid but is already covered by atom_06 (forwarding) plus atom_05 (the registry). Taken literally it risks keying on raw track_id, which directly contradicts atom_05\u0027s spatial+class-signature requirement. Modify to explicitly route the captured static tracks into the signature-keyed registry of atom_05; redundancy penalty applied.",
+                      "total":  0.7175
+                  }
+              ]
+}

@@ -1,0 +1,104 @@
+{
+    "proposer":  "B",
+    "understanding":  "Stage 1 of OKO\u0027s AUTOTRAIN_PLAN builds a durable, per-camera \u0027scene memory\u0027 that suppresses false-positive detections and, critically, avoids waking the expensive VLM-gate — WITHOUT retraining the detector. It has three learned components persisted under runs/scene/\u003ccamera_id\u003e/: (a) a background plate (median during warmup / EMA steady-state) built only from frames whose cells contain no moving tracks; (b) a 16x12 spatial-normality grid recording which YOLO classes are normal in each cell with confidence/persistence; (c) a furniture registry that durably persists the _static_track_ids signal currently thrown away per-event in events/builder.py. The integration point is pipeline/live.py: when a detection matches registered furniture AND there is ~0 movement versus the plate, the VLM is NOT woken. The work must be decomposed into independently-tested ATOMS (1 file / small change each), architect-reviewed per chapter, and verification MUST run the real project pytest in bridge-projects/oko (not just bridge-smoke). A 2-5 minute warmup bootstraps the model before any suppression is allowed.",
+    "summary":  "Introduce src/oko/memory/scene.py defining a pure, testable SceneModel object (in-memory state + explicit load()/save()) and a thin SceneStore that owns one model per camera_id and persists it atomically under runs/scene/\u003ccamera_id\u003e/ as separate versioned artifacts (background plate, grid.json, furniture.json, meta.json). SceneModel runs a warmup state machine COLD -\u003e WARMING -\u003e READY; only READY enables suppression. Background plate updates per-cell, gated on absence of active moving tracks; the 16x12 grid accumulates per-class conf/persistence with decay; the furniture registry is fed from events/builder.py (we stop discarding _static_track_ids) and keys entries on a spatial+class signature rather than raw track_id, because track IDs are not stable across restarts. pipeline/live.py gains a single conservative, FAIL-OPEN suppression check before the VLM-gate: suppress only if warmup is READY AND the detection IoU-matches furniture AND the cell shows ~0 delta versus the plate; otherwise wake the VLM as today. A shadow-mode counter logs \u0027would-have-woken\u0027 decisions so suppression safety can be measured before it is trusted. Delivery is decomposed into ~8 atoms, each with unit tests, grouped into chapters the architect reviews before assembly; the final atom adds an end-to-end project test exercised by pytest in bridge-projects/oko.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Persist SceneModel as separate versioned artifacts per component (background plate as .npy/.png, grid.json, furniture.json, meta.json) under runs/scene/\u003ccamera_id\u003e/, written atomically via write-temp-then-rename with a schema_version field and tolerant loaders.",
+                               "reason":  "Separable artifacts let each atom touch exactly one file and keep tests focused; atomic rename + versioning prevents corruption on crash-mid-write and allows forward migration; tolerant loaders mean a missing/old artifact degrades to warmup rather than crashing live.py.",
+                               "tradeoff":  "More files and more I/O bookkeeping than a single pickle/blob; requires a small migration discipline. But it is far safer and more debuggable, and matches the existing runs/ durable-artifact convention.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Background plate is per-cell EMA in steady state, bootstrapped by a short median over a small ring buffer during warmup, and every plate/grid update is GATED on the cell containing no active moving track.",
+                               "reason":  "Median is robust to transient occluders during the 2-5 min bootstrap; EMA is O(1) memory for durable steady-state. Gating on absence of moving tracks is what stops a person who pauses from being baked into \u0027background\u0027.",
+                               "tradeoff":  "A genuinely static intruder eventually blends into the plate, which could mask a threat; this is acceptable for Stage-1 false-positive suppression because furniture is an explicit, bounded, audited signal and motion above threshold always wakes the VLM.",
+                               "confidence":  0.74
+                           },
+                           {
+                               "statement":  "The furniture registry keys entries on a spatial+class signature (bbox IoU + YOLO class + persistence/hit-count over time), NOT on raw track_id, and only promotes a static track to \u0027furniture\u0027 after it persists past a threshold spanning the warmup.",
+                               "reason":  "Tracker IDs are not stable across pipeline restarts or track loss, so a registry keyed on raw IDs would be useless after the first restart; a spatial+class signature is restart-durable and is exactly what \u0027this object lives here\u0027 should mean.",
+                               "tradeoff":  "IoU/signature matching needs tuned thresholds and can mis-merge two nearby static objects; mitigated by also matching class and requiring sustained persistence before promotion.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "VLM-gate suppression in pipeline/live.py is FAIL-OPEN, active only in the READY warmup state, and requires BOTH conditions (furniture IoU-match AND ~0 plate-delta in the detection\u0027s cell); every suppression and every \u0027would-have-woken\u0027 case is counted in a shadow-mode metric.",
+                               "reason":  "A missed real event is far costlier than a wasted VLM call, so the default must be to wake the VLM whenever uncertain; shadow metrics let us validate suppression precision against ground truth before increasing aggressiveness.",
+                               "tradeoff":  "Lower suppression rate / smaller cost saving than an aggressive gate, and an extra counter to maintain; this is the correct safety posture for a high-risk surveillance change.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "SceneModel is a pure object (state + load/save, no I/O side effects in update paths); per-camera lifecycle (create/load/throttled-save) is owned by a separate SceneStore, and events/builder.py + pipeline/live.py only call thin read/feed hooks.",
+                               "reason":  "Keeping the learning logic free of pipeline/threading concerns makes every atom unit-testable in isolation with synthetic frames/tracks, and confines integration risk to two small, reviewable hook sites.",
+                               "tradeoff":  "Adds one indirection layer (SceneStore) and a save-throttling/concurrency policy to design; worth it for testability and to satisfy the \u0027each atom passes its own tests\u0027 constraint.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Decompose Stage 1 into ~8 atoms — (1) SceneModel scaffold+persistence+versioning, (2) background plate, (3) 16x12 grid, (4) furniture registry, (5) builder.py feed of _static_track_ids, (6) SceneStore per-camera lifecycle, (7) warmup state machine + config flags, (8) live.py suppression hook + end-to-end project test — each with unit tests, grouped into chapters the architect reviews before assembly.",
+                               "reason":  "This ordering builds pure leaf modules first (testable with no pipeline), then integration last, so the architect can review the decomposition of a chapter before any wiring lands, exactly as the contract requires.",
+                               "tradeoff":  "Eight atoms is more ceremony than a single feature branch and introduces temporary unused code between atoms; but it directly satisfies the atom/chapter/review constraints and isolates the high-risk integration to the final atoms.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Verification gates each atom on its own unit tests and gates chapter completion on the full bridge-projects/oko pytest suite plus a new synthetic end-to-end fixture (frames -\u003e tracks -\u003e SceneModel -\u003e suppression decision); bridge-smoke alone is insufficient.",
+                               "reason":  "The contract explicitly mandates project pytest; a synthetic end-to-end fixture is the only way to assert the cross-module behavior (furniture+plate -\u003e VLM not woken) without a live camera.",
+                               "tradeoff":  "Writing deterministic synthetic frame/track fixtures is non-trivial up front; it pays off as the regression guard for all later stages.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Bound resource growth: fixed 16x12 grid per camera, capped furniture registry with LRU/persistence-based eviction, throttled saves (e.g. every N seconds or on warmup-state transition), and periodic compaction.",
+                               "reason":  "Across many cameras running indefinitely, unbounded furniture/plate history would grow disk and memory without limit and slow saves on the live path.",
+                               "tradeoff":  "Caps and eviction can drop a rarely-seen-but-real furniture entry, slightly reducing suppression; acceptable and tunable, and far better than unbounded growth on the live pipeline.",
+                               "confidence":  0.78
+                           }
+                       ],
+    "assumptions":  [
+                        "bridge-projects/oko already has a runnable pytest suite (with conftest/fixtures) that the verify step can invoke directly.",
+                        "The detection+tracking stage already exposes per-frame detections with YOLO class, confidence, bbox, and track_id at the point where builder.py and live.py run.",
+                        "_static_track_ids is reachable at a stable point in events/builder.py and its meaning (\u0027tracks judged static this event\u0027) is consistent enough to promote to durable furniture.",
+                        "Each camera has a known, fixed frame resolution so the 16x12 grid maps deterministically to pixel cells.",
+                        "Stage 1 targets genuinely static cameras; PTZ/pan-tilt/zoom and large lighting regime shifts are out of scope and may invalidate the plate (handled later or by reset, not in Stage 1).",
+                        "The VLM-gate in pipeline/live.py is a discrete decision point that can be intercepted with a single boolean \u0027suppress?\u0027 check without reordering the pipeline.",
+                        "runs/scene/ is writable from the live process and follows the same durable-artifact convention as other runs/ outputs.",
+                        "It is acceptable for the first 2-5 minutes after each (re)start to produce zero suppression (warmup), trading early cost savings for safety."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Track IDs are unstable across restarts/track-loss, so a furniture registry keyed on raw IDs becomes stale and either suppresses the wrong region or stops suppressing entirely.",
+                      "severity":  "high",
+                      "mitigation":  "Key furniture on a spatial+class IoU signature with persistence/hit-count, never on raw track_id; re-anchor on load by matching stored signatures against current detections."
+                  },
+                  {
+                      "risk":  "Suppression hides a real event (a static or slow intruder learned into the plate, or a furniture-IoU false match), causing a safety regression in a surveillance system.",
+                      "severity":  "high",
+                      "mitigation":  "Fail-open default, require BOTH conditions with conservative thresholds, only suppress in READY state, gate plate updates on absence of moving tracks, never suppress motion above threshold, and run shadow-mode metrics to validate precision before trusting the gate."
+                  },
+                  {
+                      "risk":  "Plate poisoning: slow-moving or paused objects get averaged into the background, degrading the very reference used to decide \u0027~0 movement\u0027.",
+                      "severity":  "medium",
+                      "mitigation":  "Per-cell update gating on no-active-track, median bootstrap during warmup, EMA with a decay that re-corrects, and treating plate-delta as advisory alongside the explicit furniture signal."
+                  },
+                  {
+                      "risk":  "Durable artifact corruption on crash mid-write, or concurrent live-path writes colliding with save(), corrupting runs/scene/\u003ccamera_id\u003e/ state.",
+                      "severity":  "medium",
+                      "mitigation":  "Atomic write-temp-then-rename, schema_version + optional checksum, tolerant loaders that fall back to warmup on bad/missing files, and snapshot-copy-under-lock with throttled saves off the hot path."
+                  },
+                  {
+                      "risk":  "Project tests do not actually exercise the new cross-module suppression path, so green pytest gives false confidence.",
+                      "severity":  "medium",
+                      "mitigation":  "Add deterministic synthetic frame/track fixtures driving frames -\u003e tracks -\u003e SceneModel -\u003e live.py decision, asserting both \u0027VLM not woken on furniture+still\u0027 and \u0027VLM woken on motion\u0027; make this the chapter-completion gate."
+                  },
+                  {
+                      "risk":  "Camera assumption violated (PTZ move, exposure/lighting shift) silently invalidates the plate and grid, producing either mass false suppression or mass false wakeups.",
+                      "severity":  "medium",
+                      "mitigation":  "Scope Stage 1 to static cameras explicitly; add a cheap global-change detector that, on large frame-wide delta, drops back to WARMING and rebuilds rather than trusting stale memory."
+                  },
+                  {
+                      "risk":  "Unbounded disk/memory growth across many long-running cameras, and save latency creeping onto the live pipeline.",
+                      "severity":  "low",
+                      "mitigation":  "Fixed-size grid, capped furniture registry with persistence-based eviction, throttled/async saves, and periodic compaction."
+                  }
+              ],
+    "minimal_version":  "Furniture-first, plate-light suppression. Add src/oko/memory/scene.py with a minimal SceneModel + atomic load/save under runs/scene/\u003ccamera_id\u003e/, holding (1) a single EMA reference frame and (2) a furniture registry fed by un-discarding _static_track_ids from events/builder.py, keyed on bbox-IoU + class. Warmup is a simple frame/elapsed-time counter (2-5 min). pipeline/live.py gets one fail-open check before the VLM-gate: if READY AND detection IoU-matches furniture AND cell delta vs the reference frame is ~0, skip waking the VLM; else behave exactly as today. Ship the 16x12 grid as a no-op stub. This delivers the core VLM-cost / false-positive win across the two integration hooks with the least surface area, fully unit-tested plus one end-to-end pytest in bridge-projects/oko.",
+    "advanced_version":  "Full Stage 1 as decomposed: median-bootstrap + per-cell-gated EMA background plate; complete 16x12 spatial-normality grid with per-class confidence, persistence, and decay; furniture registry with spatial+class signature keying, promotion thresholds, and lifecycle/eviction; a SceneStore owning per-camera load/throttled-save; a COLD-\u003eWARMING-\u003eREADY warmup state machine with config-tunable thresholds; atomic versioned persistence with migration; and shadow-mode telemetry (suppressed vs would-have-woken, per-cell normality, furniture hit rates) wired so a future Stage 2 fine-tuning step can consume the accumulated normality data. Suppression remains fail-open and metric-gated, and the end-to-end project test asserts both correct suppression and correct wakeup under synthetic scenarios. Each capability lands as its own architect-reviewed atom with unit tests, with the full bridge-projects/oko pytest suite as the chapter gate."
+}

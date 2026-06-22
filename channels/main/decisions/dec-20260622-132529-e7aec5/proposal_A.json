@@ -1,0 +1,126 @@
+{
+    "proposer":  "A",
+    "understanding":  "Stage 1 adds durable per-camera scene memory to OKO without retraining the detector. The goal is to suppress false VLM wakeups on static cameras by learning background, normal object locations/classes, and durable static furniture track ids, then using that memory in the live VLM gate.",
+    "summary":  "Implement Stage 1 as small reviewed atoms: first create and test src/oko/memory/scene.py with durable SceneModel state under runs/scene/\u003ccamera_id\u003e/; then persist static furniture evidence from events/builder.py; then integrate SceneModel into pipeline/live.py so VLM is skipped only when a detection matches durable furniture and shows near-zero motion against the learned background plate. Verification must run pytest from C:\\Users\\rafie\\bridge-projects\\oko after each assembled chapter.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Create src/oko/memory/scene.py as the only new core module for Stage 1 scene memory.",
+                               "reason":  "Keeps the learning logic isolated and testable before touching live pipeline behavior.",
+                               "tradeoff":  "Initial integration is slightly slower because adapters are needed in existing files.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Persist SceneModel data under runs/scene/\u003ccamera_id\u003e/ with separate files for metadata, background plate, normality grid, and furniture registry.",
+                               "reason":  "Separate durable artifacts reduce corruption risk and make partial updates easier to inspect and test.",
+                               "tradeoff":  "More files to manage than a single monolithic state file.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Use EMA as the default background plate update path, with optional median/bootstrap support if frame buffering already fits existing OKO patterns.",
+                               "reason":  "EMA is cheap, streaming-friendly, and suitable for live static cameras during warmup and maintenance.",
+                               "tradeoff":  "EMA can absorb slow-moving objects unless updates are gated by no-motion/no-moving-track conditions.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Only update the background plate on frames that have no moving tracks or otherwise pass a strict static-frame predicate.",
+                               "reason":  "The plate must represent the stable camera scene, not transient people or vehicles.",
+                               "tradeoff":  "Sparse update opportunities can delay convergence on busy cameras.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Represent normality as a fixed 16x12 grid storing per-cell YOLO class statistics: count/persistence, confidence EMA, and last_seen timestamp.",
+                               "reason":  "This is simple, durable, explainable, and matches the requested spatial-normality behavior.",
+                               "tradeoff":  "Coarse cells may miss fine object placement changes near cell boundaries.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "Add durable furniture registry entries keyed by stable camera-local track/object identity where possible, with bbox/class/confidence/static evidence and timestamps.",
+                               "reason":  "The current _static_track_ids signal is useful but lost per event; durable evidence is needed to suppress repeated false positives.",
+                               "tradeoff":  "Track ids may not be stable across process restarts, so registry matching must also support spatial/class similarity.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Modify events/builder.py minimally to expose or forward _static_track_ids to SceneModel instead of changing event semantics broadly.",
+                               "reason":  "This satisfies durability without destabilizing event construction behavior.",
+                               "tradeoff":  "The first implementation may need a small adapter if builder currently has no clean persistence hook.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Integrate SceneModel into pipeline/live.py at the VLM-gate decision point, not earlier in detector inference.",
+                               "reason":  "Stage 1 is suppression-only and must not change detection model outputs or training behavior.",
+                               "tradeoff":  "Downstream code still sees detections unless the existing VLM gate owns suppression semantics.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "Skip VLM only when both conditions are true: detection matches durable furniture/normality and motion against the background plate is approximately zero.",
+                               "reason":  "Combining semantic-spatial memory with pixel-level stillness avoids suppressing genuinely new or moved objects.",
+                               "tradeoff":  "Requires threshold tuning for lighting changes and camera noise.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Implement a 2-5 minute warmup state where SceneModel learns but does not aggressively suppress until minimum evidence thresholds are met.",
+                               "reason":  "Prevents early false negatives from an undertrained scene memory.",
+                               "tradeoff":  "False positives may continue during warmup.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Decompose implementation into reviewable chapters and request architect review of atoms before assembling each chapter: scene module/tests, builder persistence/tests, live gate/tests, full project verification.",
+                               "reason":  "Matches the contract constraint and reduces risk in a high-risk pipeline change.",
+                               "tradeoff":  "Adds coordination overhead before code assembly.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "Run pytest from C:\\Users\\rafie\\bridge-projects\\oko as mandatory verification, plus focused tests for each atom where practical.",
+                               "reason":  "The contract explicitly requires project tests, not only bridge smoke checks.",
+                               "tradeoff":  "Full tests may be slower and may expose unrelated existing failures that need triage.",
+                               "confidence":  0.96
+                           }
+                       ],
+    "assumptions":  [
+                        "OKO already has a stable camera_id available in pipeline/live.py or a nearby runtime context.",
+                        "runs/ is the accepted durable runtime-output root in the OKO project.",
+                        "events/builder.py currently computes _static_track_ids before final event emission and can be minimally extended to expose that signal.",
+                        "Frame data or a comparable image array is available at the VLM-gate point or can be passed there without broad pipeline refactoring.",
+                        "Existing tests can be extended under the OKO project without changing external bridge tooling.",
+                        "Architect review is a process gate for atom decomposition, not a requirement to call an unavailable tool from this proposal response."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Incorrect suppression could hide real incidents if furniture matching is too permissive.",
+                      "severity":  "high",
+                      "mitigation":  "Require both durable furniture/normality match and near-zero plate motion; use conservative thresholds and no aggressive suppression during warmup."
+                  },
+                  {
+                      "risk":  "Background plate may learn transient objects on busy cameras.",
+                      "severity":  "high",
+                      "mitigation":  "Update plate only on frames with no moving tracks and add minimum stable-frame evidence before enabling suppression."
+                  },
+                  {
+                      "risk":  "Track ids may not persist across restarts, making _static_track_ids alone insufficient.",
+                      "severity":  "medium",
+                      "mitigation":  "Persist class, bbox/grid location, confidence, static duration, and timestamps so matching can fall back to spatial/class similarity."
+                  },
+                  {
+                      "risk":  "Lighting changes, compression noise, or camera auto-exposure may look like motion.",
+                      "severity":  "medium",
+                      "mitigation":  "Use normalized frame difference thresholds, small morphology/area filters if already available, and configurable tolerances."
+                  },
+                  {
+                      "risk":  "Durable files under runs/scene may become corrupt after interrupted writes.",
+                      "severity":  "medium",
+                      "mitigation":  "Use atomic write-rename for JSON/metadata and tolerate missing partial artifacts by rebuilding from warmup."
+                  },
+                  {
+                      "risk":  "Pipeline/live.py integration may be tightly coupled to existing VLM-gate logic.",
+                      "severity":  "medium",
+                      "mitigation":  "Keep integration as a narrow predicate/helper call with tests around the gate decision rather than refactoring the pipeline."
+                  },
+                  {
+                      "risk":  "Full project pytest may fail for unrelated pre-existing reasons.",
+                      "severity":  "medium",
+                      "mitigation":  "Record focused test results separately, capture full pytest failure details, and avoid masking unrelated failures."
+                  }
+              ],
+    "minimal_version":  "Stage 1 MVP: new SceneModel module with durable JSON/NumPy artifacts, EMA background plate updated only on static frames, 16x12 normality grid, furniture registry ingestion from _static_track_ids, conservative warmup gating, and one live.py VLM-skip predicate requiring furniture match plus near-zero plate motion.",
+    "advanced_version":  "Stage 1 complete version: robust atomic persistence with schema versioning, median bootstrap plus EMA maintenance, restart-safe furniture matching by spatial/class similarity, configurable thresholds per camera, diagnostics for why VLM was skipped or allowed, and focused plus full pytest coverage in bridge-projects/oko."
+}

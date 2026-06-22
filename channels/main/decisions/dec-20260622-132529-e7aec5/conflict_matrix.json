@@ -1,0 +1,21 @@
+{
+    "consensus_atoms":  [
+                            "atom_01",
+                            "atom_02",
+                            "atom_03",
+                            "atom_04",
+                            "atom_05",
+                            "atom_06",
+                            "atom_07",
+                            "atom_08",
+                            "atom_09",
+                            "atom_10",
+                            "atom_11"
+                        ],
+    "conflicts":  [
+
+                  ],
+    "reviews":  [
+
+                ]
+}

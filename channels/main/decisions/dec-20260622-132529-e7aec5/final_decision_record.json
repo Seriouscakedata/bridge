@@ -1,0 +1,224 @@
+{
+    "final_answer":  "Stage 1 of OKO auto-training (false-positive suppression via scene memory, no model retraining) is APPROVED for implementation as decomposed. All 13 core atoms (atom_01–atom_13) clear the acceptance bar (judge totals 0.78–0.87, full or two-proposal consensus, no conflicts) and are accepted. atom_14 is accepted in MODIFIED form only: its valid intent (stop discarding _static_track_ids per-event; persist them durably) is preserved, but its literal raw-track_id keying is rejected because it contradicts atom_05\u0027s spatial+class-signature requirement and is redundant with atom_06 (forwarding) + atom_05 (registry). The resulting architecture is: a pure SceneModel object (atom_12) holding three subcomponents — a motion-gated per-cell EMA background plate with median bootstrap (atom_03), a 16x12 confidence-weighted spatial-normality grid (atom_04), and a signature-keyed furniture registry (atom_05) — persisted as versioned, atomically-written per-component artifacts under runs/scene/\u003ccamera_id\u003e/ (atom_01, atom_02), with a separate SceneStore owning per-camera lifecycle and resource bounding (atom_12, atom_13). _static_track_ids are forwarded by a minimal builder.py change (atom_06) into the registry. Suppression is wired at the VLM-gate in live.py (atom_07) and is FAIL-OPEN, active only in the READY state after a 2-5 min warmup (atom_09), requiring BOTH a furniture IoU-match AND ~0 plate-delta, with shadow-mode \u0027would-have-woken\u0027 metrics (atom_08). Delivery follows the ~8-atom / chapter decomposition with architect review before each chapter assembly (atom_10) and is gated on per-atom unit tests plus the full bridge-projects/oko pytest suite and a synthetic frames→tracks→SceneModel→decision E2E fixture — bridge-smoke alone is insufficient (atom_11).",
+    "decisions":  [
+                      {
+                          "decision":  "atom_01 — Create SceneModel as a durable, per-camera persistence unit under runs/scene/\u003ccamera_id\u003e/ with three subcomponents: background plate, 16x12 spatial-normality grid, and furniture registry.",
+                          "rationale":  "Foundational, well-bounded module with A,C consensus (judge 0.85). Per-camera durability under a fixed path scopes blast radius and makes every later atom additive.",
+                          "alternatives_considered":  [
+                                                          "Single monolithic state blob with no subcomponent separation",
+                                                          "In-memory-only model with no durable persistence",
+                                                          "Shared cross-camera model"
+                                                      ],
+                          "risk":  "Low reversibility — the runs/scene/\u003ccamera_id\u003e/ layout becomes a contract; mitigated by the versioning/tolerant-loader scheme in atom_02.",
+                          "test":  "src/oko/memory/scene.py exists; SceneModel manages the three subcomponents and persists per-camera data under runs/scene/\u003ccamera_id\u003e/."
+                      },
+                      {
+                          "decision":  "atom_02 — Persist SceneModel as separate versioned per-component artifacts (background plate as .npy/.png, grid.json, furniture.json, meta.json) written atomically via write-temp-then-rename, each carrying a schema_version field, with tolerant loaders.",
+                          "rationale":  "A,B consensus (judge 0.845). Atomic rename + per-component schema_version + tolerant loaders is best practice and directly reduces corruption and migration risk.",
+                          "alternatives_considered":  [
+                                                          "Single pickle/blob snapshot",
+                                                          "Non-atomic in-place writes",
+                                                          "No schema versioning"
+                                                      ],
+                          "risk":  "Partial-write corruption on crash; mitigated by atomic write-temp-then-rename. Multiple artifacts add slight complexity.",
+                          "test":  "SceneModel.save() creates versioned artifacts atomically; SceneModel.load() tolerates missing/old files and unknown future fields."
+                      },
+                      {
+                          "decision":  "atom_03 — Background plate is a per-cell EMA in steady state, bootstrapped by a short median over a small ring buffer during warmup; every plate/grid update is GATED on the cell containing no active moving track.",
+                          "rationale":  "Full A,B,C consensus (judge 0.8325). Standard, correct background modeling; motion-gating prevents moving objects from contaminating the plate.",
+                          "alternatives_considered":  [
+                                                          "Global frame median (no per-cell)",
+                                                          "Per-pixel MOG2/KNN background subtractor",
+                                                          "Ungated EMA that updates on every frame"
+                                                      ],
+                          "risk":  "Plate contamination if the motion gate is mis-wired; mitigated by unit-testing the no-update-under-motion path.",
+                          "test":  "Median bootstrap during warmup, per-cell EMA update in steady state, and no plate update when moving tracks occupy the cell."
+                      },
+                      {
+                          "decision":  "atom_04 — Implement a 16x12 spatial-normality grid recording, per cell, which YOLO classes are \u0027normal\u0027 based on confidence-weighted persistence over time.",
+                          "rationale":  "A,C consensus (judge 0.775). Fixed, bounded, concretely testable heuristic that supplies one of the two suppression conditions.",
+                          "alternatives_considered":  [
+                                                          "Per-pixel normality map",
+                                                          "Finer/coarser grid resolution",
+                                                          "No normality model (rely on plate alone)"
+                                                      ],
+                          "risk":  "Heuristic — the confidence/persistence thresholds for declaring a class \u0027normal\u0027 are unspecified (see open questions). Contributes only one of two suppression conditions.",
+                          "test":  "16x12 grid accumulates confidence-weighted class persistence per cell."
+                      },
+                      {
+                          "decision":  "atom_05 — Furniture registry keys entries on a spatial+class signature (bbox IoU + YOLO class + persistence/hit-count), NOT on raw track_id, and promotes a static track to \u0027furniture\u0027 only after persistence past a warmup-spanning threshold.",
+                          "rationale":  "A,B consensus and a key correctness insight (judge 0.7925): track_ids are ephemeral, so a spatial+class signature is the durable identity. This also absorbs the corrected intent of atom_14.",
+                          "alternatives_considered":  [
+                                                          "Key on raw track_id (rejected — see rejected/atom_14)",
+                                                          "Key on bbox center point only (no IoU/class)",
+                                                          "Immediate promotion without a persistence threshold"
+                                                      ],
+                          "risk":  "Highest design cost (IoU matching, dedup, hit-count tracking); mitigated by isolating the matcher behind unit tests.",
+                          "test":  "Registry entries are keyed by spatial+class signature and promoted only after the persistence threshold spanning warmup is met."
+                      },
+                      {
+                          "decision":  "atom_06 — Modify events/builder.py minimally to forward _static_track_ids to SceneModel/SceneStore instead of changing event semantics broadly.",
+                          "rationale":  "A,C consensus (judge 0.8375). Surgical, low-cost data-flow enabler that keeps existing event semantics intact.",
+                          "alternatives_considered":  [
+                                                          "Broadly restructure event payloads/semantics",
+                                                          "Re-derive static tracks separately inside SceneModel"
+                                                      ],
+                          "risk":  "Low — change is additive forwarding; mitigated by an integration test asserting the forward.",
+                          "test":  "_static_track_ids are correctly forwarded from events/builder.py into the SceneModel signature-keyed registry."
+                      },
+                      {
+                          "decision":  "atom_07 — Integrate SceneModel into pipeline/live.py at the VLM-gate decision point, not earlier in detector inference.",
+                          "rationale":  "A,C consensus (judge 0.8675). Hooking the gate (not inference) confines blast radius and leaves detection untouched.",
+                          "alternatives_considered":  [
+                                                          "Hook inside detector inference / NMS",
+                                                          "Hook in a post-event consumer downstream of the gate"
+                                                      ],
+                          "risk":  "Low — read-only call at a single decision point; mitigated by an integration test on the call site.",
+                          "test":  "SceneModel is invoked at the VLM-gate in pipeline/live.py."
+                      },
+                      {
+                          "decision":  "atom_08 — VLM-gate suppression is FAIL-OPEN, active only in the READY warmup state, and requires BOTH conditions (furniture IoU-match AND ~0 plate-delta in the detection\u0027s cell); every suppression and every \u0027would-have-woken\u0027 case is counted in a shadow-mode metric.",
+                          "rationale":  "Full A,B,C consensus and the payoff atom (judge 0.85). Fail-open + dual-condition + READY-gating + shadow metrics maximize impact and risk reduction while keeping missed-alert risk controlled and observable.",
+                          "alternatives_considered":  [
+                                                          "Fail-closed suppression",
+                                                          "Single-condition suppression (furniture OR plate-delta)",
+                                                          "Activate immediately without READY-state gate",
+                                                          "No shadow-mode observability"
+                                                      ],
+                          "risk":  "False-negative (missed real event) is the dominant hazard; mitigated by fail-open default, requiring BOTH conditions, READY-state gating, and shadow-mode counters that allow validating suppression before trusting it. Highest implementation complexity.",
+                          "test":  "VLM-gate is fail-open, active only in READY state, requires both furniture IoU-match and ~0 plate-delta, and logs shadow suppression/would-have-woken metrics."
+                      },
+                      {
+                          "decision":  "atom_09 — Implement a 2-5 minute warmup/bootstrap period during which SceneModel initializes before VLM suppression becomes active.",
+                          "rationale":  "A,C consensus (judge 0.8275). Prevents premature, under-informed gating and pairs naturally with the READY-state requirement of atom_08.",
+                          "alternatives_considered":  [
+                                                          "No warmup (suppress from frame 0)",
+                                                          "Fixed single warmup duration instead of a 2-5 min band",
+                                                          "Per-camera adaptive warmup based on observed stability"
+                                                      ],
+                          "risk":  "Band rather than a fixed value leaves duration under-specified (see open questions); too short risks half-formed plate/grid.",
+                          "test":  "Warmup state machine keeps suppression inactive for the configured 2-5 min after initialization, then transitions to READY."
+                      },
+                      {
+                          "decision":  "atom_10 — Decompose Stage 1 into ~8 atoms (SceneModel scaffold+persistence+versioning; background plate; 16x12 grid; furniture registry; builder.py feed; SceneStore lifecycle; warmup state machine + config flags; live.py suppression hook + E2E), each with unit tests, grouped into chapters the architect reviews before assembly.",
+                          "rationale":  "Full A,B,C consensus (judge 0.8375). Enumerated, test-backed decomposition with architect gating de-risks delivery and matches the task contract\u0027s process constraints.",
+                          "alternatives_considered":  [
+                                                          "Single large PR for all of Stage 1",
+                                                          "Decompose without architect review gates",
+                                                          "Different atom boundaries"
+                                                      ],
+                          "risk":  "Process overhead; low — outweighed by reduced integration risk.",
+                          "test":  "Decomposition matches the listed atoms/chapters and architect review occurs before each chapter assembly."
+                      },
+                      {
+                          "decision":  "atom_11 — Gate each atom on its own unit tests and each chapter on the full bridge-projects/oko pytest suite plus a new synthetic end-to-end fixture (frames → tracks → SceneModel → suppression decision); bridge-smoke alone is insufficient.",
+                          "rationale":  "Full A,B,C consensus (judge 0.8375) and an explicit task constraint: verification MUST run project pytest, not only bridge-smoke. The synthetic E2E fixture exercises the whole suppression path deterministically.",
+                          "alternatives_considered":  [
+                                                          "Rely on bridge-smoke only",
+                                                          "Unit tests without an E2E fixture",
+                                                          "Manual/live-camera-only verification"
+                                                      ],
+                          "risk":  "Building the synthetic E2E fixture costs effort; mitigated by reusing it as a regression guard for every chapter.",
+                          "test":  "Per-atom unit tests run green; full bridge-projects/oko pytest plus the synthetic frames→tracks→SceneModel→decision E2E fixture pass at each chapter completion."
+                      },
+                      {
+                          "decision":  "atom_12 — SceneModel is a pure object (state + load/save, no I/O side effects in update paths); a separate SceneStore owns per-camera create/load/throttled-save lifecycle; events/builder.py and pipeline/live.py only call thin read/feed hooks.",
+                          "rationale":  "Single-source (B) but a strong design refinement (judge 0.815) that maximizes testability and separation of concerns, complementing atoms 01/06/07.",
+                          "alternatives_considered":  [
+                                                          "SceneModel performs its own disk I/O inside update paths",
+                                                          "Lifecycle logic embedded directly in live.py",
+                                                          "Global singleton store"
+                                                      ],
+                          "risk":  "Adds a SceneStore layer (modest complexity); mitigated because purity makes update logic trivially unit-testable.",
+                          "test":  "SceneModel update paths perform no I/O (purity test); SceneStore correctly manages per-camera SceneModel lifecycle (load/create/throttled-save)."
+                      },
+                      {
+                          "decision":  "atom_13 — Bound resource growth: fixed 16x12 grid per camera, capped furniture registry with LRU/persistence-based eviction, throttled saves (every N seconds or on warmup-state transition), and periodic compaction.",
+                          "rationale":  "Single-source (B) but valuable for a long-running per-camera service (judge 0.7975). Prevents unbounded memory/disk accumulation across many cameras over long uptimes.",
+                          "alternatives_considered":  [
+                                                          "Unbounded registry growth",
+                                                          "Save on every update (I/O thrash)",
+                                                          "No compaction"
+                                                      ],
+                          "risk":  "Eviction policy could drop a still-valid furniture entry; mitigated by persistence/hit-count-weighted eviction and unit tests on eviction/throttle.",
+                          "test":  "Memory/disk stays bounded under long-running load; eviction and save-throttling logic behave per spec in unit tests."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "atom_14 (literal form) — Capture and durably persist _static_track_ids as a furniture registry keyed on the raw per-event track_id.",
+                         "why":  "Judge verdict \u0027modify\u0027 (total 0.7175, redundancy penalty). Track_ids are ephemeral, so keying the durable registry on raw track_id directly contradicts atom_05\u0027s spatial+class-signature requirement and would fragment/duplicate furniture identity across re-detections. The legitimate motivation — stop discarding _static_track_ids per-event and persist them durably — is fully preserved by atom_06 (minimal forwarding from events/builder.py) feeding atom_05 (signature-keyed registry with promotion threshold). atom_14 is therefore folded into atoms 06+05 rather than implemented as a standalone raw-track_id-keyed store."
+                     }
+                 ],
+    "open_questions":  [
+                           "What confidence cutoff and persistence/hit count define a YOLO class as \u0027normal\u0027 in a grid cell (atom_04 thresholds unspecified)?",
+                           "What concrete IoU threshold counts as a furniture match, and what plate-delta magnitude counts as \u0027~0 movement\u0027 in the detection\u0027s cell (atom_08)?",
+                           "What exact warmup duration within the 2-5 min band, and is it fixed or per-camera adaptive based on observed scene stability (atom_09)?",
+                           "What is the furniture registry cap size and the precise eviction policy (pure LRU vs persistence/hit-count-weighted) (atom_13)?",
+                           "Where are shadow-mode metrics surfaced (log sink, counter, dashboard), and what concrete criteria graduate a camera from shadow-mode to active suppression (atom_08)?",
+                           "How is camera_id derived and is it stable across restarts/reconnects, since it is the persistence partition key for runs/scene/\u003ccamera_id\u003e/ (atom_01)?",
+                           "Confirm Stage 1 is scoped to static cameras only — what is the intended behavior (disable suppression? reset plate/grid?) if a camera is PTZ or physically moves?"
+                       ],
+    "implementation_plan":  [
+                                "Chapter 1 — Core module (atoms 01, 02, 12): Scaffold src/oko/memory/scene.py with a pure SceneModel (state + load/save, no I/O in update paths), versioned per-component atomic persistence (write-temp-then-rename; plate .npy/.png, grid.json, furniture.json, meta.json; schema_version + tolerant loaders), and a SceneStore owning per-camera create/load/throttled-save under runs/scene/\u003ccamera_id\u003e/. Unit tests for purity, atomic save, and tolerant load. ARCHITECT REVIEW before assembly.",
+                                "Chapter 2 — Scene models (atoms 03, 04, 13-partial): Implement motion-gated per-cell EMA background plate with median ring-buffer bootstrap, and the 16x12 confidence-weighted spatial-normality grid, both fixed-size for bounded memory. Unit tests: median bootstrap, EMA, no-update-under-motion, grid persistence accumulation. ARCHITECT REVIEW.",
+                                "Chapter 3 — Furniture + data feed (atoms 05, 06, 14-folded): Implement the signature-keyed furniture registry (bbox IoU + YOLO class + hit-count, warmup-spanning promotion threshold) and the minimal events/builder.py forward of _static_track_ids into it. Unit tests for signature keying + promotion; integration test for the builder→registry feed. ARCHITECT REVIEW.",
+                                "Chapter 4 — Warmup + lifecycle bounding (atoms 09, 13-finalize): Implement the warmup state machine (INIT→…→READY over 2-5 min) with config flags, plus throttled saves, LRU/persistence-based registry eviction, and periodic compaction in SceneStore. Unit tests for state transitions, throttling, and eviction. ARCHITECT REVIEW.",
+                                "Chapter 5 — Suppression + E2E (atoms 07, 08, 11): Wire the SceneModel read hook at the VLM-gate in pipeline/live.py; implement FAIL-OPEN suppression active only in READY state requiring BOTH furniture IoU-match AND ~0 plate-delta, with shadow-mode suppression/would-have-woken counters. Add the synthetic frames→tracks→SceneModel→decision E2E fixture. Run full bridge-projects/oko pytest (not bridge-smoke alone). ARCHITECT REVIEW + final verification."
+                            ],
+    "next_step":  "Begin Chapter 1: scaffold src/oko/memory/scene.py with the pure SceneModel and SceneStore plus versioned atomic per-component persistence under runs/scene/\u003ccamera_id\u003e/ (atoms 01, 02, 12) and its unit tests, then submit to architect review before proceeding to Chapter 2.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "No atom feeds pixel frames into the SceneModel, so the background plate (success_test #3) cannot be built as decomposed. EventBuilder.process() receives only FrameData (no image); pipeline/live.py:159 calls process(captured.frame, detections) with no image. The sole data-feed atom (atom_06) forwards _static_track_ids from builder.py, which has no pixels. atom_07 explicitly hooks SceneModel only \u0027at the VLM-gate decision point\u0027 and \u0027confines scene logic to the suppression decision\u0027 — a path that executes only on built person/animal events inside `if self.vlm_gate is not None`. But the plate needs per-frame, median/EMA updates over the EMPTY-scene frames (the ones that produce no event and never reach the gate).",
+                                  "why":  "The plate\u0027s required input (raw pixels on motion-free frames) is never wired anywhere in the six chapters. With no VLM configured (config.vlm is None → vlm_gate is None), the model would never update at all. success_test #3 and the warmup-init success_test are structurally unbuildable without a new per-frame pixel-feed hook in live.py\u0027s capture loop that no chapter defines."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The keystone (atom_08) can suppress a REAL person who holds still at a furniture location — the contract\u0027s core \u0027never drop real events\u0027 danger. Plate EMA is gated (atom_03) on \u0027no active MOVING track\u0027. A stationary person is an active, non-moving track, so its cell keeps updating and the person gets absorbed into the plate → plate-delta collapses to ~0. Furniture false-positives (a couch/chair misdetected as a static \u0027person\u0027) sit exactly where real people become stationary, so both AND-arms (furniture IoU-match AND ~0 plate-delta) turn true precisely at the highest-risk locations.",
+                                  "why":  "This is the canonical defeat of background-subtraction alarms (the patient/stationary intruder), and it is amplified, not mitigated, by furniture locations correlating with where people sit. The gate semantics (\u0027moving track\u0027 vs \u0027any active track\u0027) that decide this are left unspecified, and shadow-mode only delays rollout — it does not remove the structural blind spot."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The suppression and grid conditions need per-detection bbox→cell geometry that is dropped before the consult point. OkoEvent carries track_ids + zone_name + scores but NO bbox; VlmGate.evaluate() gets only the event + FrameData metadata (no pixels, no bbox). Yet atom_04 (\u0027which class in which cell\u0027) and atom_08 (\u0027~0 plate-delta in the detection\u0027s cell\u0027) both require mapping a detection\u0027s bbox to a grid cell at consult time.",
+                                  "why":  "Threading Detection/Track geometry through EventBuilder → OkoEvent → VlmGate is a cross-cutting domain-model change spanning at least 4 files. atom_07 demotes this to a \u0027medium risk\u0027 footnote (\u0027must ensure the gate has access to per-detection cell + bbox context\u0027), but no atom actually plumbs it, so atoms 04/07/08 cannot be implemented as specified."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The decision ignores pre-existing in-pipeline suppression that already covers much of Stage 1\u0027s target. live.py:324-353 already returns should_query=False with reason=\u0027static_object\u0027 for static person/animal tracks and reason=\u0027track_not_persistent\u0027 for transient tracks, with dedicated passing tests (incl. cross-batch). The new durable furniture suppression overlaps the existing within-session static suppression.",
+                                  "why":  "Marginal value of the durable registry (cross-session memory) is never positioned against the existing logic, so it risks redundant or conflicting gates with no defined precedence — and several success_tests (\u0027prevent VLM activation for static furniture\u0027) may already pass without the new code, masking whether the new layer actually works."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "A contract-mandated deliverable is left as an open \u0027maybe defer\u0027 question. The 16x12 grid is BOTH an explicit constraint and success_test #4, yet open_questions ask to \u0027confirm it stays in Stage 1 or is deferred,\u0027 and atom_04 is repeatedly labeled \u0027auxiliary / not load-bearing.\u0027 Its data feed (which detections populate it) is also unspecified — same feed gap as the plate.",
+                                  "why":  "If the architect resolves the open question as \u0027defer,\u0027 an explicit constraint is violated and success_test #4 fails. Leaving a hard-required artifact\u0027s inclusion \u0027open\u0027 is a latent constraint violation, not a benign open question."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Warmup wall-clock-vs-frame-count is unresolved (atom_09 open question) while a required gate depends on it. atom_11 mandates a synthetic frames→tracks→SceneModel→decision E2E fixture that must exercise the READY state and suppression. A 2-5 min wall-clock warmup (time.monotonic, as used for cooldowns) is never reached when a test feeds frames instantly, so the E2E test can\u0027t reach READY without an injectable clock; a frame-count warmup makes \u00272-5 minutes\u0027 fps-dependent and wrong off the assumed ~30fps.",
+                                  "why":  "The pipeline already mixes time.monotonic (cooldowns) and frame.timestamp (defer ready_at), so this is a real design fork. Leaving it open blocks the very E2E gate (atom_11) the plan declares mandatory, and risks an untestable READY path or a warmup whose real duration is wrong."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The furniture-registry data source is narrower than the decision\u0027s framing. _static_track_ids is only person/animal static tracks (builder.py:245-253 requires _class_is_person_or_animal). Static non-person/animal detections (chair, tv, potted plant) are never in the signal, so the \u0027furniture registry / which YOLO class is normal in which cell\u0027 description overstates coverage.",
+                                  "why":  "The chair/furniture false-trigger named in AUTOTRAIN_PLAN.md is only addressed when the furniture is misdetected AS a person/animal. A genuinely-classed static \u0027chair\u0027 that triggers a non-person event won\u0027t be captured, so the registry suppresses a narrower set than the success_test wording (\u0027registered furniture\u0027) implies."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The two AND-conditions in atom_08 are largely non-independent, weakening the keystone\u0027s stated safety. Registered furniture is, by construction, baked into the plate (it\u0027s static), so at its cell current≈plate is almost always true. The plate-delta arm adds real discrimination only via occlusion (a real mover raising delta).",
+                                  "why":  "The claim that \u0027both-conditions AND = maximal risk reduction\u0027 overstates the protection: requiring both is barely stronger than requiring furniture-match alone, except in the occlusion case. A real person whose pose/appearance resembles the baked-in furniture at that cell yields low delta and is suppressed."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "runs/scene/\u003ccamera_id\u003e/ has no path-sanitization atom, despite an existing precedent (_safe_incident_video_stem / test_write_keyframe_sanitizes_event_id_path_segments). camera_id is a free-form config string (CameraConfig.id).",
+                                  "why":  "On Windows a camera_id containing \u0027:\u0027, \u0027/\u0027, \u0027\\\u0027, or \u0027..\u0027 breaks directory creation or escapes runs/scene/. The open question notes camera_id \u0027collision\u0027 but not path-safety, leaving a robustness/foot-gun gap the codebase otherwise guards against."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The persisted plate and grid are resolution-bound but no atom handles geometry drift. The plate (.npy/.png) and 16x12 cell mapping assume fixed FrameData.width/height; a stream-profile or resolution change on camera reconnect silently produces a dimension-mismatched plate and misaligned cells.",
+                                  "why":  "atom_02\u0027s tolerant loaders handle schema_version drift, not pixel-geometry drift, and the open questions cover PTZ but not resolution change — so a common reconnect scenario can corrupt suppression decisions without detection."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

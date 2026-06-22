@@ -1,0 +1,94 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires implementing Stage 1 of the OKO auto-training system, which focuses on building a camera \u0027normality\u0027 memory to suppress false positives without retraining the detection model. This involves creating a new module (src/oko/memory/scene.py) with a durable SceneModel that persists per-camera data under runs/scene/\u003ccamera_id\u003e/. The SceneModel must capture: (a) a background plate using median/EMA on frames without moving tracks, (b) a 16x12 spatial-normality grid recording which YOLO classes are normal per cell with confidence/persistence, and (c) a furniture registry that durably persists _static_track_ids from events/builder.py (currently discarded). The VLM-gate in pipeline/live.py must be modified to skip VLM activation when a detection matches registered furniture AND shows ~0 movement versus the background plate. A 2-5 minute warmup period is required for bootstrapping. Implementation must be decomposed into small, testable atoms, each passing its own tests, with full project pytest verification required.",
+    "summary":  "Implement Stage 1 of OKO auto-training: a camera memory system that learns and persists \u0027normality\u0027 (background, spatial class distribution, static furniture) to suppress false positives by gating VLM activation, without any model retraining.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Create SceneModel as a durable, per-camera persistence unit under runs/scene/\u003ccamera_id\u003e/ with three subcomponents: background plate, spatial-normality grid, and furniture registry.",
+                               "reason":  "Durable persistence ensures the memory survives restarts and accumulates over time. Per-camera isolation prevents cross-contamination of normality data between different camera views.",
+                               "tradeoff":  "Disk I/O overhead for persistence vs. in-memory-only approach; durability chosen because camera normality is long-lived knowledge that must survive process restarts.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement background plate computation using Exponential Moving Average (EMA) rather than simple median, updating only on frames where no moving tracks are detected.",
+                               "reason":  "EMA adapts gradually to lighting changes and scene evolution while being computationally cheaper than maintaining a frame buffer for median. Filtering to frames without moving tracks prevents foreground objects from corrupting the background model.",
+                               "tradeoff":  "EMA may be slower to adapt to abrupt scene changes (e.g., camera repositioning) compared to median with a sliding window, but provides smoother, more stable background for false positive suppression.",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Implement a 16x12 spatial-normality grid that records, per cell, which YOLO classes are considered \u0027normal\u0027 based on confidence-weighted persistence over time.",
+                               "reason":  "A spatial grid allows the system to learn that certain object classes are expected in specific image regions (e.g., cars on a road, not on a sidewalk), enabling more precise false positive suppression than a global class-frequency approach.",
+                               "tradeoff":  "16x12 grid resolution balances spatial specificity against memory/storage overhead and sufficient samples per cell; finer grids risk sparse data, coarser grids lose spatial precision.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Capture and durably persist _static_track_ids from events/builder.py as a furniture registry, rather than discarding them per-event.",
+                               "reason":  "Static tracks represent permanent or semi-permanent scene objects (furniture, equipment) that should not trigger alerts. Persisting them enables the VLM-gate to recognize these objects across sessions without re-learning.",
+                               "tradeoff":  "Requires modifying events/builder.py to expose _static_track_ids to the memory module, creating a dependency between event building and memory subsystems; this coupling is acceptable because static track identification is inherently a memory function.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Modify the VLM-gate in pipeline/live.py to suppress VLM activation when a detection matches registered furniture AND shows approximately zero movement relative to the background plate.",
+                               "reason":  "This directly achieves the goal of reducing false positives by preventing unnecessary VLM queries for known-static objects, saving computational resources and reducing alert fatigue.",
+                               "tradeoff":  "The movement threshold must be carefully calibrated—too strict may miss real events involving furniture movement, too loose may allow false positives; a configurable threshold with reasonable default (e.g., \u003c5% pixel difference) balances sensitivity.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Implement a 2-5 minute warmup/bootstrap period during which the SceneModel initializes its components before VLM suppression becomes active.",
+                               "reason":  "The system needs sufficient data to establish reliable normality baselines; activating suppression prematurely could block legitimate detections due to incomplete background or furniture models.",
+                               "tradeoff":  "During warmup, all detections proceed to VLM, temporarily increasing load; this is necessary to gather unbiased initial data and is acceptable given the short duration relative to continuous operation.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Decompose Stage 1 implementation into atomic changes, each limited to 1 file or small modification, with independent tests passing before integration.",
+                               "reason":  "Atomic decomposition reduces integration risk, enables parallel development, simplifies code review, and ensures each component is verifiable in isolation before assembly.",
+                               "tradeoff":  "Overhead of writing tests for each atom vs. faster monolithic implementation; the testing investment pays off in maintainability and confidence, especially for a high-risk system component.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Require full project pytest suite (bridge-projects/oko) to pass as verification, not just bridge-smoke tests.",
+                               "reason":  "Changes to pipeline/live.py and events/builder.py can have cascading effects; full test coverage ensures existing functionality is preserved and new memory module integrates correctly with the broader system.",
+                               "tradeoff":  "Full test suite may take longer to run than smoke tests, increasing iteration time; this is mitigated by running atom-level tests during development and full suite only at integration points.",
+                               "confidence":  0.96
+                           }
+                       ],
+    "assumptions":  [
+                        "The events/builder.py module can be modified to expose _static_track_ids without breaking existing event building logic.",
+                        "The pipeline/live.py VLM-gate has a well-defined interface that can accommodate the new suppression logic without major refactoring.",
+                        "Camera IDs are unique and consistently available throughout the pipeline to key the SceneModel persistence.",
+                        "The 16x12 grid dimensions are appropriate for the camera resolutions and fields of view in the target deployment.",
+                        "A 2-5 minute warmup period provides sufficient frames without moving tracks to build an initial background plate.",
+                        "The existing project test suite adequately covers the pipeline and event building paths that will be modified.",
+                        "YOLO detection output includes class labels and bounding box coordinates that can be mapped to the spatial grid.",
+                        "The furniture registry can be reliably updated from static track signals without race conditions in the event pipeline."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Modifying events/builder.py to expose _static_track_ids may introduce regressions in event building if the signal extraction logic is not carefully isolated.",
+                      "severity":  "high",
+                      "mitigation":  "Implement the change as a minimal, non-invasive hook (e.g., a callback or observer pattern) that does not alter the core event building flow; cover with dedicated unit tests for both the existing builder and the new exposure path."
+                  },
+                  {
+                      "risk":  "The VLM-gate modification in pipeline/live.py could inadvertently block legitimate detections if the furniture matching or movement threshold is too aggressive.",
+                      "severity":  "high",
+                      "mitigation":  "Implement the suppression as a configurable feature with an off switch; use conservative defaults; log all suppression decisions with detailed reasoning for auditability; allow runtime adjustment of thresholds."
+                  },
+                  {
+                      "risk":  "SceneModel persistence may fail or corrupt under concurrent access if multiple pipeline stages attempt to read/write simultaneously.",
+                      "severity":  "medium",
+                      "mitigation":  "Use file-based locking or an embedded database (e.g., SQLite) for the SceneModel persistence layer; ensure atomic writes and graceful degradation if persistence is temporarily unavailable."
+                  },
+                  {
+                      "risk":  "The 2-5 minute warmup period may be insufficient for cameras with low activity, resulting in an incomplete background plate or sparse normality grid.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement a readiness check that verifies minimum data thresholds before enabling suppression; extend warmup dynamically if needed; log warnings if bootstrapping takes longer than expected."
+                  },
+                  {
+                      "risk":  "EMA background plate may drift over very long periods, eventually causing false movement detection against a stale background.",
+                      "severity":  "low",
+                      "mitigation":  "Implement a slow decay factor and periodic background refresh; consider a secondary validation mechanism that flags significant background shifts for review."
+                  }
+              ],
+    "minimal_version":  "Implement SceneModel with in-memory storage only (no durable persistence), basic background plate using simple frame averaging, furniture registry as a set of track IDs, and a simple VLM-gate that suppresses detections matching furniture regardless of movement. Warmup fixed at 3 minutes. Tests limited to the new module only.",
+    "advanced_version":  "Full durable SceneModel with EMA background plate, 16x12 spatial-normality grid with confidence-weighted class persistence and temporal decay, furniture registry with object appearance features for robust matching, adaptive VLM-gate with configurable movement threshold and partial-match scoring, dynamic warmup based on data sufficiency metrics, comprehensive integration tests with simulated camera feeds, and a monitoring dashboard for normality model health."
+}
