@@ -177,6 +177,8 @@ STATUS: DONE
   }
 
   $plannerStatus = 'DONE'
+  $timeoutHandlerCommand = Get-Command Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -ErrorAction Stop
+  Check 'Gate regression timeout diagnostics: handler accepts TimedOutTests parameter' ($timeoutHandlerCommand.Parameters.ContainsKey('TimedOutTests')) $timeoutHandlerCommand.Parameters.Keys
   $timeoutFailRecord = Invoke-DriverDoneGateRegressionTimeoutInconclusiveHandling -GateResult $syntheticTimeoutGate -FailReason 'exit=124, timedOut=True' -TimedOutTests @($timeoutFailRuntime.GateRegression.LastTimedOutTests)
   $timeoutFailMessage = ''
   if ($script:CapturedGateMessages.Count -gt 0) { $timeoutFailMessage = [string]$script:CapturedGateMessages[-1].Text }
