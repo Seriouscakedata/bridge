@@ -1,0 +1,33 @@
+{
+    "task":  "[Автозадача из бэклога] Bridge-self canary gate/admission for approved control-plane backlog task [parent:bf6ab48ff3c2495a95cd77ee15f638ad]. Operator-authorized child task: run the parent only with canary evidence, driver.ps1 -SelfTest, smoke.ps1, and rollback notes. Parent task: [deep-agent/reliability-model/deepseek-v4-flash] missing_cleanup -- In Get-BridgeJobNativeSourceEmbeddedExecution, the stdoutThread and stderrThread are started but never explicitly joined with a timeout. If the process exits but the threads hang (e.g., pipe buffer full), the RunCommandInJob function never returns, leaking the thread and process handle. | Recommend: Add a timeout to TryJoinThread calls (e.g., 5000 ms) and abort/close the read handles if threads don\u0027t complete. Ensure the finally...",
+    "goal":  "To eliminate resource leaks (thread and process handles) in `Get-BridgeJobNativeSourceEmbeddedExecution` by implementing robust thread joining with timeouts and proper handle closure, and to ensure this fix is safely deployed through a canary gate with specific self-test and smoke test evidence, along with documented rollback procedures.",
+    "constraints":  [
+                        "The parent task (bf6ab48ff3c2495a95cd77ee15f638ad) must only be run/deployed with canary evidence.",
+                        "Canary evidence must include successful execution of `driver.ps1 -SelfTest`.",
+                        "Canary evidence must include successful execution of `smoke.ps1`.",
+                        "Rollback notes must be provided and approved."
+                    ],
+    "known_context":  [
+                          "The issue resides in `Get-BridgeJobNativeSourceEmbeddedExecution`.",
+                          "The `stdoutThread` and `stderrThread` are started but not explicitly joined with a timeout.",
+                          "This can lead to `RunCommandInJob` hanging and leaking thread/process handles if pipe buffers fill.",
+                          "The recommended solution involves adding a timeout (e.g., 5000 ms) to `TryJoinThread` calls.",
+                          "The recommended solution also involves aborting/closing read handles if threads do not complete within the timeout.",
+                          "The task is an operator-authorized child task related to a backlog item.",
+                          "The parent task ID is bf6ab48ff3c2495a95cd77ee15f638ad."
+                      ],
+    "output_format":  "A detailed plan including proposed code changes, a pull request for review, and a deployment strategy outlining canary steps, testing procedures, and rollback instructions.",
+    "task_type":  "bugfix",
+    "risk":  "high",
+    "allowed_complexity":  "medium",
+    "success_tests":  [
+                          "The `Get-BridgeJobNativeSourceEmbeddedExecution` function no longer leaks thread or process handles under conditions where `stdoutThread` or `stderrThread` might hang.",
+                          "All `TryJoinThread` calls within the relevant code path include a specified timeout (e.g., 5000 ms).",
+                          "Read handles associated with `stdoutThread` and `stderrThread` are explicitly closed or aborted if the threads do not complete within their respective timeouts.",
+                          "The `RunCommandInJob` function reliably returns, even if child threads encounter issues or hang.",
+                          "The `driver.ps1 -SelfTest` script successfully executes against the patched code in a canary environment.",
+                          "The `smoke.ps1` script successfully executes against the patched code in a canary environment.",
+                          "Comprehensive and approved rollback notes are documented for the deployment of this fix.",
+                          "The fix is successfully deployed to a canary environment, demonstrating stability and no regressions, and eventually to production."
+                      ]
+}

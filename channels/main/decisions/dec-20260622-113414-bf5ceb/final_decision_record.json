@@ -1,0 +1,164 @@
+{
+    "final_answer":  "Fix the handle/thread leak in `Get-BridgeJobNativeSourceEmbeddedExecution` with a bounded, cooperative recovery ladder rather than forceful thread termination. After the child process is observed to exit, terminate the Job Object first (killing descendants that may still hold the write end of the stdout/stderr pipes — the actual hung-reader cause), which lets the reader threads reach EOF and exit. Join both reader threads against a SINGLE shared wall-clock deadline driven by a named constant (`ReaderJoinTimeoutMs`, default 5000 ms) so total wait is bounded regardless of which reader hangs. If a reader is still stuck at the deadline, close/dispose its read-side pipe handle/stream to unblock the blocking read; if it still does not exit, log the residual leak and return — never call Thread.Abort. All process/job/pipe/stream/thread cleanup lives in `finally` blocks with idempotent disposal so `RunCommandInJob` always returns. Prove it with a dedicated regression self-test that reproduces a grandchild holding stdout open and asserts bounded return with no leaks. Deploy only behind the canary gate: `driver.ps1 -SelfTest` and `smoke.ps1` must both exit 0 from the exact patched commit with evidence attached, and approved rollback notes (revert via `git restore`, executed outside the patched runtime) must exist before promotion.",
+    "decisions":  [
+                      {
+                          "decision":  "Join stdout and stderr reader threads against a single shared wall-clock deadline, using a named constant `ReaderJoinTimeoutMs` (default 5000 ms) as that deadline rather than as independent per-thread waits.",
+                          "rationale":  "Folds DA-001\u0027s named-constant clarity into DA-002\u0027s bounded-deadline guarantee. Independent sequential per-thread 5000 ms joins can compound to ~10000 ms when both readers hang, making command latency unpredictable. A single deadline that starts after observed process exit gives a strict, predictable upper bound on total wait while keeping the threshold readable and tunable in one place.",
+                          "alternatives_considered":  [
+                                                          "DA-001 original: independent 5000 ms timeout per reader thread (rejected — up to 10000 ms total wait, not a strict overall bound)",
+                                                          "No timeout / unbounded join (status quo — the leak being fixed)"
+                                                      ],
+                          "risk":  "A slow-but-healthy reader could be cut short if the co-reader consumes most of the budget. Mitigated because the deadline starts only after the child process is observed to exit, by which point a healthy reader drains its buffered remainder in well under the budget.",
+                          "test":  "Verify both `TryJoinThread` calls share one deadline computed from `ReaderJoinTimeoutMs` (default 5000 ms) starting at observed process exit, and that worst-case total wait for two hung readers stays within that single budget (not 2x)."
+                      },
+                      {
+                          "decision":  "On deadline expiry, close/dispose the read-side pipe handle or underlying read stream of any still-blocked reader to force the blocking read to unblock and the thread to exit.",
+                          "rationale":  "Closing the read side is the correct primary unblocking mechanism for a thread stuck in a synchronous pipe read; it provides strong failure containment and lets `RunCommandInJob` return deterministically.",
+                          "alternatives_considered":  [
+                                                          "Thread.Abort to terminate the reader (DA-005, rejected)",
+                                                          "Waiting indefinitely (status quo)"
+                                                      ],
+                          "risk":  "On some runtimes a synchronous blocking read only unblocks on raw handle close, not on managed stream Dispose; the implementation must close the actual read handle, and any partial buffered output at that point may be lost (acceptable — the process already exited and the reader was hung).",
+                          "test":  "Simulate a reader hang, verify the corresponding read handle/stream is closed/disposed and `RunCommandInJob` returns within the bounded deadline."
+                      },
+                      {
+                          "decision":  "Do not use Thread.Abort as either the primary or fallback recovery mechanism. Use the cooperative ladder (job terminate -\u003e EOF -\u003e join -\u003e close read handle); if a thread still does not exit, log the residual condition and return.",
+                          "rationale":  "Thread.Abort is unsafe — it can corrupt process state, leak the resources we are trying to free, and behaves non-deterministically if the thread holds locks. Cooperative unblock via handle/stream closure achieves bounded return without those hazards, and the micro-debate\u0027s \u0027last resort abort\u0027 position was overruled because an abort that leaks is strictly worse than a logged-and-bounded leak.",
+                          "alternatives_considered":  [
+                                                          "DA-005: abort the thread on timeout (rejected — unsafe, conflicts with DA-003/DA-004)",
+                                                          "Controlled Thread.Abort as an absolute last resort (rejected by judge and conflict review)"
+                                                      ],
+                          "risk":  "In a pathological case where handle closure does not unblock the read, the thread/handle leaks for the lifetime of the host process. This is logged and surfaced as evidence rather than masked, and is bounded to that single invocation.",
+                          "test":  "Code review confirms no `Thread.Abort` in the reader recovery path; verify residual non-exiting readers are logged with enough context to alert, and that the function still returns."
+                      },
+                      {
+                          "decision":  "Terminate the Job Object after the child process is observed to exit and BEFORE joining the reader threads, documented and conditioned so it does not truncate legitimate output in the normal case.",
+                          "rationale":  "The root cause of the hang is a descendant (grandchild) inheriting and holding the write end of the stdout/stderr pipe; terminating the job kills those descendants, the pipe reaches EOF, and the readers exit gracefully without any forced thread manipulation. This makes DA-003/DA-004 the fallback rather than the common path. The judge required this be conditioned: it fires only after observed child exit, after a best-effort drain, so a normal run (no descendants holding handles) has already drained and joined before termination matters.",
+                          "alternatives_considered":  [
+                                                          "Join readers first, then terminate the job (leaves the EOF-blocked readers stuck until the deadline forces a handle close — slower common path)",
+                                                          "Never terminate the job and rely solely on handle closure (DA-003 alone — works but does not address the descendant root cause)"
+                                                      ],
+                          "risk":  "Terminating the job too eagerly could truncate buffered stdout/stderr from a legitimately-still-draining child tree. Mitigated by ordering (only after observed exit) and by validating in the regression/smoke tests that normal output is fully captured.",
+                          "test":  "Verify `TerminateJobObject` is invoked after observed child exit and before reader joins; assert via the regression test that a normal command\u0027s full stdout/stderr is still captured intact (no truncation) and a grandchild-held-pipe command unblocks and returns within the deadline."
+                      },
+                      {
+                          "decision":  "Place all process, job, pipe, stream, and thread cleanup in `finally` blocks and make every disposal idempotent (null-check / once-flag).",
+                          "rationale":  "Reliable recovery across any failure point in the process/job/pipe/stream/thread lifecycle requires that cleanup runs on every exit path and tolerates being run more than once (e.g., handle already closed by the unblock path).",
+                          "alternatives_considered":  [
+                                                          "Inline cleanup at each return site (fragile, easy to miss an exit path)",
+                                                          "Single non-idempotent dispose (double-dispose can throw and re-leak)"
+                                                      ],
+                          "risk":  "Idempotency bugs (double-dispose throwing) could themselves leak; covered by the regression test exercising the timeout path where handles are closed twice.",
+                          "test":  "Verify all disposal occurs in `finally` and is idempotent; exercise the timeout path (handle closed during unblock then again in finally) and assert no exception and no leaked handles/threads."
+                      },
+                      {
+                          "decision":  "Ship a dedicated regression self-test that reproduces the hung-reader condition (a grandchild holds stdout open after the direct child exits) and asserts `RunCommandInJob` returns within the bounded deadline with zero leaked handles/threads.",
+                          "rationale":  "This is the strongest proof the fix actually bounds the hang and frees resources; without it the fix is unverifiable and prone to silent regression.",
+                          "alternatives_considered":  [
+                                                          "Manual/ad-hoc verification only (rejected — not repeatable, no regression protection)",
+                                                          "Relying on smoke.ps1 alone (rejected — smoke does not deliberately reproduce the hang)"
+                                                      ],
+                          "risk":  "Highest implementation cost of the set, and the reproduction harness may be timing-sensitive across hosts. Mitigated by asserting on bounded-return + handle/thread counts rather than on precise timings, and by keeping it within the self-test time budget.",
+                          "test":  "Run the regression test; confirm it reliably reproduces the hang pre-fix, and post-fix returns within the deadline with handle/thread counts back to baseline."
+                      },
+                      {
+                          "decision":  "Gate deployment of the parent task (bf6ab48ff3c2495a95cd77ee15f638ad) on canary evidence: `driver.ps1 -SelfTest` and `smoke.ps1` both exit 0 from the exact patched commit, with captured output attached as evidence.",
+                          "rationale":  "Enforces the task contract — promotion is blocked until concrete, commit-pinned evidence from both the self-test (including the new regression case) and smoke coverage proves no regression in the canary.",
+                          "alternatives_considered":  [
+                                                          "Deploy on green CI without canary (violates the task constraints)",
+                                                          "Run tests on a different/unpinned commit (rejected — evidence must match the deployed artifact exactly)"
+                                                      ],
+                          "risk":  "Canary host may differ from production in ways the gate does not catch; mitigated by including the leak-reproducing regression test in the self-test so the gate exercises the actual fix.",
+                          "test":  "Verify the deployment pipeline refuses promotion unless both scripts report exit code 0 from the patched commit hash and the evidence (logs, commit SHA) is attached to the canary record."
+                      },
+                      {
+                          "decision":  "Produce approved rollback notes that revert the code change (e.g., `git restore` / revert to the prior commit) and restore previous behavior, with steps executable entirely outside the patched runtime.",
+                          "rationale":  "Rollback must not depend on the patched code behaving correctly. Low-cost, highly reversible, and required by the task contract before promotion.",
+                          "alternatives_considered":  [
+                                                          "Rely on the patched runtime\u0027s own self-recovery for rollback (rejected — circular dependency if the patch is the problem)",
+                                                          "No documented rollback (violates constraints)"
+                                                      ],
+                          "risk":  "Rollback restores the original leak; acceptable as a temporary state and explicitly noted, with the canary gate preventing the leaky path from reaching production unnoticed.",
+                          "test":  "Review rollback notes for completeness, clarity, and independence from the patched runtime; dry-run the revert steps in the canary and confirm prior behavior is restored."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "DA-005 — Abort the reader thread (Thread.Abort) if it does not join within the timeout.",
+                         "why":  "Thread.Abort is unsafe and unreliable: it can corrupt process state, leave locks held, and leak the very handles the fix is meant to free. It directly conflicts with the accepted safer strategy (terminate job -\u003e EOF -\u003e close read handle -\u003e log). An abort that itself leaks is worse than a bounded, logged residual leak, so it is rejected as both primary and last-resort mechanism."
+                     },
+                     {
+                         "decision":  "DA-001 (original form) — Independent per-thread 5000 ms join timeouts for stdout and stderr.",
+                         "why":  "Sequential independent per-thread timeouts allow total wait to compound to ~10000 ms when both readers hang, defeating the goal of a strict, predictable upper bound on return time. Superseded by the accepted single shared wall-clock deadline; only DA-001\u0027s named-constant idea is retained, repurposed as that shared deadline."
+                     }
+                 ],
+    "open_questions":  [
+                           "Does the target PowerShell/.NET runtime reliably unblock a synchronous blocking pipe read on managed stream Dispose, or only on raw read-handle close? The implementation must target whichever actually unblocks the read.",
+                           "Could `TerminateJobObject` issued before reader drain truncate legitimately buffered stdout/stderr in non-hung exits? Needs explicit validation that it fires only after observed child exit and a best-effort drain.",
+                           "Is a short grace period needed between read-handle closure and the log-and-return fallback, and what value keeps total return within the 5000 ms deadline?",
+                           "Can the leak-reproducing regression test run within the `driver.ps1 -SelfTest` time/resource budget on the canary host without flaking due to timing sensitivity?"
+                       ],
+    "implementation_plan":  [
+                                "1. Add a named constant `ReaderJoinTimeoutMs = 5000` and compute a single shared deadline (start = observed child-process exit) used for both reader-thread joins.",
+                                "2. Reorder the post-exit sequence: after the child process is observed to exit and a best-effort drain, call `TerminateJobObject` BEFORE joining reader threads so descendants holding the pipe write end are killed and readers reach EOF.",
+                                "3. Join stdout and stderr reader threads against the shared deadline. On expiry for any still-blocked reader, close/dispose its read-side pipe handle/stream to force unblock.",
+                                "4. If a reader still does not exit after handle closure, log the residual handle/thread leak with context and return — do NOT call Thread.Abort anywhere in this path.",
+                                "5. Move all process/job/pipe/stream/thread disposal into `finally` blocks and make each disposal idempotent (once-flag or null check) so double-close (unblock path + finally) is safe and `RunCommandInJob` always returns.",
+                                "6. Add a dedicated regression self-test: spawn a child that launches a grandchild which holds stdout open after the child exits; assert `RunCommandInJob` returns within the deadline and that handle/thread counts return to baseline. Also assert a normal command\u0027s full output is still captured (no truncation from job termination).",
+                                "7. Wire the new regression test into `driver.ps1 -SelfTest` so the canary gate exercises the fix.",
+                                "8. Write rollback notes (revert via `git restore` / revert to prior commit, restore previous behavior) that are executable entirely outside the patched runtime; get them approved.",
+                                "9. Open the PR with the code change, the regression test, and the rollback notes; request review.",
+                                "10. Deploy to canary; run `driver.ps1 -SelfTest` and `smoke.ps1` from the exact patched commit, confirm both exit 0, and attach captured output + commit SHA as canary evidence.",
+                                "11. Only after the gate passes and rollback notes are approved, promote the parent task (bf6ab48ff3c2495a95cd77ee15f638ad) to production; monitor for handle/thread leaks and output integrity."
+                            ],
+    "next_step":  "Implement the post-exit recovery ladder in `Get-BridgeJobNativeSourceEmbeddedExecution` (add `ReaderJoinTimeoutMs`, terminate the Job Object before reader joins, join against the shared deadline, close read handles on timeout, no Thread.Abort) and move all cleanup into idempotent `finally` blocks.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The mandated canary gate (driver.ps1 -SelfTest + smoke.ps1) never compiles or executes the patched code. driver.ps1\u0027s -SelfTest block (lines 550-604) only checks function definitions exist and probes pure helpers; grep for Ensure-BridgeJobNative / Add-Type / Start-BridgeJob / RunCommandInJob in driver.ps1 returns ZERO matches. smoke.ps1 only ParseFile-checks PS syntax (the embedded C# is an inert here-string, not parsed) and runs unrelated tool tests; it never invokes tools/test-jobs-timeout.ps1 nor starts a job. Neither script ever calls Add-Type on BridgeJobNative.",
+                                  "why":  "DA-007\u0027s core rationale — that the gate provides \u0027host/runtime-level integration of the embedded execution path\u0027 — is false for THIS change. Constraints and success_tests #5/#6 are satisfiable (both scripts exit 0 against the patched commit) while the leak/hang fix is completely unverified. Even a C# compilation error in the patch would pass both gates and only surface at the first real job launch in production. The gate is theater for this specific fix."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-003\u0027s \u0027primary, safe\u0027 recovery — closing/disposing the read-side handle/stream to unblock a stuck reader — cannot unblock the reader given this code\u0027s structure. The reader blocks in FileStream.Read over a SafeFileHandle (Get-BridgeJobNativeSourceEmbeddedHelpers, CopyPipeToLog, lines 385-396). During an in-flight synchronous ReadFile the CLR holds a DangerousAddRef on the SafeFileHandle, so an external Dispose only marks-closed and DEFERS the physical CloseHandle until the blocked read returns — it does not interrupt it. The only things that actually produce EOF are the writer closing (Job termination) or CancelSynchronousIo/CancelIoEx.",
+                                  "why":  "For any hang where the write-end is held by a descendant OUTSIDE the job (a process that broke away or was re-parented — the job only sets KILL_ON_JOB_CLOSE, no breakaway guarantee), TerminateJobObject does not kill it, and the \u0027primary\u0027 closure mechanism is a no-op. The reader leaks and the function can only \u0027log and proceed,\u0027 so success_tests #1 and #3 are not met for that class of hang. CancelSynchronousIo — the documented primitive that would work — is deferred to an open question (\u0027add only if closure proves unreliable\u0027), shipping the wrong primary mechanism."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The reader body CopyPipeToLog has no try/catch, yet the timeout/forced-closure and finally paths dispose logStream (line 359) and the read SafeFileHandle (lines 357-358) from the MAIN thread while a reader thread may still be alive. If forced closure ever does make Read throw, or the still-running reader executes lock(logLock){ logStream.Write(...) } (lines 390-393) on a disposed logStream, the resulting IOException/ObjectDisposedException is unhandled on a background thread and terminates the runner process.",
+                                  "why":  "This converts the original bounded-hang bug into a hard process crash, directly violating success_test #4 (\u0027RunCommandInJob reliably returns\u0027). The implementation_plan and DA-006 (idempotent disposal) address double-dispose of the same handle but NOT the cross-thread hazard of disposing logStream/the read stream out from under a live reader. No step adds exception handling to CopyPipeToLog."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The DA-010 regression test is authored (plan step 7) but never wired into the canary-evidence scripts. Plan step 8 only runs the existing driver.ps1 -SelfTest and smoke.ps1; the existing jobs test (tools/test-jobs-timeout.ps1) is a STATIC source-string regex check (it asserts fragments like \u0027TryJoinThread(stdoutThread, \\d+)\u0027 against $nativeSource, never executes RunCommandInJob) and is not invoked by smoke.ps1 at all.",
+                                  "why":  "Even if the new execution-based regression test passes once locally, it becomes an orphan: it is not part of the canary evidence the constraints mandate and provides no ongoing regression protection through the gate. DA-010\u0027s claimed value (\u0027prevents regression\u0027) is unrealized unless the test is added to smoke.ps1 or -SelfTest, which the plan omits."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The decision explicitly accepts a residual leaked managed thread + held read handle on the \u0027neither Job termination nor closure unblocks\u0027 path (DA-003/DA-004 risk, \u0027log and proceed\u0027). Given finding #2, this path is the DEFINED outcome whenever a writer is held outside the job, not a vanishing pathological case.",
+                                  "why":  "success_test #1 requires the function to \u0027no longer leak thread or process handles under conditions where stdoutThread or stderrThread might hang\u0027 — unconditionally. A design that knowingly leaks on a non-trivial subclass of hangs does not satisfy that test as written. (Partial real-world mitigation: the runner is an ephemeral per-job powershell.exe (Start-BridgeJob line 516), so the OS reclaims handles on runner exit — but the decision\u0027s own success criterion is about the function, not OS reclamation.)"
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "open_question #1 (host = Windows PowerShell 5.1/.NET Framework vs PS7/.NET Core) is flagged as the gating next_step, but it is already answerable from the code: Start-BridgeJob launches the runner via \u0027powershell.exe\u0027 (line 516) = Windows PowerShell 5.1 / .NET Framework. The plan nonetheless proceeds to implement steps 1-6 before \u0027confirming\u0027 it.",
+                                  "why":  "Two consequences. (1) On .NET Framework, Thread.Abort does NOT throw PlatformNotSupportedException, so part of DA-004/DA-005\u0027s stated rejection rationale (\u0027throws on .NET Core/PS7\u0027) is moot for the actual host — the rejection survives only on the safety argument, which the record should have made the load-bearing one. (2) Because the host is .NET Framework, CancelSynchronousIo/CancelIoEx (kernel32) are available and should have been the primary unblock primitive (finding #2), not a deferred contingency."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Forced closure of the read side discards any bytes already in the pipe buffer but not yet drained, silently truncating jobs/\u003cid\u003e.log — the exact output capture this job manager exists to provide (CopyPipeToLog → logStream → Get-JobResult tail).",
+                                  "why":  "open_question #4 considers only exit-code/diagnostic loss from TerminateJobObject, not data loss from forced read-handle closure. On the timeout/forced path the operator loses the tail of the child\u0027s output precisely when they most need it for diagnosis."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "TerminateJobObject\u0027s boolean return is ignored (current code line 334; the plan adds another call before the joins per DA-009 but does not check it). On the \u0027Global\\BridgeJobObject-*\u0027 named object, termination can fail (rights/handle state); the plan has no fallback when it does.",
+                                  "why":  "DA-009\u0027s whole premise is that Job termination closes the inherited write-ends so readers reach EOF. If TerminateJobObject silently fails, descendants survive, readers stay blocked, and execution falls through to the unreliable closure path (finding #2) with no signal that the intended mechanism didn\u0027t fire."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "Converting the happy-path join from infinite (TryJoinThread(stdoutThread, -1), lines 339-340) to a single shared 5000 ms total post-exit drain budget is a behavioral regression for legitimately large bursts. A job that emits a large volume right before exit could have its drain forcibly cut off after 5 s where today it completes fully. The budget is hard-coded, not per-call-site configurable.",
+                                  "why":  "DA-002\u0027s risk note acknowledges early cutoff but the budget is not tunable; open_question #5 (\u0027should the budget be configurable / do long-output consumers need more\u0027) is raised but left unresolved, so the change ships a one-size 5000 ms cap that can truncate correct output on slow/large consumers."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

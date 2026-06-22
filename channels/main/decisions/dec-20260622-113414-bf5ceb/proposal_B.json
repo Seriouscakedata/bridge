@@ -1,0 +1,91 @@
+{
+    "proposer":  "B",
+    "understanding":  "Get-BridgeJobNativeSourceEmbeddedExecution emits/compiles native (C#) source that runs a child command inside a Windows Job Object. To avoid the classic redirected-pipe deadlock, it spawns stdoutThread and stderrThread to drain the child\u0027s stdout/stderr. The defect: those reader threads are joined without a bounded timeout, so if a reader blocks forever (the canonical case: a grandchild process inherits and keeps the stdout/stderr write handle open after the immediate child exits, so ReadToEnd never sees EOF), RunCommandInJob never returns. The result is a hung call that leaks a thread, the process handle, and the job handle. Because this is the Bridge control plane (the code that executes every job, including its own automation), a hang here can stall the whole system. The fix must bound the join, force the blocked reader to unwind, guarantee idempotent handle/job cleanup in finally, and — critically — be gated behind a canary that runs driver.ps1 -SelfTest and smoke.ps1 with a regression test that actually reproduces the hang, plus an externally-executable rollback that does not itself depend on the patched code.",
+    "summary":  "Bound both reader-thread joins with a timeout and, on timeout, terminate the Job Object first (killing grandchildren that hold the pipe open so the readers reach EOF) and then dispose the read streams to force any still-blocked read to throw and unwind; make all handle/job/stream disposal idempotent in finally so RunCommandInJob always returns. Add a regression self-test that reproduces the grandchild-holds-pipe hang and asserts bounded return time and zero handle leak. Deploy only after driver.ps1 -SelfTest and smoke.ps1 pass in an isolated canary; rollback is a plain git restore of the prior driver.ps1 performed outside the patched runtime.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Terminate the Job Object BEFORE attempting to join the reader threads, then join with a bounded timeout.",
+                               "reason":  "The dominant hang cause is a grandchild keeping the stdout/stderr write handle open so the reader\u0027s ReadToEnd never sees EOF. TerminateJobObject kills the whole job tree (grandchildren included), which closes the inherited write handle and lets the readers hit EOF and exit cleanly — a graceful unwind that preserves already-read output and avoids any Thread.Abort.",
+                               "tradeoff":  "Killing the job tree changes semantics for callers that intentionally spawn detached/long-lived grandchildren; for true command-in-job execution this is the expected lifecycle, but it must be documented and exercised in smoke.ps1.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Add a bounded join timeout, but model it as a single shared wall-clock deadline (e.g. 5000 ms total) rather than 5000 ms per thread.",
+                               "reason":  "Two independent 5000 ms joins can serialize to a 10s worst case; a shared deadline that starts after the process has exited keeps the bound predictable and small, since drained pipes should join in milliseconds once the writer handle is closed.",
+                               "tradeoff":  "Slightly more code than two naive TryJoinThread(5000) calls; a fixed bound can theoretically truncate a genuinely slow-but-progressing reader, so the value should be a named constant (and ideally configurable).",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "On join timeout, unblock the reader by disposing/closing the underlying read stream (StandardOutput/StandardError BaseStream) — never use Thread.Abort.",
+                               "reason":  "Disposing the stream forces the blocked synchronous read to throw ObjectDisposedException/IOException, letting the thread unwind through its own try/catch. Thread.Abort is unavailable on .NET Core and unsafe on .NET Framework (can leave locks held / corrupt state) — it would trade a thread leak for state corruption in the control plane.",
+                               "tradeoff":  "A reader killed mid-read can lose trailing output; this is acceptable for a timeout/abnormal path but must be surfaced as a diagnostic so it is not mistaken for normal truncation.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Make all cleanup idempotent in a finally block guarded by an interlocked/once flag: dispose stream readers, close pipe handles, close the process handle, close the job handle.",
+                               "reason":  "RunCommandInJob must return regardless of thread state; idempotent guarded disposal prevents double-free / ObjectDisposedException cascades when both the normal path and the timeout path touch the same handles.",
+                               "tradeoff":  "More defensive boilerplate and careful catch-and-swallow inside disposal, which can mask a genuine disposal error if not logged.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Ship a dedicated regression self-test that reproduces the hang (child spawns a grandchild that holds stdout open and sleeps) and asserts RunCommandInJob returns within the bound with no handle/thread leak.",
+                               "reason":  "Without a test that actually triggers the inherited-write-handle EOF starvation, the fix is unverified and the success_tests about \u0027no longer leaks under hang conditions\u0027 cannot be demonstrated. Measuring process/thread handle-count delta before/after gives an objective leak assertion.",
+                               "tradeoff":  "Building a reliable hang repro is fiddly and platform-specific; a flaky repro could destabilize the canary gate, so it must be deterministic (explicit grandchild that never closes the handle until killed).",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Gate promotion on canary evidence = green driver.ps1 -SelfTest AND green smoke.ps1 with verified exit codes, and make rollback a plain git restore of the prior driver.ps1 executed outside the patched runtime.",
+                               "reason":  "This change is the control plane that runs all jobs including its own rollback automation; the gate must assert real exit codes (not just that scripts ran), and rollback must not depend on the very code being changed, otherwise a bad deploy could brick its own recovery.",
+                               "tradeoff":  "Manual/external rollback is slower than an automated self-heal, but it is the only safe path when the failure mode is \u0027the executor itself hangs\u0027.",
+                               "confidence":  0.83
+                           }
+                       ],
+    "assumptions":  [
+                        "The function compiles embedded C# (Add-Type) running under Windows PowerShell 5.1 / .NET Framework 4.x (consistent with the win32/PowerShell environment), so synchronous stream reads and Job Object APIs (Assign/TerminateJobObject) are in play and Thread.Abort exists but must be avoided.",
+                        "TryJoinThread currently wraps Thread.Join with an infinite/blocking wait, and there is a finally block that already closes some handles but not under the hang path.",
+                        "The hang is driven by a grandchild process inheriting and holding the stdout/stderr write handle open after the immediate child exits (inherited-handle EOF starvation), which is the standard cause of this exact pattern.",
+                        "The Job Object is created by Bridge and its handle is available at the point of cleanup, so TerminateJobObject can be called deterministically.",
+                        "git is the deployment/rollback substrate (per the auto-commit history), and a \u0027canary\u0027 is an isolated copy/worktree where driver.ps1 -SelfTest and smoke.ps1 run before promotion to the live driver.",
+                        "A gate/regression counter mechanism already exists (e.g. gate_regression_fail_count) that the canary admission can hook into.",
+                        "Callers tolerate possibly-truncated output on the abnormal timeout path as long as it is flagged, and do not rely on grandchildren outliving the job."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Regression in the control plane: a defect in the patched executor hangs or crashes every job, including the automation that would deploy a fix or roll back.",
+                      "severity":  "high",
+                      "mitigation":  "Validate in an isolated canary (separate worktree/dir) before touching the live driver; require both driver.ps1 -SelfTest and smoke.ps1 to pass with asserted exit codes; keep rollback as an external git restore of the prior driver.ps1 that runs without invoking the patched code; snapshot/commit the pre-change driver."
+                  },
+                  {
+                      "risk":  "Forcing thread teardown corrupts state: using Thread.Abort, or disposing a stream while a thread holds a lock, leaves the process in an inconsistent state.",
+                      "severity":  "high",
+                      "mitigation":  "Never call Thread.Abort; unblock only by disposing the read stream so the read throws and the thread unwinds through its own catch; guard the thread body with try/catch for ObjectDisposedException/IOException; prefer terminating the job first so threads exit on EOF without forced disposal in the common case."
+                  },
+                  {
+                      "risk":  "Timeout value is wrong: too short truncates legitimate slow output; too long re-introduces perceptible hangs.",
+                      "severity":  "medium",
+                      "mitigation":  "Start the bound only after the process exits (drained pipes should join in milliseconds); use a named, configurable constant; emit a diagnostic when the bound is hit so tuning is data-driven; default to a single shared 5000 ms wall-clock deadline."
+                  },
+                  {
+                      "risk":  "Double-free / ObjectDisposedException cascade when the normal path and the timeout path both close the same handles.",
+                      "severity":  "medium",
+                      "mitigation":  "Idempotent disposal guarded by an Interlocked once-flag; swallow-and-log disposal exceptions; centralize all handle/job/stream closing in a single finally helper."
+                  },
+                  {
+                      "risk":  "Self-test and smoke pass but never exercise the actual hang path, giving false canary confidence.",
+                      "severity":  "medium",
+                      "mitigation":  "Add a deterministic regression test that spawns a grandchild holding stdout open and asserts bounded return time plus zero process/thread handle-count delta; make this test part of the gate, not optional."
+                  },
+                  {
+                      "risk":  "TerminateJobObject kills grandchildren a caller expected to survive (detached daemon use case).",
+                      "severity":  "low",
+                      "mitigation":  "Document the kill-on-job semantics; verify in smoke.ps1 that intended command-in-job behavior is unchanged; if a detached use case exists, gate the terminate-on-timeout behavior behind a flag defaulting to the safe (terminate) behavior."
+                  },
+                  {
+                      "risk":  "Canary admission marks the deploy good on \u0027scripts executed\u0027 rather than \u0027scripts succeeded\u0027, admitting a broken build.",
+                      "severity":  "medium",
+                      "mitigation":  "Gate strictly on captured exit codes and explicit success assertions; wire failure into the existing gate_regression_fail_count so a regression blocks promotion and is visible."
+                  }
+              ],
+    "minimal_version":  "In Get-BridgeJobNativeSourceEmbeddedExecution: (1) after the process exits, call TerminateJobObject to close inherited write handles so readers reach EOF; (2) replace the unbounded TryJoinThread calls with a bounded join using a single named timeout constant (default 5000 ms); (3) if a reader is still alive after the bound, Dispose the corresponding StandardOutput/StandardError stream to force the read to throw, wrapping the thread body in try/catch for ObjectDisposedException/IOException; (4) move all handle/job/stream closing into one idempotent finally helper guarded by a once-flag so RunCommandInJob always returns. Add one deterministic regression test (grandchild holds stdout open, never exits) asserting RunCommandInJob returns within ~6 s with no handle leak. Deploy only after driver.ps1 -SelfTest and smoke.ps1 pass green (exit codes asserted) in an isolated canary; rollback = git restore of the prior driver.ps1 run outside the patched runtime, documented in the PR.",
+    "advanced_version":  "Everything in the minimal version, plus: model a single shared wall-clock deadline budget across both joins (not per-thread) starting at process exit; stream output incrementally into a thread-safe StringBuilder/byte buffer (instead of ReadToEnd) so partial output is preserved and labeled when the timeout path fires; emit structured canary evidence — which thread timed out, bytes drained, whether the job was force-terminated, and process/thread handle-count delta — into the gate record; add a fault-injection self-test mode (-SelfTest -InjectPipeStall) that deterministically reproduces the inherited-handle stall so the gate always covers the regression; make the timeout and terminate-on-timeout behavior configurable; and integrate an automated canary admission that parses exit codes plus the handle-leak counter, increments gate_regression_fail_count on regression to block promotion, and auto-triggers the external git-restore rollback while leaving the final production promotion as an operator-confirmed step."
+}

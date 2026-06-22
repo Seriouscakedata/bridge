@@ -615,6 +615,21 @@ if ($SelfTest) {
   } catch {
     [void]$stFail.Add('canary/admission or feature-verifier filing probe threw: ' + $_.Exception.Message)
   }
+  try {
+    $jobsTimeoutTest = Join-Path $bridgeRoot 'tools\test-jobs-timeout.ps1'
+    if (-not (Test-Path -LiteralPath $jobsTimeoutTest)) {
+      [void]$stFail.Add('jobs timeout regression test missing')
+    } else {
+      $jtRaw = @(& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $jobsTimeoutTest 2>&1)
+      $jtCode = $LASTEXITCODE
+      if ($jtCode -ne 0) {
+        $jtDetail = (($jtRaw -join '; ') -replace '\s+',' ').Trim()
+        [void]$stFail.Add("jobs timeout regression test failed (exit=$jtCode): $jtDetail")
+      }
+    }
+  } catch {
+    [void]$stFail.Add('jobs timeout regression test threw: ' + $_.Exception.Message)
+  }
   if ($stFail.Count -gt 0) { foreach ($f in $stFail) { Write-Output ('DRIVER SELFTEST FAIL: ' + $f) }; exit 1 }
   Write-Output 'DRIVER SELFTEST OK'
   exit 0

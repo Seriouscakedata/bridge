@@ -45,6 +45,60 @@ Assert-Match 'RunCommandInJob closes hJob in finally' $nativeSource 'finally\s*\
 Assert-Match 'RunCommandInJob cleanup guards stdout thread join' $nativeSource '(?:TryJoinThread\s*\(\s*stdoutThread\s*,\s*\d+\s*\)|try\s*\{\s*if\s*\(\s*stdoutThread\s*!=\s*null\s*&&\s*stdoutThread\.IsAlive\s*\)\s*stdoutThread\.Join\(\s*1000\s*\)\s*;\s*\}\s*catch\s*\{\s*\}|if\s*\(\s*stdoutThread\s*!=\s*null\s*&&\s*stdoutThread\.IsAlive\s*\)\s*stdoutThread\.Join\(\s*1000\s*\)\s*;)'
 Assert-Match 'RunCommandInJob cleanup guards stderr thread join' $nativeSource '(?:TryJoinThread\s*\(\s*stderrThread\s*,\s*\d+\s*\)|try\s*\{\s*if\s*\(\s*stderrThread\s*!=\s*null\s*&&\s*stderrThread\.IsAlive\s*\)\s*stderrThread\.Join\(\s*1000\s*\)\s*;\s*\}\s*catch\s*\{\s*\}|if\s*\(\s*stderrThread\s*!=\s*null\s*&&\s*stderrThread\.IsAlive\s*\)\s*stderrThread\.Join\(\s*1000\s*\)\s*;)'
 Assert-Match 'AssignProcessToJobObject failure terminates process and throws into common finally' $nativeSource 'if\s*\(\s*!AssignProcessToJobObject\s*\(\s*hJob\s*,\s*pi\.hProcess\s*\)\s*\)\s*\{.*?TerminateProcess\s*\(\s*pi\.hProcess\s*,\s*1\s*\)\s*;.*?throw\s+new\s+InvalidOperationException\s*\(\s*"AssignProcessToJobObject failed:\s*"\s*\+\s*err\s*\)\s*;.*?\}\s*WriteReadyMarker'
+Assert 'RunCommandInJob defines ReaderJoinTimeoutMs=5000' ($nativeSource -match 'ReaderJoinTimeoutMs\s*=\s*5000')
+Assert-Match 'RunCommandInJob terminates job before bounded reader joins' $nativeSource 'TryTerminateJobObject\s*\(\s*hJob,\s*exitCode\s*\).*?ReaderJoinTimeoutMs.*?TryJoinThreadUntil\s*\(\s*stdoutThread,\s*deadlineTicks\s*\).*?TryJoinThreadUntil\s*\(\s*stderrThread,\s*deadlineTicks\s*\)'
+Assert 'RunCommandInJob never calls Thread.Abort' (-not ($nativeSource -match 'Thread\.Abort'))
+Assert-Match 'CopyPipeToLog catches disposed or IO exceptions' $nativeSource 'catch\s*\(\s*ObjectDisposedException(?:\s+\w+)?\s*\).*?catch\s*\(\s*IOException(?:\s+\w+)?\s*\)'
+Assert 'RunCommandInJob declares CancelSynchronousIo fallback' ($nativeSource -match 'CancelSynchronousIo')
+Assert-Match 'RunCommandInJob cancels reader IO before read handle close' $nativeSource 'CancelReaderIo\s*\(\s*stdoutState,\s*logStream,\s*logLock\s*\)\s*;\s*DisposeHandleSafe\s*\(\s*ref\s+stdoutHandle\s*\).*?CancelReaderIo\s*\(\s*stderrState,\s*logStream,\s*logLock\s*\)\s*;\s*DisposeHandleSafe\s*\(\s*ref\s+stderrHandle\s*\)'
+
+function Invoke-NativeJobCommand {
+  param(
+    [string]$CommandText,
+    [uint32]$TimeoutMs = 20000
+  )
+  $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-job-native-test-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+  $cmdFile = Join-Path $tmp 'run.cmd'
+  $logFile = Join-Path $tmp 'job.log'
+  $readyFile = Join-Path $tmp 'job.ready'
+  try {
+    [System.IO.File]::WriteAllText($cmdFile, $CommandText, (New-Object System.Text.UTF8Encoding($false)))
+    if (-not ('BridgeJobNative' -as [type])) {
+      Add-Type -TypeDefinition $nativeSource -Language CSharp
+    }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $code = [BridgeJobNative]::RunCommandInJob(('Global\BridgeJobNativeTest-' + [guid]::NewGuid().ToString('N')), $env:ComSpec, $cmdFile, $tmp, $logFile, $readyFile, $TimeoutMs)
+    $sw.Stop()
+    $log = ''
+    if (Test-Path -LiteralPath $logFile) {
+      $log = [System.IO.File]::ReadAllText($logFile, [System.Text.Encoding]::UTF8)
+    }
+    return [pscustomobject]@{ code = $code; elapsedMs = [int]$sw.ElapsedMilliseconds; log = $log }
+  } finally {
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+try {
+  $normal = Invoke-NativeJobCommand -CommandText "@echo off`r`necho normal-out`r`necho normal-err 1>&2`r`nexit /b 0`r`n"
+  Assert 'runtime normal command exits 0' ([int]$normal.code -eq 0)
+  Assert 'runtime normal command captures stdout' ([string]$normal.log -match 'normal-out')
+  Assert 'runtime normal command captures stderr' ([string]$normal.log -match 'normal-err')
+
+  $heldPipe = @'
+@echo off
+start "" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Console]::Out.WriteLine('grandchild-holding-stdout'); Start-Sleep -Seconds 30"
+echo parent-exit
+exit /b 0
+'@
+  $hung = Invoke-NativeJobCommand -CommandText ($heldPipe + "`r`n") -TimeoutMs 20000
+  Assert 'runtime grandchild-held stdout exits 0' ([int]$hung.code -eq 0)
+  Assert 'runtime grandchild-held stdout returns within 12s' ([int]$hung.elapsedMs -lt 12000)
+  Assert 'runtime grandchild-held stdout keeps parent output' ([string]$hung.log -match 'parent-exit')
+} catch {
+  Assert ('runtime native job regression threw: ' + $_.Exception.Message) $false
+}
 
 Write-Host "RESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 } else { exit 0 }

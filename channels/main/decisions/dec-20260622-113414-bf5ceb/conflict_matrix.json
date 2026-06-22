@@ -1,0 +1,44 @@
+{
+    "consensus_atoms":  [
+                            "DA-001",
+                            "DA-003",
+                            "DA-004",
+                            "DA-006",
+                            "DA-007",
+                            "DA-008"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "DA-001",
+                                           "DA-002"
+                                       ],
+                          "axis":  "Thread Join Timeout Strategy",
+                          "impact":  "high"
+                      },
+                      {
+                          "atom_ids":  [
+                                           "DA-004",
+                                           "DA-005"
+                                       ],
+                          "axis":  "Thread Termination Mechanism",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "DA-001",
+                        "severity":  "minor",
+                        "why":  "Implementing separate per-thread timeouts (e.g., 5000ms for stdout, 5000ms for stderr) can lead to a maximum total wait time of 10000ms if both threads hang and are joined sequentially. This makes the overall command execution less responsive and predictable compared to a single shared wall-clock deadline.",
+                        "fix":  "Reconsider DA-001 in favor of a single shared wall-clock deadline for both reader thread joins, as proposed in DA-002, to ensure a consistent and bounded maximum total wait time.",
+                        "cost":  "low"
+                    },
+                    {
+                        "atom_id":  "DA-005",
+                        "severity":  "major",
+                        "why":  "`Thread.Abort` is a dangerous and unreliable mechanism for thread termination. It can lead to corrupted application state, unreleased resources, and unpredictable behavior, especially if the thread is holding locks or in a critical section. Prioritizing handle/stream closure (as suggested in DA-004 and DA-003) is a much safer and more robust approach to unblocking reader threads.",
+                        "fix":  "Remove the proposal to use `Thread.Abort`. Rely solely on closing the read-side pipe handle or underlying read stream (DA-003) to unblock and allow reader threads to exit gracefully. If threads still do not exit after a reasonable grace period post-handle closure, consider logging the issue and moving on, rather than forcefully aborting.",
+                        "cost":  "low"
+                    }
+                ]
+}

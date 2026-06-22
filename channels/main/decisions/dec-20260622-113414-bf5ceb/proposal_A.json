@@ -1,0 +1,73 @@
+{
+    "proposer":  "A",
+    "understanding":  "The task is to fix a high-risk reliability bug in Get-BridgeJobNativeSourceEmbeddedExecution where stdoutThread and stderrThread are started but may never be joined with a bounded timeout. If one reader thread hangs, RunCommandInJob can fail to return and leak thread/process handles. The parent fix must not be treated as deployable until canary evidence includes successful driver.ps1 -SelfTest, successful smoke.ps1, and approved rollback notes.",
+    "summary":  "Implement bounded joins for stdout/stderr reader threads, close or dispose the corresponding read handles when joins time out, and make the cleanup path idempotent in finally blocks. The PR should contain the code fix, a targeted regression test or self-test scenario for a stuck pipe reader if the harness supports it, canary evidence artifacts, and rollback notes. Deployment should be gated: build patched commit, run canary only, collect driver.ps1 -SelfTest and smoke.ps1 logs with exit codes, review handle/thread behavior, approve rollback notes, then promote only after canary stability.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Add a named timeout constant for stdout/stderr reader thread joins, defaulting to 5000 ms.",
+                               "reason":  "Every TryJoinThread call in this code path needs an explicit upper bound so RunCommandInJob cannot hang indefinitely.",
+                               "tradeoff":  "A too-short timeout may force cleanup while a slow reader is still draining output; 5000 ms is conservative enough for normal completion while bounding failure cases.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "On join timeout, close or dispose the read-side pipe handle associated with the stuck reader before attempting one final short join.",
+                               "reason":  "Closing the read handle is the least invasive way to unblock a reader thread blocked on pipe IO and prevent process/thread handle leaks.",
+                               "tradeoff":  "Output captured after the timeout may be truncated, but returning and cleaning resources is more important than preserving output from an unhealthy execution path.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Keep all process, job, pipe, and thread cleanup in finally blocks and make disposal idempotent.",
+                               "reason":  "The failure mode is cleanup-related, so every path including exceptions, timeouts, and process-exit races must release handles exactly once.",
+                               "tradeoff":  "This adds some defensive structure and local helper code, but it reduces regression risk in a high-risk control-plane path.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Avoid Thread.Abort as the primary mechanism; use handle closure and bounded joins first.",
+                               "reason":  "Thread.Abort is unsafe and can leave shared state inconsistent; closing the blocking IO primitive is a cleaner recovery path.",
+                               "tradeoff":  "On older runtimes or unusual hangs, a thread may still survive briefly, so telemetry/logging should report join timeout events.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Gate the parent deployment on canary evidence from the exact patched commit.",
+                               "reason":  "The task explicitly requires the parent to run only with canary evidence, driver.ps1 -SelfTest, smoke.ps1, and rollback notes.",
+                               "tradeoff":  "This slows deployment, but it is appropriate for a high-risk control-plane reliability change.",
+                               "confidence":  0.96
+                           }
+                       ],
+    "assumptions":  [
+                        "Get-BridgeJobNativeSourceEmbeddedExecution embeds or emits native/source code that includes RunCommandInJob, stdoutThread, stderrThread, and TryJoinThread.",
+                        "The existing code already has a TryJoinThread helper or equivalent join wrapper that can accept a timeout parameter.",
+                        "The read handles for stdout and stderr are accessible in the cleanup scope or can be captured safely for disposal.",
+                        "driver.ps1 -SelfTest and smoke.ps1 are the required acceptance scripts for canary evidence in this repository.",
+                        "Rollback can be performed by reverting the patched commit or redeploying the previously verified commit."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Reader thread timeout may truncate stdout or stderr for pathological commands.",
+                      "severity":  "medium",
+                      "mitigation":  "Log timeout events with stream name, timeout duration, process id, and captured output length; preserve all output captured before forced cleanup."
+                  },
+                  {
+                      "risk":  "Closing a handle while another cleanup path also disposes it could introduce ObjectDisposedException or invalid handle errors.",
+                      "severity":  "medium",
+                      "mitigation":  "Centralize cleanup through SafeHandle/Dispose helpers and make close operations idempotent and exception-safe."
+                  },
+                  {
+                      "risk":  "The process may still be alive after pipe reader recovery.",
+                      "severity":  "high",
+                      "mitigation":  "Ensure process termination/wait cleanup remains bounded and that process handles are closed in finally regardless of reader outcome."
+                  },
+                  {
+                      "risk":  "Canary scripts pass but do not exercise the hung reader condition.",
+                      "severity":  "medium",
+                      "mitigation":  "Add or identify a targeted regression scenario that simulates a stuck stdout/stderr reader or blocked pipe and confirm RunCommandInJob returns."
+                  },
+                  {
+                      "risk":  "Deployment violates the operator constraint by running the parent before evidence is collected.",
+                      "severity":  "high",
+                      "mitigation":  "Use an explicit admission gate requiring attached logs for driver.ps1 -SelfTest, smoke.ps1, commit hash, canary environment, timestamps, and approved rollback notes."
+                  }
+              ],
+    "minimal_version":  "Patch only Get-BridgeJobNativeSourceEmbeddedExecution/RunCommandInJob. Introduce PipeReaderJoinTimeoutMs = 5000. Replace unbounded or missing joins with TryJoinThread(stdoutThread, PipeReaderJoinTimeoutMs) and TryJoinThread(stderrThread, PipeReaderJoinTimeoutMs). If either join fails, close/dispose that stream\u0027s read handle, record a timeout diagnostic, and make one final bounded join attempt. Ensure process, job, stdout/stderr handles, and thread-related resources are released in finally. PR contents: code diff, focused regression note, canary checklist, rollback section. Canary procedure: deploy patched commit to canary only; run driver.ps1 -SelfTest and record exit code 0; run smoke.ps1 and record exit code 0; inspect logs for join-timeout diagnostics and unexpected handle growth; attach evidence to the PR; require rollback notes approval before parent execution. Rollback: stop canary rollout, redeploy the previous verified commit, rerun smoke.ps1, and remove the patched commit from promotion.",
+    "advanced_version":  "In addition to the minimal patch, add a small local helper such as JoinReaderOrCloseHandle(streamName, thread, readHandle, timeoutMs) to avoid divergent stdout/stderr behavior, emit structured diagnostics for timeout/cleanup outcomes, and add an automated regression test using a controlled child process or mocked pipe reader that never completes until its handle is closed. Track before/after process and handle counts in the canary evidence where practical. PR should include a deployment/admission document with exact commands, expected outputs, evidence file locations, approval owner for rollback notes, and a promotion rule requiring canary stability over an agreed observation window before production rollout."
+}

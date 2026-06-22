@@ -1,0 +1,175 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.72,
+                                     "feasibility":  0.95,
+                                     "impact":  0.62,
+                                     "simplicity":  0.95,
+                                     "risk_reduction":  0.58,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        "minor: separate per-thread 5000ms joins can allow up to 10000ms total wait when both readers hang"
+                                    ],
+                      "reason":  "A named timeout constant is useful and cheap, but the join policy should be modified to use the constant as a shared wall-clock deadline rather than as independent sequential per-thread waits.",
+                      "total":  0.7845
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.85,
+                                     "impact":  0.86,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A single deadline gives predictable bounded behavior for both reader joins after process exit and directly addresses the responsiveness problem introduced by sequential per-thread timeouts.",
+                      "total":  0.866
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.76,
+                                     "impact":  0.95,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Closing or disposing the read-side stream is the right primary unblocking mechanism for stuck pipe reader threads and has strong failure containment value.",
+                      "total":  0.8415
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.96,
+                                     "feasibility":  0.95,
+                                     "impact":  0.86,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Avoiding Thread.Abort materially reduces risk of corrupted state and unreleased resources while preserving a clear recovery path through handle or stream closure.",
+                      "total":  0.911
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "reject",
+                      "scores":  {
+                                     "correctness":  0.15,
+                                     "feasibility":  0.7,
+                                     "impact":  0.35,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.1,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        "major: Thread.Abort is unsafe and can leave process state inconsistent",
+                                        "conflicts with safer DA-004/DA-003 recovery strategy"
+                                    ],
+                      "reason":  "Forcefully aborting reader threads is not an acceptable primary or fallback recovery strategy here; close the stream, allow graceful exit, and log any residual failure instead.",
+                      "total":  0.4425
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.82,
+                                     "impact":  0.88,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.78
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Finally-based cleanup with idempotent disposal is necessary for reliable recovery across process, job, pipe, stream, and thread lifecycle failures.",
+                      "total":  0.846
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.86,
+                                     "risk_reduction":  0.88,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Deployment should be blocked on concrete canary evidence from the exact patched commit, with exit codes verified for both self-test and smoke coverage.",
+                      "total":  0.904
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.94,
+                                     "impact":  0.72,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.86
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Clear rollback instructions are low-cost, highly reversible, and especially important because rollback must not depend on the patched runtime behaving correctly.",
+                      "total":  0.856
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.76,
+                                     "feasibility":  0.72,
+                                     "impact":  0.82,
+                                     "simplicity":  0.62,
+                                     "risk_reduction":  0.82,
+                                     "specificity":  0.76
+                                 },
+                      "penalties":  [
+                                        "needs validation that terminating the job after observed child exit does not mask legitimate cleanup or output-drain behavior"
+                                    ],
+                      "reason":  "Terminating the job before reader joins may help release inherited pipe handles held by descendants, but it should be conditioned and documented carefully to avoid disrupting expected process-tree cleanup semantics.",
+                      "total":  0.749
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.94,
+                                     "feasibility":  0.62,
+                                     "impact":  0.9,
+                                     "simplicity":  0.42,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A dedicated regression test is higher cost, but it is the strongest way to prove the hung-reader fix works and stays bounded without leaking handles or threads.",
+                      "total":  0.787
+                  }
+              ]
+}

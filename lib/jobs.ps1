@@ -98,6 +98,9 @@ public static class BridgeJobNative {
   private const UInt32 WAIT_TIMEOUT = 0x00000102;
   private const UInt32 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
   private const UInt32 JOB_OBJECT_TERMINATE = 0x0008;
+  private const UInt32 THREAD_TERMINATE = 0x0001;
+  private const int ReaderJoinTimeoutMs = 5000;
+  private const int ReaderCancelGraceMs = 250;
   private const int JobObjectExtendedLimitInformation = 9;
 
   [StructLayout(LayoutKind.Sequential)]
@@ -223,6 +226,15 @@ function Get-BridgeJobNativeSourceEmbeddedInterop {
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool GetExitCodeProcess(IntPtr hProcess, out UInt32 lpExitCode);
 
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern UInt32 GetCurrentThreadId();
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr OpenThread(UInt32 dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, UInt32 dwThreadId);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool CancelSynchronousIo(IntPtr hThread);
+
   public static bool TerminateNamedJob(string jobName, UInt32 exitCode) {
     if (String.IsNullOrWhiteSpace(jobName)) return false;
     IntPtr hJob = OpenJobObject(JOB_OBJECT_TERMINATE, false, jobName);
@@ -263,10 +275,14 @@ function Get-BridgeJobNativeSourceEmbeddedExecution {
     bool processCreated = false;
     bool processResumed = false;
     FileStream logStream = null;
+    object logLock = new object();
     Thread stdoutThread = null;
     Thread stderrThread = null;
     SafeFileHandle stdoutSafeHandle = null;
     SafeFileHandle stderrSafeHandle = null;
+    bool readerCleanupComplete = false;
+    ReaderState stdoutReaderState = new ReaderState("stdout");
+    ReaderState stderrReaderState = new ReaderState("stderr");
 
     try {
       hJob = CreateJobObject(IntPtr.Zero, jobName);
@@ -311,15 +327,14 @@ function Get-BridgeJobNativeSourceEmbeddedExecution {
       WriteReadyMarker(readyPath, pi.dwProcessId);
 
       logStream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-      object logLock = new object();
       stdoutSafeHandle = new SafeFileHandle(stdoutRead, true);
       stdoutRead = IntPtr.Zero;
       stderrSafeHandle = new SafeFileHandle(stderrRead, true);
       stderrRead = IntPtr.Zero;
       SafeFileHandle stdoutThreadHandle = stdoutSafeHandle;
       SafeFileHandle stderrThreadHandle = stderrSafeHandle;
-      stdoutThread = new Thread(delegate() { CopyPipeToLog(stdoutThreadHandle, logStream, logLock); });
-      stderrThread = new Thread(delegate() { CopyPipeToLog(stderrThreadHandle, logStream, logLock); });
+      stdoutThread = new Thread(delegate() { CopyPipeToLog(stdoutThreadHandle, logStream, logLock, stdoutReaderState); });
+      stderrThread = new Thread(delegate() { CopyPipeToLog(stderrThreadHandle, logStream, logLock, stderrReaderState); });
       stdoutThread.IsBackground = true;
       stderrThread.IsBackground = true;
       stdoutThread.Start();
@@ -331,13 +346,15 @@ function Get-BridgeJobNativeSourceEmbeddedExecution {
 
       UInt32 waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
       if (waitResult == WAIT_TIMEOUT) {
-        TerminateJobObject(hJob, 1);
-        TryJoinThread(stdoutThread, 5000);
-        TryJoinThread(stderrThread, 5000);
+        RecoverReaderThreads(hJob, stdoutThread, stderrThread, stdoutReaderState, stderrReaderState, ref stdoutSafeHandle, ref stderrSafeHandle, logStream, logLock, "process-timeout", 1);
+        readerCleanupComplete = true;
         throw new InvalidOperationException("RunCommandInJob timed out after " + timeoutMs + " ms");
       }
-      TryJoinThread(stdoutThread, -1);
-      TryJoinThread(stderrThread, -1);
+
+      // The direct child has exited. Terminate the job before joining readers so
+      // descendants cannot keep stdout/stderr write handles open indefinitely.
+      RecoverReaderThreads(hJob, stdoutThread, stderrThread, stdoutReaderState, stderrReaderState, ref stdoutSafeHandle, ref stderrSafeHandle, logStream, logLock, "process-exit", 0);
+      readerCleanupComplete = true;
 
       UInt32 exitCode;
       if (!GetExitCodeProcess(pi.hProcess, out exitCode)) throw LastError("GetExitCodeProcess");
@@ -352,8 +369,13 @@ function Get-BridgeJobNativeSourceEmbeddedExecution {
       CloseHandleSafe(ref stderrWrite);
       CloseHandleSafe(ref stdinRead);
       CloseHandleSafe(ref stdinWrite);
-      TryJoinThread(stdoutThread, 1000);
-      TryJoinThread(stderrThread, 1000);
+      if (!readerCleanupComplete) {
+        RecoverReaderThreads(hJob, stdoutThread, stderrThread, stdoutReaderState, stderrReaderState, ref stdoutSafeHandle, ref stderrSafeHandle, logStream, logLock, "finally", 1);
+        readerCleanupComplete = true;
+      } else {
+        TryJoinThread(stdoutThread, 0);
+        TryJoinThread(stderrThread, 0);
+      }
       DisposeHandleSafe(ref stdoutSafeHandle);
       DisposeHandleSafe(ref stderrSafeHandle);
       if (logStream != null) logStream.Dispose();
@@ -382,16 +404,29 @@ function Get-BridgeJobNativeSourceEmbeddedExecution {
 
 function Get-BridgeJobNativeSourceEmbeddedHelpers {
 @'
-  private static void CopyPipeToLog(SafeFileHandle readHandle, FileStream logStream, object logLock) {
-    using (FileStream pipeStream = new FileStream(readHandle, FileAccess.Read)) {
-      byte[] buffer = new byte[4096];
-      int count;
-      while ((count = pipeStream.Read(buffer, 0, buffer.Length)) > 0) {
-        lock (logLock) {
-          logStream.Write(buffer, 0, count);
-          logStream.Flush();
+  private sealed class ReaderState {
+    public readonly string Name;
+    public UInt32 NativeThreadId;
+    public ReaderState(string name) { Name = name; NativeThreadId = 0; }
+  }
+
+  private static void CopyPipeToLog(SafeFileHandle readHandle, FileStream logStream, object logLock, ReaderState state) {
+    try {
+      if (state != null) state.NativeThreadId = GetCurrentThreadId();
+      using (FileStream pipeStream = new FileStream(readHandle, FileAccess.Read)) {
+        byte[] buffer = new byte[4096];
+        int count;
+        while ((count = pipeStream.Read(buffer, 0, buffer.Length)) > 0) {
+          lock (logLock) {
+            logStream.Write(buffer, 0, count);
+            logStream.Flush();
+          }
         }
       }
+    } catch (ObjectDisposedException ex) {
+      AppendLogSafe(logStream, logLock, "[bridge-job] reader stopped after disposal: " + ex.GetType().Name);
+    } catch (IOException ex) {
+      AppendLogSafe(logStream, logLock, "[bridge-job] reader stopped after IO exception: " + ex.GetType().Name);
     }
   }
 
@@ -445,15 +480,108 @@ function Get-BridgeJobNativeSourceEmbeddedHelpers {
     }
   }
 
-  private static void TryJoinThread(Thread thread, int millisecondsTimeout) {
-    if (thread == null) return;
+  private static bool TryJoinThread(Thread thread, int millisecondsTimeout) {
+    if (thread == null) return true;
     try {
       if (millisecondsTimeout < 0) {
         thread.Join();
+        return true;
       } else {
-        thread.Join(millisecondsTimeout);
+        return thread.Join(millisecondsTimeout);
       }
-    } catch (ThreadStateException) {}
+    } catch (ThreadStateException) {
+      return true;
+    }
+  }
+
+  private static bool TryJoinThreadUntil(Thread thread, long deadlineTicks) {
+    if (thread == null) return true;
+    int remainingMs = RemainingMillis(deadlineTicks);
+    return TryJoinThread(thread, remainingMs);
+  }
+
+  private static int RemainingMillis(long deadlineTicks) {
+    long remainingTicks = deadlineTicks - DateTime.UtcNow.Ticks;
+    if (remainingTicks <= 0) return 0;
+    long remainingMs = remainingTicks / TimeSpan.TicksPerMillisecond;
+    if (remainingMs <= 0) return 1;
+    if (remainingMs > Int32.MaxValue) return Int32.MaxValue;
+    return (int)remainingMs;
+  }
+
+  private static void RecoverReaderThreads(
+    IntPtr hJob,
+    Thread stdoutThread,
+    Thread stderrThread,
+    ReaderState stdoutState,
+    ReaderState stderrState,
+    ref SafeFileHandle stdoutHandle,
+    ref SafeFileHandle stderrHandle,
+    FileStream logStream,
+    object logLock,
+    string reason,
+    UInt32 exitCode) {
+    TryTerminateJobObject(hJob, exitCode);
+    long deadlineTicks = DateTime.UtcNow.AddMilliseconds(ReaderJoinTimeoutMs).Ticks;
+    bool stdoutJoined = TryJoinThreadUntil(stdoutThread, deadlineTicks);
+    bool stderrJoined = TryJoinThreadUntil(stderrThread, deadlineTicks);
+
+    if (!stdoutJoined) {
+      AppendLogSafe(logStream, logLock, "[bridge-job] stdout reader did not exit within ReaderJoinTimeoutMs=" + ReaderJoinTimeoutMs + " after " + reason + "; cancelling reader IO and closing read handle.");
+      CancelReaderIo(stdoutState, logStream, logLock);
+      DisposeHandleSafe(ref stdoutHandle);
+      TryJoinThread(stdoutThread, ReaderCancelGraceMs);
+      if (stdoutThread != null && stdoutThread.IsAlive) {
+        AppendLogSafe(logStream, logLock, "[bridge-job] stdout reader still alive after read-handle close; returning with residual reader leak.");
+      }
+    }
+    if (!stderrJoined) {
+      AppendLogSafe(logStream, logLock, "[bridge-job] stderr reader did not exit within ReaderJoinTimeoutMs=" + ReaderJoinTimeoutMs + " after " + reason + "; cancelling reader IO and closing read handle.");
+      CancelReaderIo(stderrState, logStream, logLock);
+      DisposeHandleSafe(ref stderrHandle);
+      TryJoinThread(stderrThread, ReaderCancelGraceMs);
+      if (stderrThread != null && stderrThread.IsAlive) {
+        AppendLogSafe(logStream, logLock, "[bridge-job] stderr reader still alive after read-handle close; returning with residual reader leak.");
+      }
+    }
+  }
+
+  private static void TryTerminateJobObject(IntPtr hJob, UInt32 exitCode) {
+    if (hJob == IntPtr.Zero) return;
+    try { TerminateJobObject(hJob, exitCode); } catch {}
+  }
+
+  private static void CancelReaderIo(ReaderState state, FileStream logStream, object logLock) {
+    if (state == null || state.NativeThreadId == 0) {
+      AppendLogSafe(logStream, logLock, "[bridge-job] reader native thread id was not registered; cannot cancel synchronous IO.");
+      return;
+    }
+    IntPtr hThread = IntPtr.Zero;
+    try {
+      hThread = OpenThread(THREAD_TERMINATE, false, state.NativeThreadId);
+      if (hThread == IntPtr.Zero) {
+        AppendLogSafe(logStream, logLock, "[bridge-job] OpenThread failed for " + state.Name + " reader during CancelSynchronousIo: " + Marshal.GetLastWin32Error());
+        return;
+      }
+      if (!CancelSynchronousIo(hThread)) {
+        AppendLogSafe(logStream, logLock, "[bridge-job] CancelSynchronousIo returned false for " + state.Name + " reader: " + Marshal.GetLastWin32Error());
+      }
+    } catch (Exception ex) {
+      AppendLogSafe(logStream, logLock, "[bridge-job] CancelSynchronousIo threw for " + state.Name + " reader: " + ex.GetType().Name);
+    } finally {
+      if (hThread != IntPtr.Zero) CloseHandle(hThread);
+    }
+  }
+
+  private static void AppendLogSafe(FileStream logStream, object logLock, string message) {
+    if (logStream == null) return;
+    try {
+      byte[] data = Encoding.UTF8.GetBytes(message + Environment.NewLine);
+      lock (logLock) {
+        logStream.Write(data, 0, data.Length);
+        logStream.Flush();
+      }
+    } catch {}
   }
 }
 '@

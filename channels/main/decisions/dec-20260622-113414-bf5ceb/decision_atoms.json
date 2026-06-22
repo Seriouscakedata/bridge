@@ -1,0 +1,124 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Add a named timeout constant for stdout/stderr reader thread joins, defaulting to 5000 ms.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Thread Management",
+                      "test":  "Verify `TryJoinThread` calls for `stdoutThread` and `stderrThread` use a named 5000ms timeout constant.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Implement a single shared wall-clock deadline for stdout/stderr reader thread joins (e.g., 5000 ms total) rather than per-thread timeouts.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Thread Management",
+                      "test":  "Verify a single shared timeout mechanism is used for both reader thread joins, starting after process exit, with a 5000ms default.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "On join timeout, close or dispose the read-side pipe handle or underlying read stream associated with the stuck reader.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resource Cleanup",
+                      "test":  "Simulate reader hang, verify the corresponding read handle/stream is closed/disposed, and `RunCommandInJob` returns.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Avoid Thread.Abort as the primary mechanism for unblocking reader threads; prioritize handle/stream closure.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Thread Management",
+                      "test":  "Code review confirms `Thread.Abort` is not used for primary reader thread recovery.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "If a thread does not join within the timeout, abort the thread.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Thread Management",
+                      "test":  "Simulate thread hang, verify `Thread.Abort` is called on the stuck reader thread.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Keep all process, job, pipe, stream, and thread-related resource cleanup in finally blocks and make disposal idempotent.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resource Cleanup",
+                      "test":  "Verify all resource disposal occurs in `finally` blocks and is idempotent (e.g., using a once-flag or null checks).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Gate deployment on canary evidence, including successful execution and verified exit codes for `driver.ps1 -SelfTest` and `smoke.ps1` from the exact patched commit.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Deployment",
+                      "test":  "Verify deployment pipeline enforces canary gate with `driver.ps1 -SelfTest` and `smoke.ps1` passing (exit code 0) and evidence attached.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "Document comprehensive rollback notes, including steps to revert the code change (e.g., `git restore`) and restore previous behavior, executed outside the patched runtime.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Rollback",
+                      "test":  "Review rollback documentation for completeness, clarity, and independence from patched runtime.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "statement":  "Terminate the Job Object after the child process exits and BEFORE attempting to join reader threads.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Resource Cleanup",
+                      "test":  "Verify `TerminateJobObject` is called after process exit and before reader thread joins.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "statement":  "Ship a dedicated regression self-test that reproduces the hung reader condition (e.g., grandchild holds stdout open) and asserts bounded return time with no handle/thread leaks.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Execute regression test; verify it reproduces hang, `RunCommandInJob` returns within bound, and no handle/thread leaks.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  }
+              ]
+}
