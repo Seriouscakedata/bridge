@@ -17,20 +17,38 @@
       if ($psubs.Count -lt 2) {
         Add-Message -From system -Text "🧩 PARALLEL проигнорирован: нужно >=2 под-задачи через ' ;; '." -Kind event | Out-Null
       } else {
-        Add-Message -From system -Text "🧩 Параллельная команда: $($psubs.Count) воркеров в worktrees репозитория $prepo. Жду завершения (без таймаута)..." -Kind event | Out-Null
-        $pcount = $psubs.Count
-        $tick = ({ param() Update-State ({ param($s) $s.heartbeat=(Get-Date).ToString('o'); $s.status_text="🧩 Параллельные воркеры ($pcount)..." }.GetNewClosure()) | Out-Null }).GetNewClosure()
-        $pres = $null
-        try { $pres = Invoke-CodexParallel -RepoRoot $prepo -Subtasks $psubs -OnTick $tick -TimeoutSec 3600 } catch { Add-Message -From system -Text "🧩 Параллель: ошибка — $($_.Exception.Message)" -Kind event | Out-Null }
-        if ($pres) {
-          if ($pres.error) {
-            Add-Message -From system -Text "🧩 Параллель не запущена: $($pres.error)" -Kind event | Out-Null
-          } else {
-            $plines = foreach ($pr in $pres.results) {
-              $stat = if ($pr.mergeOk) { 'влито ✅' } elseif ($pr.conflict) { 'КОНФЛИКТ ⚠ (разрешить вручную)' } else { 'не влито ❌' }
-              "• $($pr.name): $stat — " + (($pr.subtask -replace '\s+',' '))
+        $preflightErr = $null
+        if ([string]::IsNullOrWhiteSpace($prepo)) {
+          $preflightErr = "путь пустой или не указан"
+        } elseif ($prepo -match '[<>]|placeholder') {
+          $preflightErr = "путь выглядит как placeholder: $prepo"
+        } elseif (-not [System.IO.Path]::IsPathRooted($prepo)) {
+          $preflightErr = "путь не абсолютный: $prepo"
+        } elseif (-not (Test-Path $prepo -PathType Container)) {
+          $preflightErr = "директория не существует: $prepo"
+        } elseif (-not (Test-Path (Join-Path $prepo '.git'))) {
+          $preflightErr = "не является git-репозиторием (нет .git): $prepo"
+        }
+        $preflightSuffix = if ($preflightErr) { " | ❌ $preflightErr" } else { ' | ✅ OK' }
+        Add-Message -From system -Text "🧩 PARALLEL preflight: repo=$prepo | задач=$($psubs.Count)$preflightSuffix" -Kind event | Out-Null
+        if ($preflightErr) {
+          Add-Message -From system -Text "❌ PARALLEL отклонён preflight: $preflightErr. Исправь путь в PARALLEL-маркере и повтори." -Kind event | Out-Null
+        } else {
+          Add-Message -From system -Text "🧩 Параллельная команда: $($psubs.Count) воркеров в worktrees репозитория $prepo. Жду завершения (без таймаута)..." -Kind event | Out-Null
+          $pcount = $psubs.Count
+          $tick = ({ param() Update-State ({ param($s) $s.heartbeat=(Get-Date).ToString('o'); $s.status_text="🧩 Параллельные воркеры ($pcount)..." }.GetNewClosure()) | Out-Null }).GetNewClosure()
+          $pres = $null
+          try { $pres = Invoke-CodexParallel -RepoRoot $prepo -Subtasks $psubs -OnTick $tick -TimeoutSec 3600 } catch { Add-Message -From system -Text "🧩 Параллель: ошибка — $($_.Exception.Message)" -Kind event | Out-Null }
+          if ($pres) {
+            if ($pres.error) {
+              Add-Message -From system -Text "🧩 Параллель не запущена: $($pres.error)" -Kind event | Out-Null
+            } else {
+              $plines = foreach ($pr in $pres.results) {
+                $stat = if ($pr.mergeOk) { 'влито ✅' } elseif ($pr.conflict) { 'КОНФЛИКТ ⚠ (разрешить вручную)' } else { 'не влито ❌' }
+                "• $($pr.name): $stat — " + (($pr.subtask -replace '\s+',' '))
+              }
+              Add-Message -From system -Text ("🧩 Параллель завершена: влито $($pres.merged), конфликтов $($pres.conflicts).`n" + ($plines -join "`n") + "`n`nПланировщик: проверь результат ЗАПУСКОМ, разреши конфликты если есть, доведи до DONE.") -Kind event | Out-Null
             }
-            Add-Message -From system -Text ("🧩 Параллель завершена: влито $($pres.merged), конфликтов $($pres.conflicts).`n" + ($plines -join "`n") + "`n`nПланировщик: проверь результат ЗАПУСКОМ, разреши конфликты если есть, доведи до DONE.") -Kind event | Out-Null
           }
         }
       }
