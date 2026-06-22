@@ -635,6 +635,7 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
     Budgets = @($budget)
     ExitCode = $exitCode
     TimedOut = $timedOut
+    TimedOutTests = @($timedOutTestsList)
     Message = $message
   }
 }
@@ -647,10 +648,12 @@ function Set-DriverDoneGateRegressionTimeoutInconclusiveState {
   $exitCode = 0
   $timedOut = $false
   $budgets = @()
+  $timedOutTests = @()
   try { $attempts = [int]$Record.Attempts } catch {}
   try { $exitCode = [int]$Record.ExitCode } catch {}
   try { $timedOut = [bool]$Record.TimedOut } catch {}
   try { $budgets = @($Record.Budgets | ForEach-Object { [int]$_ }) } catch { $budgets = @() }
+  try { $timedOutTests = @($Record.TimedOutTests | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [string]$_ } | Select-Object -Unique) } catch { $timedOutTests = @() }
   $ts = (Get-Date).ToString('o')
 
   Update-State ({
@@ -665,6 +668,7 @@ function Set-DriverDoneGateRegressionTimeoutInconclusiveState {
     $s | Add-Member -NotePropertyName gate_regression_last_budgets -NotePropertyValue @($budgets) -Force
     $s | Add-Member -NotePropertyName gate_regression_last_exit_code -NotePropertyValue $exitCode -Force
     $s | Add-Member -NotePropertyName gate_regression_last_timed_out -NotePropertyValue $timedOut -Force
+    $s | Add-Member -NotePropertyName gate_regression_last_timed_out_tests -NotePropertyValue @($timedOutTests) -Force
     $s | Add-Member -NotePropertyName gate_regression_last_at -NotePropertyValue $ts -Force
   }.GetNewClosure()) | Out-Null
 }
@@ -912,7 +916,7 @@ function Invoke-DriverDoneGateChecksSequential {
   }
   if ([bool]$Plan.GateSuiteNeeded) {
     $useScope = [string]::IsNullOrWhiteSpace([string]$Plan.GateScopeError)
-      $gateResult = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$useScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutFallbackAdded=$false; TimeoutFallbackBudget=0; TimeoutInconclusive=$false; NonTimeoutFailureSeen=$false }
+      $gateResult = [ordered]@{ Name='gate-regression'; Skipped=$false; Ok=$false; ExitCode=1; TimedOut=$false; Attempts=0; RuntimeError=''; Scope=@(); ScopeApplied=$useScope; TimeoutSchedule=@(); TimeoutRetryAdded=$false; TimeoutFallbackAdded=$false; TimeoutFallbackBudget=0; TimeoutInconclusive=$false; NonTimeoutFailureSeen=$false; LastTimedOutTests=@() }
     try {
       $verifySelftestPath = Join-Path $BridgeRoot 'lib\verify-selftest.ps1'
       if ($null -eq $GateRegressionSuiteScriptBlock -and -not (Get-Command Invoke-GateRegressionSuite -ErrorAction SilentlyContinue)) {
