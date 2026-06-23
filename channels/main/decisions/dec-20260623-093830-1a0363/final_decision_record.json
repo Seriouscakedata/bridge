@@ -1,0 +1,18 @@
+{
+    "final_answer":  "Pipeline failed before producing a decision: Invoke-SynthesisNormalize: model failed to produce valid DecisionAtoms",
+    "next_step":  "Operator review required (synthesis pipeline error).",
+    "decisions":  [
+
+                  ],
+    "rejected":  [
+
+                 ],
+    "open_questions":  [
+
+                       ],
+    "implementation_plan":  [
+
+                            ],
+    "needs_operator":  true,
+    "pipeline_error":  "Invoke-SynthesisNormalize: model failed to produce valid DecisionAtoms"
+}

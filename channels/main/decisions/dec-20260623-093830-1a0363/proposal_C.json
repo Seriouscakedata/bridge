@@ -1,0 +1,69 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to autonomously diagnose and improve the self-audit system (\u0027МОСТ\u0027) which is critical infrastructure. The system includes deep-audit (LLM agents), intake-gate (finding filter), and audit-chain (scheduler). Known issues: deep-audit LLM agents fail at subprocess/job layer (static works, deep returns error/0 findings in ~22s); intake-gate may discard real findings; audit-chain has a 01:00-06:00 window and floor-binding; overall effectiveness is low (noise, duplication, findings not leading to action). I must study the actual code, produce a durable PROJECT_MAP/PLAN.md with diagnosis and improvement plan, decompose into atomic verifiable changes (1 file per atom), implement them, and verify with real audit runs. Deployment must use bridge_self_admission canary (with rollback) or be atomic and verifiable. The operator authorized autonomy.",
+    "summary":  "I will perform a deep code review of the audit subsystem (deep-audit, intake-gate, audit-chain), identify root causes of failures and inefficiencies, and design targeted improvements. The plan will be documented in PROJECT_MAP/PLAN.md. Key fixes: (1) Fix deep-audit LLM agent subprocess failures by adding robust error handling, retries, and resource isolation; (2) Harden intake-gate filtering with explicit allow/deny rules and logging to prevent loss of real findings; (3) Validate audit-chain scheduling and floor-binding logic; (4) Implement finding deduplication and a feedback loop to measure actionability. All changes will be atomic, verifiable, and deployed via canary. Verification includes real audit runs comparing before/after metrics.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Fix deep-audit LLM agent subprocess failures by wrapping calls in try-catch with exponential backoff retry (max 3), increasing timeout to 60s, and adding process isolation (separate job objects).",
+                               "reason":  "Current failures occur at ~22s with status=error/findings=0, suggesting timeout or resource exhaustion. Static part works, so the issue is in the LLM invocation layer.",
+                               "tradeoff":  "Increased latency per agent (up to 180s worst-case) but higher success rate; may need to adjust audit window or parallelize agents.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Refactor intake-gate (Invoke-BacklogIntakeGate) to use a configurable rule engine with explicit severity/type filters instead of opaque heuristics, and add detailed logging of discarded findings.",
+                               "reason":  "Current filter may silently drop real findings. Explicit rules with audit trail ensure no critical findings are lost and allow tuning.",
+                               "tradeoff":  "Slightly more processing overhead and maintenance of rule set, but prevents false negatives and builds trust.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Implement finding deduplication based on content hash (SHA256 of normalized finding) within a rolling 7-day window.",
+                               "reason":  "Duplicate findings create noise and waste review effort. Dedup reduces noise and focuses attention on unique issues.",
+                               "tradeoff":  "Storage of recent hashes required; risk of suppressing similar but distinct findings if normalization is too aggressive. Mitigated by conservative normalization.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Add a feedback loop: each finding gets a \u0027resolution\u0027 field (accepted/declined/fixed) and a monthly report of finding-to-action ratio.",
+                               "reason":  "Current system lacks measurement of whether findings lead to improvements. This closes the loop and demonstrates effectiveness.",
+                               "tradeoff":  "Requires integration with task tracking; manual step for resolution. Adds value by proving audit ROI.",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "Validate and harden audit-chain scheduling: ensure Start-AuditIfDue respects the 01:00-06:00 window and floor-binding even under system clock changes or missed triggers.",
+                               "reason":  "Scheduling bugs could cause audits to run outside window or skip floors. Explicit checks and a watchdog timer prevent this.",
+                               "tradeoff":  "Slight complexity increase in scheduler; negligible performance impact.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The deep-audit LLM agents fail due to timeout/resource limits, not due to model unavailability or API key issues.",
+                        "The intake-gate filtering logic is currently heuristic and not well-documented; reverse-engineering from code is possible.",
+                        "The audit-chain scheduling is implemented as a cron-like job or loop; floor-binding uses a configuration file or environment variable.",
+                        "Real audit runs can be triggered in a staging/canary environment that mirrors production.",
+                        "The operator\u0027s authorization (\u0027не жди ок, сам одобрил\u0027) covers deployment of canary changes without additional approval.",
+                        "Existing code is in a PowerShell or Python-based codebase accessible for modification."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Changes to deep-audit increase resource consumption (CPU/memory) and may impact other bridge services.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement resource limits per agent; canary deploy and monitor system metrics before full rollout."
+                  },
+                  {
+                      "risk":  "Intake-gate rule changes may inadvertently block legitimate findings or allow too much noise.",
+                      "severity":  "medium",
+                      "mitigation":  "Run in shadow mode first (log what would be filtered) and compare with historical data; allow quick rollback."
+                  },
+                  {
+                      "risk":  "Deduplication may suppress a finding that appears similar but is actually a new, distinct issue.",
+                      "severity":  "low",
+                      "mitigation":  "Use conservative normalization (preserve severity, source, and key fields); provide manual override."
+                  },
+                  {
+                      "risk":  "Real audit run verification may disrupt production if canary is not properly isolated.",
+                      "severity":  "high",
+                      "mitigation":  "Use dedicated canary environment with production-like data but isolated from live traffic; have rollback plan ready."
+                  }
+              ],
+    "minimal_version":  "Fix deep-audit LLM agent failures (retry/timeout) and intake-gate logging (no rule changes yet). Validate audit-chain scheduling. Deploy as atomic changes with real audit run verification.",
+    "advanced_version":  "Minimal version plus: intake-gate configurable rule engine, finding deduplication, feedback loop with resolution tracking, and monthly effectiveness reporting. Full canary deployment with A/B comparison of finding quality metrics."
+}

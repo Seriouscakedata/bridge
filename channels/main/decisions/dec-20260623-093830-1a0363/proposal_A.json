@@ -1,0 +1,91 @@
+{
+    "proposer":  "A",
+    "understanding":  "Задача не про разовый аудит, а про улучшение самой audit-петли МОСТа: nightly audit-chain, static audit, deep multi-agent audit, intake-gate, ledger/usefulness и доведение findings до backlog/actions. По свежим артефактам проблема изменилась: deep-audit уже не полностью падает за 22s, но последние запуски остаются partial. 2026-06-23: audit completed_partial/deep_partial, 6 model agents, 30 findings, required security-model failed json_parse_failed, dependency-model aborted_by_quorum, usefulness около 0.253, action_rate около 0.417, ledger open продолжает расти. Scheduler с окном 01:00-06:00 и привязкой к началу окна выглядит в целом исправленным, intake-gate уже фильтрует шум, но его надо верифицировать shadow/ledger-метрикой, чтобы не терять реальные findings.",
+    "summary":  "Я бы взял на себя узкое, проверяемое улучшение: сначала зафиксировать PROJECT_MAP/PLAN.md с картой audit-системы и диагнозом, затем атомарно стабилизировать deep-agent JSON/retry/quorum, поправить подачу deep-findings в audit.ps1 так, чтобы partial не выглядел успешным и не дублировал backlog, добавить intake-gate audit shadow для доказательства, что реальные findings не теряются, и закрыть это реальным прогоном audit-runner/audit.ps1 плюс targeted tests.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Создать PROJECT_MAP/PLAN.md как durable diagnosis/plan перед кодом.",
+                               "reason":  "Контракт требует Discuss-First, а подсистема критичная: нужен явный topology map по lib/auditor.ps1, driver/10-maintenance.ps1, tools/audit-runner.ps1, tools/audit.ps1, tools/deep-audit.ps1, tools/deep-audit-agent.ps1 и backlog intake.",
+                               "tradeoff":  "Добавляет один документ перед реализацией, но снижает риск хаотичных правок в control-plane.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Первый кодовый атом: tools/deep-audit-agent.ps1, усилить strict JSON extraction, retry-on-parse, telemetry role/model/status/errors/findings.",
+                               "reason":  "Свежий required failure security-model=json_parse_failed означает, что LLM мог найти проблему, но слой парсинга превращает это в zero findings. Это самая короткая дорога к deep_status=ok/partial_less.",
+                               "tradeoff":  "Более терпимый парсер может принять слабый JSON; компенсировать schema validation и error taxonomy.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "Второй кодовый атом: tools/deep-audit.ps1, исправить quorum semantics: required slices не должны abort-иться как optional; parse/empty failures retry once compact prompt.",
+                               "reason":  "dependency-model получил aborted_by_quorum, а required failures делают весь audit partial. Нужна политика, где optional агенты можно отсекать, но required роли либо завершаются, либо дают точную диагностическую причину.",
+                               "tradeoff":  "Может увеличить runtime на 1 retry, зато уменьшит ложные partial и потерю coverage.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Третий кодовый атом: tools/audit.ps1, нормализовать deep findings before filing: in-run dedup by rootCauseKey, correct role/model markdown rendering, partial required failure escalates as audit-self-diag finding.",
+                               "reason":  "Свежий markdown показывает \u0027$role / $model\u0027, а audit.log трижды filed один и тот же runtime-incident id. Это шумит backlog и ухудшает actionability.",
+                               "tradeoff":  "Более строгий filing может уменьшить число backlog items; это целевой эффект, если сохраняется evidence ledger.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Четвертый кодовый атом: lib/backlog.ps1 или lib/backlog-workpack.ps1, добавить shadow decision ledger для Invoke-BacklogIntakeGate.",
+                               "reason":  "Intake-gate уже умеет drop/hold/allow, но контракт требует доказать, что реальные audit findings не теряются. Нужны записи original_hash, action, reason, evidence, rehydrate_path и счетчики allow/hold/drop/dedup.",
+                               "tradeoff":  "Чуть больше логов и метаданных, зато можно измерять false-drop и пересмотреть решения.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Пятый атом: добавить focused tests по deep JSON parse/retry/quorum, audit filing dedup и intake-gate non-loss.",
+                               "reason":  "В репозитории уже есть tools/test-deep-audit-*.ps1 и tools/test-backlog-intake-gate.ps1; расширение этих тестов дешевле и соответствует локальному стилю.",
+                               "tradeoff":  "Тестовые файлы увеличатся, но проверка останется ближе к реальному control-plane.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "Verification должен включать реальный audit run, не только unit: audit-runner или Invoke-BridgeAudit с LLM enabled, плюс проверка audit.launches.jsonl, report metadata, backlog filing и usefulness.",
+                               "reason":  "Контракт явно требует real audit run; свежие дефекты проявляются только на subprocess/LLM/report/backlog boundary.",
+                               "tradeoff":  "Реальный прогон дороже и медленнее, но без него нельзя доказать улучшение deep-audit.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Deployment выбрать atomic+verifiable для минимальной версии; canary использовать для advanced версии или если затрагивается автозапуск/конфиг.",
+                               "reason":  "config.json показывает canary.enabled=false, а изменения можно сделать маленькими однофайловыми атомами с rollback через git revert конкретного атома.",
+                               "tradeoff":  "Atomic путь быстрее; canary путь сильнее для включения новых runtime policies.",
+                               "confidence":  0.78
+                           }
+                       ],
+    "assumptions":  [
+                        "Реализация будет выполняться в рабочей среде с правом записи и возможностью запускать PowerShell subprocess/LLM, потому что текущий контракт требует real audit run.",
+                        "Свежий audit/2026-06-23.* является релевантной текущей базовой линией эффективности.",
+                        "Критичный scope для первого улучшения — bridge audit на channel main; nonMainAuditEnabled сейчас false и не должен расширяться в минимальной версии.",
+                        "Architect Claude будет ревьюить PROJECT_MAP/PLAN.md и атомы до или сразу после малых atomic changes.",
+                        "Rollback для minimal версии — revert каждого однофайлового атома; rollback для advanced canary — отключение новой policy/config и возврат прежних скриптов."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Терпимый JSON parser может пропустить некорректную LLM структуру как валидную.",
+                      "severity":  "medium",
+                      "mitigation":  "После extraction применять schema validation, caps на findings, обязательные поля severity/category/observation/recommendation и сохранять parse_repaired telemetry."
+                  },
+                  {
+                      "risk":  "Retry required agents увеличит длительность nightly audit и может выйти за idle window.",
+                      "severity":  "medium",
+                      "mitigation":  "Retry только для parse_failed/empty_reply, compact prompt, per-role timeout cap, явная запись runtime_sec и watchdog_fired."
+                  },
+                  {
+                      "risk":  "Ужесточение filing/dedup может скрыть отдельные реальные findings.",
+                      "severity":  "high",
+                      "mitigation":  "Не удалять evidence: все suppressed/dedup/held решения писать в ledger с rehydrate_path; реальные code-target findings переводить в held, а не drop, если нет deterministic false-positive."
+                  },
+                  {
+                      "risk":  "Изменение audit health semantics может внезапно начать маркировать audit-self-diag как failing и поднять backlog pressure.",
+                      "severity":  "medium",
+                      "mitigation":  "Сначала один self-diagnostic item per root cause per window, dedup by required_role+error, затем canary/atomic verification."
+                  },
+                  {
+                      "risk":  "Реальный LLM audit run может быть нестабилен из-за внешнего API/model latency.",
+                      "severity":  "medium",
+                      "mitigation":  "Фиксировать baseline и post-run в audit.launches.jsonl, различать infra failures от model-content failures, иметь NoLLM smoke как дополнительный, но не единственный, тест."
+                  }
+              ],
+    "minimal_version":  "One-pass atomic improvement: create PROJECT_MAP/PLAN.md; patch deep-audit-agent JSON extraction/retry telemetry; patch audit.ps1 in-run dedup, role/model markdown, and required-failure self-diagnostic; extend existing tests; run targeted tests plus one real Invoke-BridgeAudit/audit-runner run and compare deep_status, required_role_failures, duplicate filings, and usefulness/action_rate against 2026-06-23 baseline.",
+    "advanced_version":  "Full audit effectiveness loop: add intake-gate shadow ledger and false-drop review, adaptive deep-agent routing based on recent role failure rates, automatic held-finding rehydration via canary, usefulness-driven thresholds, dashboard/report section for signal/noise/actionability, and bridge_self_admission canary rollout with rollback_plan for scheduler/config changes."
+}

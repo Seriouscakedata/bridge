@@ -1,0 +1,91 @@
+{
+    "proposer":  "B",
+    "understanding":  "Self-improve the bridge\u0027s own audit subsystem — static + deep multi-agent LLM audit (deep-audit.ps1 orchestrator spawning deep-audit-agent.ps1 children), the backlog intake gate (Invoke-BacklogIntakeGate), and the night-window scheduler (Start-AuditIfDue) — grounded in reading the real code rather than trusting the historical pain-point list. I must not just analyze but implement atomic, verifiable improvements, deploy them via bridge_self_admission canary (with rollback_plan) or atomically, verify with REAL audit runs (not just unit tests), and follow a Discuss-First flow (PROJECT_MAP/PLAN.md diagnosis+plan -\u003e 1-file atoms -\u003e implement) with architect re-review. As independent solver B I read only the source (deliberately not proposal_A/C) and form my own diagnosis.",
+    "summary":  "B\u0027s thesis is diagnose-before-fix and make-effectiveness-measurable. Code reading shows three things the pain-point list gets wrong or misses: (1) the old \u0027deep_failed agents=0\u0027 variable-name collision ($functionalAgent vs param $FunctionalAgent) is ALREADY patched (deep-audit.ps1:1055-1060) — don\u0027t re-fix it, reproduce to confirm the current symptom differs; (2) the live failure is in the spawned child agent — Invoke-LLM returns empty across 3 retries (5s sleeps) + a fallback model in ~22s and the real cause (auth / bad model-id / rate-limit / http error) is swallowed into a generic \u0027empty_llm_reply_all_retries\u0027, so any fix today is a guess; (3) deep-audit.ps1 carries ~160 lines of unreachable legacy code (codex.exe/claude.exe/Sequential/gemini-only) after a \u0027return\u0027 at line 1093, which also feeds false noise to the audit\u0027s own architecture/dependency agents. Separately, Invoke-BacklogIntakeGate HOLDS any approved audit-source finding that lacks a cross-file causal map (\u003e=2 files + file roles + propagation + multi-layer + causal language), silently dropping legitimate single-file security findings. Plan: (A) instrument the LLM failure to surface the true reason, (B) fix that confirmed cause via canary, (C) narrow the intake gate so real findings stop being held, (D) delete the dead code, (E) add a findings-\u003efiled-\u003eacted ledger so \u0027improved effectiveness\u0027 is provable — every atom verified by a real audit run, behavioral atoms canary-gated.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Atom 1 (diagnostic, ships first): add structured error propagation so Invoke-LLM failures are captured (http status / provider error body / exception / timeout) and deep-audit-agent.ps1 records the true reason instead of the generic \u0027empty_llm_reply_all_retries\u0027. Run one real deep-audit and read the actual error before changing any audit behavior.",
+                               "reason":  "The headline \u0027deep_failed, findings=0 in ~22s\u0027 is uniform across all agents, which points to a systemic LLM-call failure (auth, deprecated model-id like deepseek-v4-flash/pro or gemini-2.5-flash, or rate-limit), not per-role logic. Today that cause is discarded, so the diagnosis is unknowable without instrumentation.",
+                               "tradeoff":  "Adds one atom and a small amount of logging surface before the \u0027real\u0027 fix; defers the visible fix by one step.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Treat the historical \u0027variable-collision -\u003e agents=0\u0027 bug as already fixed (deep-audit.ps1:1055-1060 suffixed -Res) and verify by reproduction, not by re-patching.",
+                               "reason":  "The contract explicitly says verify pain points, don\u0027t trust blindly; re-fixing a patched bug wastes effort and risks regressions. Reproduction confirms the current symptom is the child Invoke-LLM path, not the orchestrator.",
+                               "tradeoff":  "Requires a real reproduction run to confirm the current failure differs from the historical one.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Atom: delete the unreachable legacy block in deep-audit.ps1 (lines ~1095-1258) that follows the \u0027return\u0027 at line 1093 — the codex.exe/claude.exe/Sequential/gemini-only path and its helpers.",
+                               "reason":  "It can never execute; it confuses maintainers and feeds false dead-function/orphan-tool noise into the audit\u0027s own architecture-model and dependency-model, inflating noise the task wants reduced.",
+                               "tradeoff":  "Large single-file diff; must confirm no external dot-source relies on those script-local helpers (they are private to the script, so safe).",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Atom: narrow Invoke-BacklogIntakeGate so the cross_file_causal_map requirement applies only to genuinely multi-file/architectural findings; route legitimate single-file findings to an enrichment/needs_causal_map state with a counter instead of an indefinite \u0027hold\u0027.",
+                               "reason":  "Current gate holds any approved audit finding lacking \u003e=2 affected files + file roles + propagation path + multi-layer path + causal language — so a real single-file finding (e.g. path traversal in one file) is silently held. That is the \u0027intake-gate loses real findings\u0027 concern, confirmed in lib/backlog.ps1:224-306.",
+                               "tradeoff":  "Relaxing the gate risks re-admitting low-quality noise; mitigated by enrichment routing + held-vs-filed metrics rather than blanket allow.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "Atom: add a findings -\u003e filed -\u003e acted-on (commit/PR referencing finding id) -\u003e resolved ledger and emit signal/noise + duplication ratios to audit/signals/, so effectiveness is measured not asserted.",
+                               "reason":  "A success test requires demonstrating higher real-findings-to-noise ratio, less duplication, and a path from findings to action; nothing currently tracks whether findings drive change, making the goal unfalsifiable.",
+                               "tradeoff":  "New artifact + write path to maintain and small per-run cost; ledger must itself be kept consistent.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Deploy every behavioral change (Atom B root-cause fix, intake-gate change) via bridge_self_admission canary with an explicit rollback_plan; ship pure diagnostic/dead-code atoms atomically.",
+                               "reason":  "Audit is critical infra; the operator authorized self-improvement but canary + rollback bounds blast radius and matches the stated constraint.",
+                               "tradeoff":  "Canary adds per-atom latency/overhead versus shipping straight; pure-mechanical atoms skip it to stay fast.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Verification gate: each atom\u0027s verify MUST include a real run of tools/audit.ps1 / deep-audit.ps1 (with -NoLLM for plumbing atoms, full-LLM for the credential/model fix and final acceptance), asserting deep_status moves error-\u003eok and required-slice findings\u003e0.",
+                               "reason":  "The contract mandates real audit runs; historically unit tests passed while the deep pass stayed broken, so unit tests alone are insufficient evidence.",
+                               "tradeoff":  "Full real runs cost LLM tokens and minutes per verify; mitigated by reserving full runs for the atoms that actually exercise the LLM path.",
+                               "confidence":  0.88
+                           }
+                       ],
+    "assumptions":  [
+                        "The child-agent Invoke-LLM failure is systemic (auth / deprecated model-id / rate-limit), not per-role logic — to be confirmed by Atom 1\u0027s instrumentation run before any behavioral fix ships.",
+                        "The suspect model ids in Get-DeepAuditAgentSpecs (deepseek-v4-flash, deepseek-v4-pro, gemini-2.5-flash) and/or missing credential-env propagation into the Start-Process child are the leading root-cause candidates.",
+                        "bridge_self_admission canary + rollback exists and is usable for lib/ and tools/ changes (lib/canary.ps1 present) under the operator\u0027s autonomy authorization for this subsystem.",
+                        "The scheduler is healthy: Start-AuditIfDue\u0027s window (01-06) + once-per-window-occurrence floor was already fixed (2026-06-05) and is NOT the current failure, so effort goes to the deep-LLM and intake layers, not the schedule.",
+                        "As independent solver B I diagnose only from source code and deliberately do not read proposal_A.json / proposal_C.json in the decision folder.",
+                        "The static audit path works and must remain untouched so the audit is never fully dark while deep-pass and intake atoms are rolled out."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Relaxing the intake-gate causal-map requirement re-admits low-quality / duplicate findings, increasing noise the task wants reduced.",
+                      "severity":  "medium",
+                      "mitigation":  "Route single-file findings to a needs_causal_map / enrichment state with a held-vs-filed counter rather than blanket allow; A/B the signal/noise ratio against the ledger before and after."
+                  },
+                  {
+                      "risk":  "The deep-audit fix just papers over a real upstream provider outage or cost spike by adding more retries, masking the true failure and burning tokens.",
+                      "severity":  "medium",
+                      "mitigation":  "Atom 1 surfaces the real error and Atom B fixes the actual cause (credential/model-id) with a retry cap + cost guard, not more blind retries."
+                  },
+                  {
+                      "risk":  "Canary changes to critical audit infra wedge the nightly window if rollback is slow.",
+                      "severity":  "high",
+                      "mitigation":  "Keep diffs atomic and 1-file; pre-write the rollback_plan; never touch the static-audit path so the audit always produces something; verify each canary with a real run before promotion."
+                  },
+                  {
+                      "risk":  "Dead-code removal accidentally deletes a helper that is still referenced.",
+                      "severity":  "low",
+                      "mitigation":  "Grep all callers first; the legacy functions are script-scoped/private; run a full audit after removal to confirm parse + behavior unchanged."
+                  },
+                  {
+                      "risk":  "Diagnosis is wrong (root cause is env not model-id, or vice versa), wasting a canary cycle.",
+                      "severity":  "medium",
+                      "mitigation":  "Atom 1 is diagnostic-only and decides the branch; no behavioral atom ships until the true error string is captured and written into PLAN.md."
+                  },
+                  {
+                      "risk":  "Real-audit verification on every atom is slow and token-expensive.",
+                      "severity":  "low",
+                      "mitigation":  "Use -NoLLM dry runs for plumbing/dead-code atoms and reserve full-LLM real runs for the credential/model fix and final acceptance."
+                  }
+              ],
+    "minimal_version":  "Two atomic, non-canary changes plus one diagnostic run: (1) delete the unreachable dead code in deep-audit.ps1 (lines ~1095-1258 after the return at 1093), and (2) add structured LLM-error capture so deep-audit-agent.ps1 records the true failure reason instead of \u0027empty_llm_reply_all_retries\u0027. Then execute one real deep-audit.ps1 run, read the actual error, and write the confirmed diagnosis into PROJECT_MAP/PLAN.md. This ships immediate cleanup + observability and unblocks the real fix without touching any critical audit behavior.",
+    "advanced_version":  "Full Discuss-First program with architect re-review at plan and per-atom: PROJECT_MAP/PLAN.md (diagnosis + plan) then atoms — (1) Invoke-LLM error instrumentation; (2) confirmed root-cause fix (credential/env propagation into the spawned child OR corrected/validated model ids in Get-DeepAuditAgentSpecs) deployed via bridge_self_admission canary + rollback_plan; (3) intake-gate causal-map narrowing with enrichment routing and held/filed counters in lib/backlog.ps1; (4) dead-code removal in deep-audit.ps1; (5) a findings-\u003efiled-\u003eacted-\u003eresolved effectiveness ledger emitting signal/noise, duplication, and time-to-action metrics to audit/signals/; (6) a self-audit regression test that runs a real deep-audit nightly and asserts deep_status=ok and required-slice findings\u003e0, so the subsystem audits its own health. Each behavioral atom is canary-gated and each is verified by a real audit run, not only unit tests."
+}

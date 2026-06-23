@@ -1,0 +1,33 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] МОСТ: САМОУЛУЧШЕНИЕ СОБСТВЕННОЙ СИСТЕМЫ АУДИТА (оператор Тимур авторизовал автономию: «не жди ок, сам одобрил»). ЗАДАЧА: изучи СВОЮ собственную систему аудита (deep-audit, auditor, intake-gate, audit-chain, как аудитятся сервисы — пример: лапа), найди где у неё ПРОБЛЕМЫ / медленно / неэффективно / ломается, спроектируй как ОПТИМИЗИРОВАТЬ и повысить ЭФФЕКТИВНОСТЬ аудита, и ВОЗЬМИ улучшение НА СЕБЯ (реализуй, не только проанализируй).\n\nИЗВЕСТНЫЕ болевые точки (из истории — проверь актуальность сам, не верь на слово):\n- deep-audit deep_failed: 5 LLM-агентов аудита падают на subprocess/job-слое (static-часть даёт findings, deep-LLM-часть status=error/findings=0 за ~22s). Static работает, deep — нет.\n- intake-gate (Invoke-BacklogIntakeGate) фильтрует findings — проверь не теряет ли реальные.\n- audit-chain: окно 01:00-06:00, Start-AuditIfDue; floor-привязка.\n- эффективность: сколько аудит реально находит vs шума; не дублирует ли; доходят ли findings до действия.\n\nФЛОУ Discuss-First: глубоко изучи СВОЙ код аудита → сформируй PROJECT_MAP/PLAN.md (durable) с диагнозом + планом улучшений → декомпозируй ПОГЛАВНО на АТОМЫ (1 файл / проверяемо) → реализуй. Архитектор (Claude) ре-ревьюит план и атомы.\n\nВАЖНО (control-plane): аудит — критичная инфра моста; изменения через bridge_self_admission canary (canary_required + rollback_plan) ЛИБО atomic + проверяемо; оператор авторизовал самоулучшение этой подсистемы. verify ОБЯЗАН гонять реальный аудит-прогон, не только unit. Цель: аудит, который РЕАЛЬНО находит проблемы и доводит до улучшений, эффективнее текущего.",
+    "goal":  "Improve the effectiveness, reliability, and efficiency of the \u0027МОСТ\u0027 self-audit system, ensuring it genuinely identifies problems, reduces noise, and drives actionable improvements within the critical infrastructure.",
+    "constraints":  [
+                        "The audit system is critical infrastructure for \u0027МОСТ\u0027.",
+                        "Changes must be deployed via `bridge_self_admission canary` (requiring canary deployment and a rollback plan) OR be atomic and verifiable.",
+                        "Verification *must* include real audit runs, not just unit tests.",
+                        "The task includes not only analysis and design but also implementation (\u0027ВОЗЬМИ улучшение НА СЕБЯ (реализуй, не только проанализируй)\u0027).",
+                        "Follow a \u0027Discuss-First\u0027 flow: deep code study -\u003e form `PROJECT_MAP/PLAN.md` (diagnosis + improvement plan) -\u003e decompose into ATOMS (1 file / verifiable) -\u003e implement.",
+                        "The Architect (Claude) will re-review the plan and atomic changes."
+                    ],
+    "known_context":  [
+                          "Operator Timur has authorized autonomy for this self-improvement task (\u0027не жди ок, сам одобрил\u0027).",
+                          "Known pain points (verify actuality, do not trust blindly):",
+                          "- `deep-audit deep_failed`: 5 LLM audit agents fail at the subprocess/job layer (static part gives findings, deep-LLM part `status=error/findings=0` in ~22s). Static works, deep does not.",
+                          "- `intake-gate` (`Invoke-BacklogIntakeGate`) filters findings – check if it loses real ones.",
+                          "- `audit-chain`: operates within 01:00-06:00 window, `Start-AuditIfDue`; floor-binding.",
+                          "- Effectiveness concerns: actual findings vs. noise; duplication; findings leading to action."
+                      ],
+    "output_format":  "A durable `PROJECT_MAP/PLAN.md` detailing diagnosis and improvement plan, followed by atomic, verifiable code changes (1 file per atom), and the implemented, verified improvements to the audit system.",
+    "task_type":  "architecture",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "The `deep-audit` LLM agents no longer fail and successfully produce findings.",
+                          "The `intake-gate` is verified not to lose real audit findings.",
+                          "The `audit-chain` operates correctly according to its schedule and floor-binding.",
+                          "The overall audit system demonstrates improved effectiveness, evidenced by a higher ratio of real findings to noise, reduced duplication, and a clear path for findings to lead to actionable improvements.",
+                          "All implemented changes are deployed via the `bridge_self_admission canary` process (or atomically) and verified by successful real audit runs.",
+                          "A `PROJECT_MAP/PLAN.md` with diagnosis and improvement plan has been created and reviewed by the architect.",
+                          "The improvement plan has been decomposed into atomic, verifiable changes (1 file per atom) and reviewed by the architect."
+                      ]
+}
