@@ -8,7 +8,7 @@
 > **Начни с `BRIDGE_STATUS.md`** — единая точка входа: актуальная версия, что умеет мост сейчас,
 > как проверить ЖИВОЕ состояние (git/процессы/state), карта документов. Этот гайд — глубже про управление.
 >
-> Последнее обновление: 2026-06-02.
+> Последнее обновление: 2026-06-23.
 
 ---
 
@@ -35,8 +35,8 @@ Task Scheduler (ClaudeCodexBridge, elevated)
 | Runtime (НЕ на OneDrive, чтобы не било блокировками) | `C:\Users\rafie\.bridge-runtime` |
 | Каналы (состояние, бэклог, история) | `bridge\channels\<канал>\` |
 | Управляющие флаги/логи | `bridge\control\` |
-| Проект AI Partners | `C:\Users\rafie\aipartners` |
-| Проект Private Community | `C:\Users\rafie\bridge-projects\private-community` |
+| Репозитории проектов (живые каналы: oko, computer-control, telegram-bridge-bot) | `C:\Users\rafie\bridge-projects\<slug>` (точный путь — `channels\<канал>\channel.json → project_root`) |
+| Архивные проекты (каналы в `_archive`) | `C:\Users\rafie\aipartners`, `C:\Users\rafie\bridge-projects\private-community` |
 
 ---
 
@@ -49,8 +49,8 @@ Invoke-WebRequest 'http://127.0.0.1:8787/api/health' -UseBasicParsing -TimeoutSe
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
   Where-Object { $_.CommandLine -match 'supervisor|driver\.ps1|server\.ps1|watchdog' } |
   ForEach-Object { $_.CommandLine -replace '.*\\','' }
-# свежесть канала (heartbeat должен быть < ~30с когда работает)
-$s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\aipartners\state.json',[Text.Encoding]::UTF8) | ConvertFrom-Json
+# свежесть канала (heartbeat должен быть < ~30с когда работает; подставь свой <канал>, напр. oko/main)
+$s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\oko\state.json',[Text.Encoding]::UTF8) | ConvertFrom-Json
 "status=$($s.status) turn=$($s.task_turn) hb=$([int]((Get-Date)-[datetime]$s.heartbeat).TotalSeconds)с"
 ```
 - **HTTP 200 + heartbeat < 30с** = жив.
@@ -72,6 +72,10 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 - **Бэклог / решения** — очередь задач, журнал решений.
 
 Канал переключается через пин (?channel=main или ?channel=oko) — по умолчанию активный.
+
+> **Стоп из TG / извне.** Кроме UI-кнопки, текущую задачу канала можно оборвать внешним вызовом
+> `POST /api/stop?channel=<slug>` (стоп-рычаг карточки задачи в TG-боте): ставит `abort=true` и
+> убивает живой agent-процесс. Архив чата канала (когда канал idle) — `POST /api/archive`.
 
 ---
 
@@ -129,6 +133,14 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 | `projectAutopilotEnabled` | `settings.json` / `lib/settings.ps1` | `true` |
 | `projectAutopilotCooldownMinutes` | `settings.json` / `lib/settings.ps1` | `5` |
 | `projectAutopilotMaxTasksPerBatch` | `settings.json` / `lib/settings.ps1` | `12` |
+| `projectAutopilotEmptyCoordinatorLimit` | `settings.json` / `lib/settings.ps1` | `3` |
+
+> **Самопауза при пустом coordinator (`emptyCoordinatorLimit`, дефолт 3).** Если подряд N=3 coordinator-задач
+> вернули НИ ОДНОГО `[[PROJECT_BACKLOG]]`-атома (план исчерпан/scope закрыт), autopilot сам ставит канал
+> на паузу (`project-autopilot.last.json` → `paused=true` + сообщение в чат «⏸ Project Autopilot … до
+> расширения PROJECT_PLAN/scope»). Снять паузу = расширить PROJECT_PLAN и заново вызвать
+> `Set-ProjectPlanApproved` (re-approval обнуляет streak и сбрасывает `paused`). Защита от холостого
+> цикла генерации, когда план уже доделан.
 
 Операторский смысл: если проект уже имеет `approved` задачи, мост выполняет их сам. Если очередь
 закончилась и проект чистый, мост сам попросит планировщика сгенерировать следующую пачку. Ручной
@@ -140,7 +152,7 @@ append в `backlog.jsonl` теперь нужен только для авари
 **ВАЖНО:** driver постоянно перезаписывает бэклог — прямой append во время его работы может затереться.
 Поэтому добавляй **под паузой**:
 ```powershell
-$sf='C:\Users\rafie\OneDrive\Documents\bridge\channels\aipartners\state.json'
+$sf='C:\Users\rafie\OneDrive\Documents\bridge\channels\oko\state.json'   # подставь свой <канал>
 # пауза
 $st=[IO.File]::ReadAllText($sf,[Text.Encoding]::UTF8)|ConvertFrom-Json; $st.paused=$true
 [IO.File]::WriteAllText($sf,($st|ConvertTo-Json -Depth 30),(New-Object Text.UTF8Encoding($true)))
@@ -274,12 +286,13 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
 | Канал | Что это |
 |---|---|
 | `main` | развитие самого моста (его инфраструктура) |
-| `claude` | операторский канал (текущий активный) |
+| `claude` | операторский канал |
 | `telegram-bridge-bot` | личный TG-бот |
 | `computer-control` | руки/лапа (управление ПК) |
 | `oko` | vision-сервис (глаза моста) |
 | `_archive` | архив старых/тестовых каналов (напр. `aipartners`, `private-community`, `travel` — к живому мосту не относятся) |
 
+Какой канал сейчас **активный** (показывается на пульте без пина) — в файле `control\active_channel`.
 Каждый канал — свой driver, своё состояние, свой бэклог, своя история. Codex общий на все каналы
 (поэтому иногда «⏳ Codex занят другим каналом — жду»).
 
@@ -368,7 +381,7 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'; Start-Sleep 3; Start-Scheduled
 
 **Канал застрял в `working`, но driver мёртв (застрявший lease) / завис в `paused`:**
 ```powershell
-$sf='C:\Users\rafie\OneDrive\Documents\bridge\channels\aipartners\state.json'
+$sf='C:\Users\rafie\OneDrive\Documents\bridge\channels\oko\state.json'   # подставь свой <канал>
 $st=[IO.File]::ReadAllText($sf,[Text.Encoding]::UTF8)|ConvertFrom-Json
 $st.status='idle'; $st.paused=$false; if($st.PSObject.Properties.Name -contains 'workpack_batch_active'){$st.workpack_batch_active=$false}
 $st.heartbeat=(Get-Date).ToString('o')
@@ -387,7 +400,7 @@ Move-Item $rf "$rf.bak" -Force; New-Item -ItemType File $rf | Out-Null   # оч�
 **Задача зацикливается (берётся снова и снова, re-claim):** причина — дубликаты id в backlog.jsonl.
 Get-Backlog теперь сворачивает по id (last-wins) и лечит дубли при следующей мутации; проверь:
 ```powershell
-. 'C:\Users\rafie\OneDrive\Documents\bridge\lib\common.ps1'; $env:BRIDGE_CHANNEL='aipartners'
+. 'C:\Users\rafie\OneDrive\Documents\bridge\lib\common.ps1'; $env:BRIDGE_CHANNEL='oko'   # свой <канал>
 @(@(Get-Backlog|%{[string]$_.id}|?{$_})|Group-Object|?{$_.Count -gt 1}).Count   # должно быть 0
 ```
 
@@ -427,9 +440,9 @@ cd C:\Users\rafie\aipartners
 | `.bridge-runtime\restarts.jsonl` | окно рестартов для circuit-breaker |
 | `config.json` | порт сервера, пул воркеров (parallel.workers), maxStreams |
 | `lib\parallel.ps1` | параллель: dispatch, collect-then-commit, роутинг воркеров |
-| `lib\backlog.ps1` | бэклог: packer, свёртка, классификация задач, Project Autopilot |
+| `lib\backlog.ps1` | загрузчик-фасад бэклога; реальный код в `lib\backlog-*.ps1` (crud / core=claim-gate+risk-tier / workpack=intake-gate+packer+frontier / governor / dedup / autopilot / state-reaper) |
 | `tools\web-smoke.ps1` | универсальный live HTTP/API smoke для проектных сайтов: старт, readiness, checks, лог, cleanup |
-| `driver.ps1` | рабочий цикл канала (planner/coder, dispatch, verify, commit) |
+| `driver.ps1` | точка входа драйвера; рабочий цикл разнесён по `driver\NN-*.ps1` (80-preflight → 81-idle-claim → 82-turn-setup → 83-agent-turn → 84-reply-markers → 85-mode-transitions → 86-completion → 87-final-guard, оркестрация в 90-main-loop) |
 | `supervisor.ps1` | надзор за процессами, circuit-breaker |
 
 ---

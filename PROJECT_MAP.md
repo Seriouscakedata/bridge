@@ -49,9 +49,11 @@ Task Scheduler: ClaudeCodexBridge
 Канал - это вкладка и проектный контекст. У каждого канала свои state, conversation, backlog, files, memory scope и project root.
 
 - `main`: сам мост. `project_root` = `C:\Users\rafie\OneDrive\Documents\bridge`.
-- `aipartners`: внешний проект AI Partners. `project_root` = `C:\Users\rafie\aipartners`.
-- `private-community`: внешний проект закрытого комьюнити. `project_root` = `C:\Users\rafie\bridge-projects\private-community`.
-- `travel`: бывший учебный внешний проект, сейчас архивный/не основной.
+- `claude`: операторский канал (общение с оператором, ревью). Часто текущий активный.
+- `telegram-bridge-bot`: личный Telegram-бот оператора.
+- `computer-control`: ЛАПА — GUI-руки оператора. `project_root` = `C:\Users\rafie\bridge-projects\computer-control`.
+- `oko`: vision-сервис («глаза» моста через камеры). `project_root` = `C:\Users\rafie\bridge-projects\oko`.
+- Архивные (в `channels/_archive/`, не активны): `aipartners`, `private-community`, `travel-planner`, `literary-slop-video`.
 - Новые вкладки должны повторять эту модель: один канал, один корень проекта, отдельная память, отдельный индекс кода, отдельный контекст.
 - Фоновый audit/brainstorm для всех каналов кроме `main` выключен по умолчанию: `channelMaintenance.nonMainAuditEnabled=false`,
   `channelMaintenance.nonMainBrainstormEnabled=false`. `main` этими флагами не ограничивается.
@@ -111,6 +113,8 @@ Runtime и сгенерированные данные, обычно не ком
 - `lib/qa-agent.ps1`: QA-agent invocation и формат результата.
 - `lib/router.ps1`: выбор модели planner на основе статистики и политики.
 - `lib/intent.ps1`: intent detection и классификация простых задач.
+- `lib/decision-depth.ps1`: no-LLM depth router (Simple/Standard/Deep/High-Stakes), решает заход в synthesis.
+- `lib/decision-synthesis.ps1`, `lib/decision-artifacts.ps1`: Multi-Model Decision Synthesis pipeline и его JSON-артефакты под `channels/<slug>/decisions/<id>/`.
 
 ### Автономия и backlog
 
@@ -266,6 +270,13 @@ Fast-lane:
 - Безопасные короткие команды могут обходить тяжёлый planner/coder loop.
 - Явный `[[FAST]]` считается только первой непустой строкой.
 - Описание задачи, где `[[FAST]]` встречается в середине текста, не должно включать fast-lane.
+
+Режимы задачи (`state.task_mode`): `normal`, `discuss`, `study`, `synthesis`, `fast`, `computer_action`.
+
+- Decision Synthesis (`task_mode='synthesis'`, переключатель `config.synthesisMode.enabled=true`) заменяет старый двухмодельный role-based `discuss` для Deep/High-Stakes и явных discuss-задач.
+- No-LLM depth router `lib/decision-depth.ps1` классифицирует глубину (`Simple` / `Standard` / `Deep` / `High-Stakes`) и решает, идти ли в synthesis.
+- Stateless artifact pipeline `lib/decision-synthesis.ps1`: TaskContract → 3 «слепых» предложения (Codex/Claude-opus/deepseek) → ConflictMatrix → CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record. Артефакты чекпойнтятся в `channels/<slug>/decisions/<id>/`.
+- High-Stakes и high-severity red-team всегда ставят `needs_operator` в Decision Record — авто-имплементации нет, нужно одобрение оператора.
 
 Автономная задача:
 

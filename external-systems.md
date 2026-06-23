@@ -5,35 +5,45 @@ _Цель — не копировать, а **замечать пробелы** 
 
 ## AutoGen (Microsoft)
 - Multi-agent conversation framework: каждый агент — роль, ведут диалог между собой.
-- **Что у них есть, чего у нас нет:** `GroupChat` — N агентов одновременно обсуждают.
-  У нас 1:1 (Claude↔Codex), без структурированного «совета».
+- **Что у них есть:** `GroupChat` — N агентов одновременно обсуждают.
+- **У нас (закрыто частично):** для Deep/High-Stakes задач `task_mode=synthesis`
+  (Multi-Model Decision Synthesis, `lib/decision-synthesis.ps1`) — N≥3 модели дают
+  слепые предложения (Codex/Claude-opus/Gemini → proposal_A/B/C), затем Judge +
+  MicroDebate. Это и есть «совет» для архитектурных решений. Для рутинных задач — 1:1.
 - **Паттерн:** `SelectorGroupChat` — кто следующий говорит выбирается отдельной LLM.
 
 ## LangGraph
 - Граф состояний (узлы = шаги, рёбра = переходы), цикличный (loops), persistent state.
 - **Что у них есть:** **first-class цикл с явными переходами** + checkpointing
   (state-сохранение в любой момент → можно restart с середины).
-- **У нас:** последовательный поток с retry; нет «checkpoint в середине задачи».
+- **У нас:** последовательный поток с retry. Checkpoint мид-задачи появился в
+  synthesis-пайплайне (каждый этап пишет артефакт в `channels/<slug>/decisions/<id>/`,
+  можно возобновить с середины), но обычный код-ход всё ещё рестартует ход с нуля.
 
 ## Devin (Cognition Labs) / OpenHands / Devstral
 - Полностью автономный SWE-агент: длинные многошаговые задачи, sandboxed VM.
 - **Что у них:** sandboxed dev environment (Docker/VM) — мост может «попробовать»
   без риска для основной системы. **Browser+terminal+IDE** интегрированы.
-- **У нас:** worktrees (есть!), но без isolated environment; нет browser integration
-  для агентов (только наш visit.ps1 — снимок без интеракции).
+- **У нас:** worktrees (есть!) + Codex `-s workspace-write` (ОС-confine записей в cwd/проект,
+  с per-channel `danger-full-access`) — изоляция уровня sandbox-режима, не полноценная VM.
+  Браузер-интеграция: visit.ps1 — снимок без интеракции; отдельный канал computer-control
+  (`task_mode=computer_action`) даёт «руки оператора» по реальному ПК.
 
 ## MetaGPT
 - Имитирует SWE-команду: PM → Architect → Engineer → QA. Каждая роль — свой агент.
 - **Что у них:** **явные роли с SoD** (separation of duties); документы между ролями
   (SRS, design doc, etc.).
-- **У нас:** Claude (planner) + Codex (coder) + DeepSeek-Pro (critic). Близко по духу;
-  не хватает «QA как отдельная роль» — критик ревьюит diff, но не запускает E2E-тесты.
+- **У нас:** Claude (planner) + Codex (coder) + DeepSeek-Pro (critic). Близко по духу.
+  «QA как отдельная роль» теперь есть: feature-verifier (`tools/feature-verifier.ps1`),
+  project-acceptance (`lib/project-acceptance.ps1`), scenario-прогон (`tools/scenario.ps1`)
+  — приёмка гоняет реальные E2E/acceptance, не только ревью diff.
 
 ## BabyAGI / AgentGPT
 - Самопостановка задач: агент сам генерирует следующие задачи в очередь.
 - **Что у них:** task-queue с приоритизацией LLM-ом.
-- **У нас:** есть бэклог + reflect генерит идеи. Похоже, но без приоритизации
-  через LLM (у нас score=value*confidence/effort, фиксированная формула).
+- **У нас:** есть бэклог + reflect генерит идеи. LLM-приоритизация теперь есть
+  (`Invoke-BacklogLLMPrioritize`, `Invoke-LLM -Purpose 'prioritizer'`) поверх базовой
+  формулы score=value*confidence/effort.
 
 ## OpenInterpreter
 - Local code execution с natural language.
@@ -63,6 +73,9 @@ _Цель — не копировать, а **замечать пробелы** 
 - **Прозрачность для оператора:** большинство «чёрные ящики». У нас живой чат + план-доска + дайджест памяти.
 
 ## Чему точно стоит научиться (на основе текущего gap-анализа)
-1. **Checkpointing мид-задачи** (LangGraph) — сейчас рестарт сбрасывает прогресс хода.
-2. **QA как отдельная роль** (MetaGPT) — критик не запускает E2E-тесты.
-3. **GroupChat / совет агентов** (AutoGen) — для архитектурных решений можно мнение N≥3 моделей.
+1. ~~**Checkpointing мид-задачи** (LangGraph)~~ — ✅ для synthesis (артефакты на диск);
+   ОСТАЁТСЯ: обычный код-ход всё ещё рестартует с нуля (распространить checkpoint на него).
+2. ~~**QA как отдельная роль** (MetaGPT)~~ — ✅ feature-verifier + project-acceptance + scenario
+   гоняют E2E/acceptance (см. урок literary-slop-video: acceptance обязан тестировать не-fixture вход).
+3. ~~**GroupChat / совет агентов** (AutoGen)~~ — ✅ Decision Synthesis (N≥3 слепых предложения + Judge)
+   для Deep/High-Stakes; ОСТАЁТСЯ: расширить на большее число рутинных решений, если окупится.

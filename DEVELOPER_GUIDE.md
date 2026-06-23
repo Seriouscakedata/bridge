@@ -1,7 +1,7 @@
 # Claude+Codex Bridge — Developer Guide
 
 > Детальное описание архитектуры, механизмов, сложностей и правил разработки.
-> Последнее обновление: 2026-06-02. Документ держи в актуальном состоянии при крупных изменениях.
+> Последнее обновление: 2026-06-23. Документ держи в актуальном состоянии при крупных изменениях.
 
 ---
 
@@ -17,7 +17,7 @@ Task Scheduler (autostart, elevated)
         └── supervisor.ps1            # следит, перезапускает, circuit-breaker
               ├── server.ps1 (:8787)  # HTTP API + веб-UI + чат
               ├── driver.ps1 -Channel main     # главный цикл: planner↔coder
-              ├── driver.ps1 -Channel aipartners / private-community / ... # по одному driver на активный канал
+              ├── driver.ps1 -Channel claude / oko / computer-control / telegram-bridge-bot  # по одному driver на активный канал
               └── watchdog.ps1         # авто-откат при поломке
 ```
 
@@ -73,10 +73,12 @@ HTTP-сервер на `http://+:8787/`:
 Независимый сторож. Если мост «сломан движком» (API не отвечает, лог-сигнатура поломки) — делает **мягкий рестарт** (`restart.flag`), а в крайнем случае — git-rollback на последний стабильный коммит. Запускается скрыто (`-WindowStyle Hidden`). **Не убивать вручную** — это защита.
 
 ### 2.5 Каналы (channels)
-Мост многоканальный. `main` = сам мост (bridge-self), остальные активные каналы обычно привязаны к
-внешним проектам (`aipartners`, `private-community`, ...). У каждого свой `channels/<slug>/`:
-`state.json`, `conversation.jsonl`, `turns.jsonl`, бэклог-привязка. **Один общий Codex** на все каналы
-→ сериализация через mutex `runtime/codex.lock` (см. §7).
+Мост многоканальный. `main` = сам мост (bridge-self), остальные активные каналы — операторские или
+привязанные к проектам/сервисам (живые сейчас: `claude` — операторский, `oko` — vision-сервис,
+`computer-control` — «руки/лапа», `telegram-bridge-bot` — личный TG-бот; отработанные каналы вроде
+`aipartners` / `private-community` / `travel-*` / `literary-slop-video` уехали в `channels/_archive/`).
+У каждого свой `channels/<slug>/`: `state.json`, `conversation.jsonl`, `turns.jsonl`, бэклог-привязка.
+**Один общий Codex** на все каналы → сериализация через mutex `runtime/codex.lock` (см. §7).
 
 ---
 
@@ -153,10 +155,19 @@ bridge/
 - **Planner = Claude** (`config.planner = claude`). Думает, планирует, ревьюит, ведёт обсуждения.
 - **Coder = Codex** (`config.coder.agent = codex`, `sandboxMode = workspace-write`). Пишет код в песочнице.
 - **Критик** (`deepseek-v4-flash`/`-pro`) независимо проверяет правки (до `criticMaxRetries` попыток).
-- Режимы: обычный `code`, `discuss` (диалог двух моделей), `study` (глубокое изучение), `synthesis` (Multi-Model Decision Synthesis — см. §4.1-bis).
+- Режимы (`task_mode`): обычный `normal`/`code`, `discuss` (диалог двух моделей), `study` (глубокое изучение), `synthesis` (Multi-Model Decision Synthesis — см. §4.1-bis), `fast` (простая безопасная команда МОСТУ без полного planner↔coder цикла) и `computer_action` (действие на рабочем столе через «руки/лапу» — см. §4.1-ter). Намерение/режим выбирает `lib/intent.ps1` (`primary_mode`).
 
 ### 4.1-bis Decision Synthesis (`synthesis` mode)
 При `synthesisMode.enabled = true` (сейчас включено) роутер глубины (`lib/decision-depth.ps1`, без LLM: Simple/Standard/Deep/High-Stakes) направляет Deep/High-Stakes-задачи и явный `discuss` в `task_mode = 'synthesis'` вместо старого диалога двух моделей. Движок — stateless artifact pipeline (`lib/decision-synthesis.ps1`, `Invoke-SynthesisPipeline`): TaskContract → 3 «слепых» предложения → ConflictMatrix → CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record, с чекпойнтами в `channels/<slug>/decisions/<id>/`. High-Stakes и high-severity red-team всегда выставляют `needs_operator` (без авто-реализации).
+
+### 4.1-ter computer_action mode («руки/лапа»)
+Когда `lib/intent.ps1` классифицирует сообщение как «действие на рабочем столе прямо сейчас» (открыть
+приложение, напечатать текст в поле, кликнуть, закрыть окно), драйвер выбирает `task_mode = 'computer_action'`
+— локальный fast-lane mouse/window-control **без** planner/coder/critic. При структурном навыке
+(`lapa_skill = "open-app"` / `"type"`) путь идёт прямо в `Invoke-LapaSkill` (`lib/intent.ps1`,
+`driver/84-loop-reply-markers.ps1`); маршрутизация в `driver/81-loop-idle-claim.ps1`. Это основной режим
+канала `computer-control`. Рядом существует более лёгкий `fast` — безопасная команда самому мосту
+(«покажи логи», «статус», «запусти аудит»), НЕ GUI рабочего стола и НЕ необратимые действия.
 
 ### 4.2 Tiering моделей планировщика (экономия)
 `Get-PlannerModel` (driver/00-task-session.ps1) выбирает Sonnet или premium Claude (`deepModel`, сейчас `claude-opus-4-8`):
@@ -363,6 +374,8 @@ Codex работает в **изолированной песочнице** (`wo
 
 Это защита (Gate-A): кодер не трогает историю напрямую. Правки **не теряются**. Сообщение про «заблокированную песочницу» — штатное.
 
+**Per-channel sandbox override (`danger-full-access`):** дефолт песочницы — `workspace-write`, но `coder.sandboxModeByChannel` поднимает отдельные каналы до `danger-full-access` (резолв в `driver/40-agent-invoke.ps1`). Сейчас на этом уровне ДВА канала: `literary-slop-video` (в `config.json`) и `oko` (добавлен оверлеем `settings.json` — gitignored, переживает rollback). Поэтому config-only взгляд занижает реальную поверхность elevated-sandbox: смотри объединение `config.json` + `settings.json`.
+
 ### 4.4-bis Project repo gates и quality bypass guard
 Для project-каналов критично проверять не bridge repo, а repo активного проекта. Исправления:
 
@@ -519,7 +532,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`, `synthesisMode.{enabled,defaultDepth,proposerModels.C,judgeByTaskType,cheapModel,rubricWeights,maxDebate*}` (живой execution-путь Decision Synthesis).
 
 ### 8.2 settings.json (runtime, НЕ в git)
-Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated: `workpackExec.*`, `channelMaintenance.*`, `memory.verifyOnRecall`, `backlogPack.*`; `coder.sandboxModeByChannel` правится прямым редактированием — вне allowlist).
+Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated: `workpackExec.*`, `channelMaintenance.*`, `memory.verifyOnRecall`, `backlogPack.*`, `fastLane.{autoDetect,minChars}` — гейт `fast`-режима, `auditor.*`; `coder.sandboxModeByChannel` правится прямым редактированием — вне allowlist).
 
 Эффективные настройки: дефолты в `lib/settings.ps1` ← `config.json` ← `settings.json` (последний имеет высший приоритет). Дневной лимит автономии резолвится `Get-AutonomySettings`, где `settings.json` применяется ПОСЛЕДНИМ: `config.json autonomy.maxAutonomousTasksPerDay=150` переопределяется flat-ключом `settings.json = 0` (безлимит) — не считай 150 авторитетным.
 
@@ -572,7 +585,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 `
 
 **Риски / технический долг:**
 - **Крупные файлы/модули** (`web/index.html`, `common.ps1`, отдельные `driver/*.ps1`) — всё ещё требуют точечных правок и обязательного self-test, но главный риск старого `driver.ps1`-монолита снижен.
-- **Высокая связность механизмов** (31 lib) — баги во взаимодействии (штормы, deadlock — большинство уже вылечено).
+- **Высокая связность механизмов** (~68 lib-модулей) — баги во взаимодействии (штормы, deadlock — большинство уже вылечено).
 - **Хрупкая платформа**: PS 5.1 + Windows + OneDrive + Defender + UAC дают целый класс инфраструктурных сбоев.
 - **Стабильность — главный риск.** Большинство инцидентов — не логика, а рестарт-штормы/порча state. Направление развития верное: «укреплять, а не наращивать» (Foundation-задачи), держать runtime вне OneDrive, продолжать дробить крупные зоны без изменения поведения.
 

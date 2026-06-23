@@ -39,6 +39,12 @@ Gemini/DeepSeek экономить). Мост развивает и улучша
 
 ## Жёсткие ограничения
 - Каждый `.ps1` — UTF-8 с BOM + parse-check перед применением.
-- НЕ трогать `watchdog.ps1`, `supervisor.ps1`, `.git`, задачи планировщика.
+- НЕ трогать `.git`, задачи планировщика и весь control-plane моста. Защищённая
+  поверхность определена ЕДИНОЖДЫ в `lib/policy.ps1` (`Test-PolicyConcreteEditTarget`,
+  2026-06-09): `driver*.ps1` + модули `driver/`, `server.ps1`, `supervisor.ps1`,
+  `watchdog.ps1`, `canary.ps1`, `lib/backlog*.ps1`, `lib/parallel|circuit-breaker|policy.ps1`,
+  каталог `control/`. Править их автономии НЕЛЬЗЯ без явного разрешения: задача
+  должна нести тег `operator` (человеческое решение) или валидный блок
+  `bridge_self_admission`, иначе claim-gate возвращает `control-plane-blocked`.
 - Рабочие правки коммитить; область автономии — ТОЛЬКО сам мост и его сервисы.
 - Секреты (`secrets.json`) не выводить и не коммитить.

@@ -42,3 +42,26 @@
 - Всё в git, откат на known-good `stable`; `.ps1` с BOM + parse-check.
 - Чужой код не импортируем — переписываем своё; install/запуск чужого = SAFETY-гейт.
 - Не трогать watchdog/supervisor/.git; секреты не выводить; убивать только свои процессы.
+
+## Статус: где живёт каждый скачок (2026-06-23)
+Все 6 скачков реализованы; этот раздел — карта от замысла к живому коду.
+1. **Параллельная команда** — `lib/parallel.ps1` (`Invoke-ParallelWorkers`, `Invoke-CodexParallel`,
+   каждый воркер в своём worktree через `lib/worktrees.ps1`), `lib/circuit-breaker.ps1`;
+   до 20 одновременных драйверов (`config.json` `supervisor.maxConcurrentDrivers=20`).
+2. **Песочница + критик + тесты** — per-channel sandbox (`coder.sandboxModeByChannel`,
+   дефолт `workspace-write`, `danger-full-access` для отдельных каналов через `settings.json`);
+   критик на ДРУГОЙ модели (gemini/deepseek) + canary smoke-гейт (`lib/canary.ps1`);
+   в режиме `synthesis` — RedTeam-проход перед Decision Record.
+3. **План-доска (DAG)** — бэклог дробится на split-модули (`lib/backlog-*.ps1`); workpack-frontier
+   с `touch_set`/serial-single fallback (`lib/backlog-workpack.ps1`); Project Autopilot-coordinator
+   превращает план в атомы (`lib/backlog-autopilot.ps1`).
+4. **Роутер моделей** — `lib/router.ps1` (`Select-PlannerModel` поверх `Get-PlannerModel`),
+   триаж `sonnet` / premium `claude-opus-4-8` (`deepModel`); `claude-fable-5` мёртв (404, удалён 2026-06-13).
+5. **Память, знающая код** — `lib/memory.ps1` (Gemini-embeddings `gemini-embedding-001`, `Search-Memory`,
+   ночной librarian) + `lib/codemem.ps1` (per-project символьный индекс через AST `ParseFile`).
+6. **Наблюдаемость + push** — дашборд `server.ps1` (`/api/live-stream` SSE, `/api/state`, `/api/usage`),
+   push в Telegram через `lib/notify.ps1`.
+
+> Также добавлено сверх исходных 6 скачков: **Multi-Model Decision Synthesis** (`lib/decision-synthesis.ps1`
+> + no-LLM depth-router `lib/decision-depth.ps1`) — заменил старый двухмодельный discuss для
+> Deep/High-Stakes-решений; артефакты под `channels/<slug>/decisions/<id>/`, High-Stakes всегда `needs_operator`.

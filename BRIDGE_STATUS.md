@@ -148,6 +148,13 @@ Set-ProjectPlanApproved -Channel '<slug>'        # снять разрешени
   Крупный этап в беклоге = воркер ломается.
 - **Ревью-разграничение:** оператор ревьюит только уровень ГЛАВ; параграфы/абзацы/атомы — ревью Claude.
 - **Приёмка (Ф7) — не «зелёный build», а «флоу как в утверждённой карте».**
+- **Решения (Ф1, режим `synthesis`).** Глубокое обсуждение и High-Stakes-решения идут через
+  **Multi-Model Decision Synthesis** (`synthesisMode.enabled=true`): no-LLM роутер глубины
+  (`lib/decision-depth.ps1`: Simple/Standard/Deep/High-Stakes) запускает stateless-пайплайн
+  (`lib/decision-synthesis.ps1`): TaskContract → 3 слепых предложения → ConflictMatrix →
+  CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record (чекпойнты в
+  `channels/<slug>/decisions/<id>/`). **Это пришло на смену старому двухмодельному DISCUSS-диалогу.**
+  High-Stakes и high-severity red-team всегда дают `needs_operator` (НЕ авто-внедряется до утверждения).
 
 ---
 
@@ -208,5 +215,8 @@ Drift Audit         tools/self-model-drift.ps1
 
 ### Известные drift-находки (текущие, для разбора)
 
-- `features/state.json` — нечитаем (JSON parse error); drift-audit сигнализирует `stale_state`.
-- Фича `mission-card` — `owner_file_missing` (owner_file указывает на несуществующий файл в registry).
+Смотреть живьём: `tools/self-model-drift.ps1 -BridgeRoot <bridge>` (read-only). На 2026-06-23:
+
+- `OPERATOR_GUIDE.md` — `source_hash_drift` (док изменился, self-model pack пересобрать).
+- `size_cap_exceeded` — pack ~2.7 KB при cap 2560 B (raise cap или подрезать пакет).
+- `lib/batch-timeout.ps1`, `lib/decision-depth.ps1` — `undocumented_module` (info: добавить в `features/registry.json`).

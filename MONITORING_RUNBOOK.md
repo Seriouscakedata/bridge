@@ -60,17 +60,18 @@ $procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA Sil
 foreach ($p in $procs) {
   $role = if ($p.CommandLine -match 'supervisor') {'supervisor'}
           elseif ($p.CommandLine -match 'server') {'server'}
-          elseif ($p.CommandLine -match 'driver.*main') {'driver-main'}
-          elseif ($p.CommandLine -match 'driver.*travel') {'driver-travel'}
+          elseif ($p.CommandLine -match 'driver') {'driver:' + $(if($p.CommandLine -match '-Channel\s+(\S+)'){$matches[1]}else{'?'})}
           elseif ($p.CommandLine -match 'watchdog') {'watchdog'} else {'?'}
   $pr = Get-Process -Id $p.ProcessId -EA SilentlyContinue
-  Write-Output ("  " + $role.PadRight(13) + " PID=" + $p.ProcessId + " started=" + $(if($pr){$pr.StartTime.ToString('HH:mm:ss')}else{'?'}))
+  Write-Output ("  " + $role.PadRight(18) + " PID=" + $p.ProcessId + " started=" + $(if($pr){$pr.StartTime.ToString('HH:mm:ss')}else{'?'}))
 }
-Write-Output ("  -> core count: " + $procs.Count + " (ждём ~5: supervisor+server+driver-main+driver-travel+watchdog)")
+Write-Output ("  -> core count: " + $procs.Count + " (минимум ~4: supervisor+server+watchdog+≥1 driver; по 1 driver на активный канал)")
 
 # 2. API (401 = ЖИВ, это норма; отказ соединения = МЁРТВ)
-try { $r = Invoke-WebRequest 'http://127.0.0.1:8787/api/status' -UseBasicParsing -TimeoutSec 6
-      Write-Output ("  API: HTTP " + $r.StatusCode + " ALIVE") }
+# /api/health — ЕДИНСТВЕННЫЙ маршрут БЕЗ авторизации (отдаёт 200 + JSON uptime/heartbeat/paused),
+# поэтому это самый чистый liveness-пробник. /api/status тоже годится: без токена он даёт 401 = жив.
+try { $r = Invoke-WebRequest 'http://127.0.0.1:8787/api/health' -UseBasicParsing -TimeoutSec 6
+      Write-Output ("  API: HTTP " + $r.StatusCode + " ALIVE (/api/health)") }
 catch { $m = $_.Exception.Message
         Write-Output ("  API: " + $(if ($m -match '401') {'401 ALIVE (норма)'} elseif ($m -match 'connect|refused|соедин') {'DOWN — сервер не слушает'} else {$m})) }
 
@@ -99,7 +100,7 @@ foreach ($ch in @('main','oko')) {
 | Наблюдение | Норма? | Комментарий |
 |---|---|---|
 | API отдаёт **401** без токена | ✅ норма | 401 = сервер жив, требует токен. Это НЕ ошибка. |
-| 5 core-процессов (supervisor/server/2×driver/watchdog) | ✅ норма | Меньше — компонент упал. |
+| supervisor + server + watchdog + ≥1 driver | ✅ норма | По одному driver на активный канал (до 20). Нет server/watchdog/supervisor — компонент упал. |
 | Процессы с пустым `CommandLine`, start совпадает | ✅ норма | Часто session 0 (elevated через Task Scheduler) — CommandLine скрыт. |
 | `state.json` свежеет каждые <15с | ✅ норма | Драйвер жив и крутит loop. |
 | `restarts(30min)` = 0–2 | ✅ норма | Спокойно. |
@@ -150,10 +151,12 @@ $p = Invoke-HealthProbe; "probe green=$($p.green) reason=$($p.reason)"
 - `green=False` с `parse-fail` → есть битый core-файл (`driver/server/supervisor/watchdog/lib/tools`). Найди и почини:
 ```powershell
 $src='C:\Users\rafie\OneDrive\Documents\bridge'
-$bad=@(); foreach($f in (@(Get-ChildItem $src -Filter *.ps1 -File) + @(Get-ChildItem "$src\lib" -Filter *.ps1) + @(Get-ChildItem "$src\tools" -Filter *.ps1))){ $e=$null;$t=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$t,[ref]$e); if($e -and $e.Count){ $bad += $f.FullName } }
+$bad=@(); foreach($f in (@(Get-ChildItem $src -Filter *.ps1 -File) + @(Get-ChildItem "$src\driver" -Filter *.ps1) + @(Get-ChildItem "$src\lib" -Filter *.ps1) + @(Get-ChildItem "$src\tools" -Filter *.ps1))){ $e=$null;$t=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$t,[ref]$e); if($e -and $e.Count){ $bad += $f.FullName } }
 if($bad){ "BROKEN: " + ($bad -join ', ') } else { "all core .ps1 parse OK" }
 ```
 Если probe красный из-за реального битого файла — почини файл, потом §5. Failsafe: после 3 продлений cooldown мост поднимется принудительно сам + напишет тебе в чат.
+
+**System Sentinel (детектор шторма в `watchdog.ps1`).** Heartbeat-проверка ловит «мёртв vs жив», но НЕ ловит живой драйвер, который рестарт-лупит или спамит одну и ту же ошибку. Этот пробел закрывает Sentinel: детерминистический подсчёт сигнатур (одна сигнатура ≥3 раз ИЛИ ≥4 рестарта за 15 мин = шторм), затем **grace ~8 мин на самолечение** (мост часто чинит себя сам — НЕ топчи это окно), потом dispatch в Doctor (`repair.signal`), и если за 15 мин не вылечилось — rollback + пейдж оператору в чат. Артефакты: `control/sentinel.suspect`, `control/sentinel.cooldown`, `control/sentinel.incidents.jsonl`. Если видишь запись об инциденте Sentinel — мост уже сам реагирует; дай ему отработать grace-окно прежде чем вмешиваться вручную (§5).
 
 ### 4.4 Застрявшая задача (`task-survived-3x`)
 ```powershell
@@ -235,6 +238,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$src\driver.ps1" -Channel m
 # ждём exit 0 + "DRIVER SELFTEST OK"
 ```
 `lib/*.ps1` и `tools/*.ps1` (кроме исполняемых скриптов вроде `deep-audit.ps1`, у которого есть top-level запуск) — это библиотеки, их dot-source безопасен. Если сомневаешься — только ParseFile.
+
+> **Где живёт логика loop.** `driver.ps1` теперь тонкий entrypoint-загрузчик; реальная логика цикла разбита по модулям `driver/NN-*.ps1` (`80-preflight`, `81-loop-idle-claim`, `82-loop-turn-setup`, `84-loop-reply-markers`, `85-mode-transitions`, `86-completion`, `90-main-loop`; обслуживание/аудит — `10-maintenance.ps1`). `-SelfTest` грузит все эти модули, так что ловит load-time ошибки и в них. При parse-fail (§4.3) проверяй и `driver\*.ps1`-модули, не только корневой `driver.ps1`.
 
 ---
 
