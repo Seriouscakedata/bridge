@@ -21,6 +21,24 @@ function Assert-ReflectSmoke {
   }
 }
 
+function Get-ReflectSmokeTestTempRoot {
+  $candidates = @()
+  if (Test-Path -LiteralPath 'C:\tmp' -PathType Container) { $candidates += 'C:\tmp' }
+  $systemTemp = [System.IO.Path]::GetTempPath()
+  if (-not [string]::IsNullOrWhiteSpace($systemTemp)) { $candidates += $systemTemp }
+  $candidates += $BridgeRoot
+  foreach ($candidate in $candidates) {
+    try {
+      $base = Join-Path $candidate 'bridge-test-reflect-selfmodel-smoke'
+      if (-not (Test-Path -LiteralPath $base -PathType Container)) {
+        New-Item -ItemType Directory -Path $base -Force | Out-Null
+      }
+      return $base
+    } catch {}
+  }
+  throw 'unable to create reflect self-model smoke temp dir'
+}
+
 $reflect = Join-Path $BridgeRoot 'reflect.ps1'
 $realSmoke = Join-Path $BridgeRoot 'tools\self_model_smoke.ps1'
 if (-not (Test-Path -LiteralPath $reflect -PathType Leaf)) {
@@ -38,7 +56,7 @@ try { $realParsed = $realOut | ConvertFrom-Json } catch { $realParsed = $null }
 Assert-ReflectSmoke 'real self_model_smoke returns parseable JSON' ($null -ne $realParsed)
 Assert-ReflectSmoke 'real self_model_smoke reports testPassed' ($realParsed -and [bool]$realParsed.testPassed)
 
-$tmpDir = Join-Path $BridgeRoot '.bridge-runtime\test-reflect-selfmodel-smoke'
+$tmpDir = Join-Path (Get-ReflectSmokeTestTempRoot) ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 $okSmoke = Join-Path $tmpDir 'fake-smoke-ok.ps1'
 $failSmoke = Join-Path $tmpDir 'fake-smoke-fail.ps1'
@@ -86,6 +104,11 @@ Assert-ReflectSmoke 'smoke fail creates warning decision' ($null -ne $warning)
 Assert-ReflectSmoke 'warning records smoke exit code' ($warning -and [int]$warning.smoke_exit_code -eq 7)
 Assert-ReflectSmoke 'subsystem count did not decrease' ($warning -and [int]$warning.subsystem_count_after -ge [int]$warning.subsystem_count_before)
 Assert-ReflectSmoke 'warning contains missing_modules array' ($warning -and ($warning.PSObject.Properties.Name -contains 'missing_modules'))
+
+try { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+foreach ($newWarning in @($newWarnings)) {
+  try { Remove-Item -LiteralPath $newWarning.FullName -Force -ErrorAction SilentlyContinue } catch {}
+}
 
 if ($script:fail -gt 0) {
   Write-Error "test-reflect-selfmodel-smoke failed: $($script:fail) failed, $($script:pass) passed"

@@ -104,7 +104,14 @@ function Save-ReflectSelfModelFallback {
   param([string]$BridgeRoot, [string]$PackText)
 
   try {
-    $cacheDir = Join-Path $BridgeRoot '.bridge-runtime\self-model'
+    $runtimeRoot = $null
+    if (Get-Command Get-RuntimeRoot -ErrorAction SilentlyContinue) {
+      $runtimeRoot = Get-RuntimeRoot
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$runtimeRoot)) {
+      $runtimeRoot = Join-Path $BridgeRoot '.bridge-runtime'
+    }
+    $cacheDir = Join-Path $runtimeRoot 'self-model'
     if (-not (Test-Path -LiteralPath $cacheDir -PathType Container)) {
       New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
     }
@@ -389,7 +396,9 @@ try {
     $sectionLost = @('has_arch','has_critical','has_features','has_tests','has_safety','has_modules','has_idea_sources') |
       Where-Object { ([bool]$selfModelBefore.$_) -and (-not [bool]$selfModelAfter.$_) }
     $sizeDiff = [Math]::Abs($selfModelAfter.pack_bytes - $selfModelBefore.pack_bytes)
-    $diverged = $hashDiverged -or $sectionLost.Count -gt 0 -or ($sizeDiff -gt 512 -and $selfModelBefore.pack_bytes -gt 0)
+    $becameEmpty = ($selfModelBefore.pack_bytes -gt 0 -and $selfModelAfter.pack_bytes -le 0)
+    $structuralDiverged = $becameEmpty -or $sectionLost.Count -gt 0 -or ($sizeDiff -gt 512 -and $selfModelBefore.pack_bytes -gt 0)
+    $diverged = $structuralDiverged
 
     $rollbackPerformed = $false
     if ($diverged -and -not [string]::IsNullOrWhiteSpace($selfModelBefore.pack_text)) {
@@ -409,6 +418,7 @@ try {
         type = 'reflect-selfmodel-integrity-check'
         smoke_exit_code = $smokeResult.exit_code
         diverged = [bool]$diverged
+        structural_diverged = [bool]$structuralDiverged
         hash_diverged = [bool]$hashDiverged
         sections_lost = @($sectionLost)
         size_diff_bytes = [int]$sizeDiff
