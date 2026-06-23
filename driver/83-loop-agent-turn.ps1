@@ -453,6 +453,27 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
     continue
   }
 
+  if ($turnResult.status -eq 'auth_error') {
+    $authKind = [string]$turnResult.errorType
+    if ([string]::IsNullOrWhiteSpace($authKind)) { $authKind = 'agent_auth_error' }
+    $authReason = [string]$turnResult.reason
+    if ([string]::IsNullOrWhiteSpace($authReason)) { $authReason = [string]$reply }
+    if ([string]::IsNullOrWhiteSpace($authReason)) { $authReason = $authKind }
+    try { Set-TaskLastFailure -Kind $authKind -Text $authReason } catch {}
+    Add-Message -From system -Text ("🛑 Auth failure у агента (" + $authKind + "): " + $authReason + ". Это требует ручной переавторизации; ставлю канал на паузу вместо retry/Doctor loop.") -Kind event | Out-Null
+    if ([bool](Read-State).doctor_active) {
+      try { Abort-Doctor -Reason ("operator auth required: " + $authKind) } catch {}
+    }
+    Update-State {
+      param($s)
+      $s.paused = $true
+      $s.force_planner = $false
+      $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
+      $s.active_agent=$null; $s.active_model=$null; $s.status_text='Paused: agent authentication failed; operator reauth required.'; $s.agent_pid=$null; $s.status='paused'; $s.heartbeat=(Get-Date).ToString('o')
+    } | Out-Null
+    continue
+  }
+
   # Handle agent timeouts as retryable structured errors.
   if ($turnResult.status -eq 'timeout') {
     $who = if ($turnResult.errorType -eq 'coder_timeout') { 'Codex' } else { 'Claude' }

@@ -166,6 +166,20 @@
   }
   if ($null -eq $reply) { $reply = '' }
   $replayModel = if ([string]::IsNullOrWhiteSpace($Model)) { 'claude' } else { $Model }
+  if (Test-AgentAuthFailureText -Text $reply) {
+    $authSnippet = (($reply -replace '\s+', ' ').Trim())
+    if ($authSnippet.Length -gt 500) { $authSnippet = $authSnippet.Substring(0, 500) }
+    Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response $reply `
+      -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'error' -ErrorType 'planner_auth_error' -Provider 'claude'
+    try { Add-Message -From system -Text ("🛑 Claude auth error: " + $authSnippet + ". Нужна ручная переавторизация; fallback не запускаю, чтобы не крутить no-evidence loop.") -Kind event | Out-Null } catch {}
+    return [pscustomobject]@{
+      text = $authSnippet
+      status = 'auth_error'
+      duration = [int]$sw.Elapsed.TotalSeconds
+      errorType = 'planner_auth_error'
+      reason = $authSnippet
+    }
+  }
 
   # === Post-Claude fallback ladder (2026-05-28) =========================
   # If Claude timed out OR returned silent/empty, walk down the ladder:
@@ -251,6 +265,13 @@ $Prompt
   Add-ReplayRecordForCurrentTask -Role 'planner' -Model $replayModel -Mode $Mode -Prompt $Prompt -Response $reply `
     -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'claude'
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
+}
+
+function Test-AgentAuthFailureText {
+  param([AllowNull()][string]$Text)
+  $t = [string]$Text
+  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  return ($t -match '(?is)(Failed\s+to\s+authenticate|API\s+Error:\s*401|Invalid\s+authentication\s+credentials)')
 }
 
 function Get-LastClaudeInstruction {
@@ -727,6 +748,20 @@ function Invoke-Coder {
     Remove-Item $inF,$msgF,$outF,$errF -ErrorAction SilentlyContinue
   }
   if ($null -eq $reply) { $reply = '' }
+  if (Test-AgentAuthFailureText -Text $reply) {
+    $authSnippet = (($reply -replace '\s+', ' ').Trim())
+    if ($authSnippet.Length -gt 500) { $authSnippet = $authSnippet.Substring(0, 500) }
+    Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response $reply `
+      -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'error' -ErrorType 'coder_auth_error' -Provider 'codex'
+    try { Add-Message -From system -Text ("🛑 Codex auth error: " + $authSnippet + ". Нужна ручная переавторизация; retry/evidence loop не запускаю.") -Kind event | Out-Null } catch {}
+    return [pscustomobject]@{
+      text = $authSnippet
+      status = 'auth_error'
+      duration = [int]$sw.Elapsed.TotalSeconds
+      errorType = 'coder_auth_error'
+      reason = $authSnippet
+    }
+  }
   Add-ReplayRecordForCurrentTask -Role 'coder' -Model $replayCoderModel -Mode $Mode -Prompt $Prompt -Response $reply `
     -LatencyMs ([int]$sw.ElapsedMilliseconds) -CostUsd $null -Status 'ok' -ErrorType $null -Provider 'codex'
   return [pscustomobject]@{ text=$reply.Trim(); status='ok'; duration=[int]$sw.Elapsed.TotalSeconds; errorType=$null }
