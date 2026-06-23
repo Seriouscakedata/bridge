@@ -74,6 +74,12 @@ function Test-DoctorCommitFamineReason {
   return (([string]$Reason).Trim().ToLowerInvariant() -match '(^|:)commit_famine$')
 }
 
+function Test-DoctorHeldReadyCloseReason {
+  param([string]$Reason)
+  $r = ([string]$Reason).Trim().ToLowerInvariant()
+  return ($r -match '(^|:)commit_famine$' -or $r -match '(^|:)same_task_too_long$')
+}
+
 function Invoke-DoctorCriticPingPongAutoCommit {
   # Fast-path: when Doctor is triggered by critic_pingpong, check for uncommitted working-tree
   # changes. If found and all .ps1 files pass ParseFile, commit them and resolve Doctor without
@@ -238,14 +244,23 @@ function Test-DoctorHeldWorkReady {
   param($State = $null)
   if (-not $State) { $State = Read-State }
   if (-not $State) { return $false }
-  if (-not (Test-DoctorCommitFamineReason -Reason ([string]$State.doctor_reason))) { return $false }
+  $reason = [string]$State.doctor_reason
+  if (-not (Test-DoctorHeldReadyCloseReason -Reason $reason)) { return $false }
 
   $root = Get-BridgeRoot
   $head = Get-DoctorGitHead -Root $root
   $status = Get-DoctorGitStatusText -Root $root
-  if ($status -eq '') { return $true }
-  if (Test-DoctorHeldFreshCommit -State $State -Head $head -Root $root) { return $true }
-  if (Test-DoctorHeldTestsPassed -State $State -Head $head) { return $true }
+  $hasFreshCommit = Test-DoctorHeldFreshCommit -State $State -Head $head -Root $root
+  $testsPassed = Test-DoctorHeldTestsPassed -State $State -Head $head
+  if (Test-DoctorCommitFamineReason -Reason $reason) {
+    if ($status -eq '') { return $true }
+    if ($hasFreshCommit) { return $true }
+    if ($testsPassed) { return $true }
+    return $false
+  }
+  if ($status -ne '') { return $false }
+  if ($hasFreshCommit) { return $true }
+  if ($testsPassed) { return $true }
   return $false
 }
 

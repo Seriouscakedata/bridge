@@ -9,6 +9,7 @@ $script:FailCount = 0
 $script:State = $null
 $script:SetIdeaCalls = @()
 $script:BacklogLines = @()
+$script:GitStatusText = ' M lib/doctor.ps1'
 
 function New-TestState {
   param(
@@ -104,12 +105,13 @@ function Write-BacklogJsonLine {
 . (Join-Path $BridgeRoot 'lib\doctor.ps1')
 
 function Get-DoctorGitHead { param([string]$Root = '') return 'head0002' }
-function Get-DoctorGitStatusText { param([string]$Root = '') return ' M lib/doctor.ps1' }
+function Get-DoctorGitStatusText { param([string]$Root = '') return $script:GitStatusText }
 function Get-DoctorLastCommitMessage { param([string]$Root = '') return 'fix: completed held task' }
 
 Write-Host '=== Doctor commit_famine resolve ==='
 
 $script:State = New-TestState -BacklogId 'task-ready' -RepairAttempts 0
+$script:GitStatusText = ' M lib/doctor.ps1'
 $script:SetIdeaCalls = @()
 $script:BacklogLines = @()
 Assert-True (Test-DoctorHeldWorkReady -State $script:State) 'ready dirty held task with QA PASS is detected under auditor:commit_famine'
@@ -120,6 +122,18 @@ Assert-True ([string]$script:SetIdeaCalls[0].id -eq 'task-ready' -and [string]$s
 Assert-True (-not [bool]$script:State.doctor_active -and [string]::IsNullOrWhiteSpace([string]$script:State.current_task) -and [string]::IsNullOrWhiteSpace([string]$script:State.held_task)) 'Doctor state is cleared to idle without restoring held task'
 Assert-True ([int]$script:State.doctor_repair_attempts -eq 0) 'ready-close does not consume a repair attempt'
 Assert-True (@($script:BacklogLines).Count -eq 1 -and [string]$script:BacklogLines[0].action -eq 'doctor-resolve-held-done') 'resolve close writes task outcome audit line'
+
+Write-Host '=== Doctor same_task_too_long resolve ==='
+
+$script:State = New-TestState -BacklogId 'task-old-done' -Reason 'auditor:same_task_too_long'
+$script:GitStatusText = ''
+$script:SetIdeaCalls = @()
+$script:BacklogLines = @()
+Assert-True (Test-DoctorHeldWorkReady -State $script:State) 'ready clean held task with fresh commit is detected under auditor:same_task_too_long'
+$resolvedSameTask = Complete-Doctor -ResolveHeldDone
+Assert-True ([bool]$resolvedSameTask) 'Complete-Doctor -ResolveHeldDone works for same_task_too_long'
+Assert-True (@($script:SetIdeaCalls).Count -eq 1 -and [string]$script:SetIdeaCalls[0].id -eq 'task-old-done' -and [string]$script:SetIdeaCalls[0].status -eq 'done') 'same_task_too_long ready held task is marked done'
+Assert-True (-not [bool]$script:State.doctor_active -and [int]$script:State.doctor_repair_attempts -eq 0) 'same_task_too_long ready-close clears Doctor without consuming repair attempt'
 
 Write-Host '=== Doctor repair counter owner survives same-task restart ==='
 
