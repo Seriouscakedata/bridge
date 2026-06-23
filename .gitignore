@@ -71,3 +71,7 @@ tools/tmp-*.ps1
 conversation-auto-archive.last
 
 channels/*/.plan-gate-notified
+.pytest-tmp/
+pytest_*/
+tmp_pytest_*/
+pytest-cache-files-*/
