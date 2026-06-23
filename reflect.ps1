@@ -49,6 +49,73 @@ function Get-ReflectSelfModelSmokeSnapshot {
   }
 }
 
+function Get-ReflectSelfModelSnapshot {
+  param([string]$BridgeRoot)
+
+  $pack = ''
+  $packBytes = 0
+  $packHash = ''
+  $hasArch = $false
+  $hasCritical = $false
+  $hasFeatures = $false
+  $hasTests = $false
+  $hasSafety = $false
+  $hasModules = $false
+  $hasIdeaSources = $false
+  try {
+    if (Get-Command Get-SelfModelPack -ErrorAction SilentlyContinue) {
+      $pack = [string](Get-SelfModelPack -BridgeRoot $BridgeRoot)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pack)) {
+      $packBytes = [System.Text.Encoding]::UTF8.GetByteCount($pack)
+      $sha = [System.Security.Cryptography.SHA256]::Create()
+      try {
+        $packHash = [System.BitConverter]::ToString(
+          $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($pack))
+        ) -replace '-',''
+      } finally {
+        try { $sha.Dispose() } catch {}
+      }
+      $hasArch = $pack -match '(?m)^ARCH:'
+      $hasCritical = $pack -match '(?m)^CRITICAL:'
+      $hasFeatures = $pack -match '(?m)^FEATURES active:'
+      $hasTests = $pack -match '(?m)^TESTS:'
+      $hasSafety = $pack -match '(?m)^SAFETY:'
+      $hasModules = $pack -match '(?m)^MODULES '
+      $hasIdeaSources = $pack -match '(?m)^IDEA SOURCES:'
+    }
+  } catch {}
+
+  [pscustomobject]@{
+    pack_bytes = [int]$packBytes
+    pack_hash = $packHash
+    has_arch = [bool]$hasArch
+    has_critical = [bool]$hasCritical
+    has_features = [bool]$hasFeatures
+    has_tests = [bool]$hasTests
+    has_safety = [bool]$hasSafety
+    has_modules = [bool]$hasModules
+    has_idea_sources = [bool]$hasIdeaSources
+    pack_text = $pack
+  }
+}
+
+function Save-ReflectSelfModelFallback {
+  param([string]$BridgeRoot, [string]$PackText)
+
+  try {
+    $cacheDir = Join-Path $BridgeRoot '.bridge-runtime\self-model'
+    if (-not (Test-Path -LiteralPath $cacheDir -PathType Container)) {
+      New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+    }
+    $cachePath = Join-Path $cacheDir 'main.prompt.txt'
+    [System.IO.File]::WriteAllText($cachePath, $PackText, (New-Object System.Text.UTF8Encoding($false)))
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Invoke-ReflectSelfModelSmoke {
   param(
     [string]$BridgeRoot,
@@ -135,6 +202,7 @@ $scopeLine = if ($scope -eq 'projects') {
   "ОБЛАСТЬ: предлагай улучшения ТОЛЬКО самого моста (его код, надёжность, UX, память, автономия). НЕ предлагай менять другие проекты."
 }
 
+$selfModelBefore = Get-ReflectSelfModelSnapshot -BridgeRoot $bridgeRoot
 Write-ReflectLog '=== reflect start ==='
 
 # --- gather grounded context ---
@@ -315,7 +383,52 @@ try {
   $smokeResult = Invoke-ReflectSelfModelSmoke -BridgeRoot $bridgeRoot -SmokeScript $SelfModelSmokeScript
   if (-not [bool]$smokeResult.passed) {
     Write-ReflectLog ("self-model smoke FAIL after reflect: exit=" + $smokeResult.exit_code + " warning=" + $smokeResult.warning_path)
-    try { Add-Message -From system -Text "⚠ Рефлексия: self-model smoke не прошёл после рефлексии — возможна деградация самомодели." -Kind event | Out-Null } catch {}
+
+    $selfModelAfter = Get-ReflectSelfModelSnapshot -BridgeRoot $bridgeRoot
+    $hashDiverged = ($selfModelBefore.pack_hash -ne '' -and $selfModelBefore.pack_hash -ne $selfModelAfter.pack_hash)
+    $sectionLost = @('has_arch','has_critical','has_features','has_tests','has_safety','has_modules','has_idea_sources') |
+      Where-Object { ([bool]$selfModelBefore.$_) -and (-not [bool]$selfModelAfter.$_) }
+    $sizeDiff = [Math]::Abs($selfModelAfter.pack_bytes - $selfModelBefore.pack_bytes)
+    $diverged = $hashDiverged -or $sectionLost.Count -gt 0 -or ($sizeDiff -gt 512 -and $selfModelBefore.pack_bytes -gt 0)
+
+    $rollbackPerformed = $false
+    if ($diverged -and -not [string]::IsNullOrWhiteSpace($selfModelBefore.pack_text)) {
+      $rollbackPerformed = Save-ReflectSelfModelFallback -BridgeRoot $bridgeRoot -PackText $selfModelBefore.pack_text
+      Write-ReflectLog ("self-model rollback: " + $(if ($rollbackPerformed) { 'OK' } else { 'FAILED' }))
+    }
+
+    try {
+      $decisionsDir = Join-Path $bridgeRoot 'decisions'
+      if (-not (Test-Path -LiteralPath $decisionsDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $decisionsDir -Force | Out-Null
+      }
+      $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+      $logPath = Join-Path $decisionsDir "reflect-selfmodel-integrity-$ts.json"
+      [pscustomobject]@{
+        ts = (Get-Date).ToString('o')
+        type = 'reflect-selfmodel-integrity-check'
+        smoke_exit_code = $smokeResult.exit_code
+        diverged = [bool]$diverged
+        hash_diverged = [bool]$hashDiverged
+        sections_lost = @($sectionLost)
+        size_diff_bytes = [int]$sizeDiff
+        before_pack_bytes = [int]$selfModelBefore.pack_bytes
+        after_pack_bytes = [int]$selfModelAfter.pack_bytes
+        before_pack_hash = [string]$selfModelBefore.pack_hash
+        after_pack_hash = [string]$selfModelAfter.pack_hash
+        rollback_performed = [bool]$rollbackPerformed
+        smoke_warning_path = [string]$smokeResult.warning_path
+      } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $logPath -Encoding UTF8
+    } catch {
+      Write-ReflectLog ("integrity log write failed: " + $_.Exception.Message)
+    }
+
+    $msgText = if ($rollbackPerformed) {
+      "⚠ Рефлексия: self-model smoke не прошёл (деградация обнаружена) — выполнен откат к pre-reflect версии."
+    } else {
+      "⚠ Рефлексия: self-model smoke не прошёл после рефлексии — возможна деградация самомодели."
+    }
+    try { Add-Message -From system -Text $msgText -Kind event | Out-Null } catch {}
   } else {
     Write-ReflectLog 'self-model smoke OK after reflect'
   }
