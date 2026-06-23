@@ -173,6 +173,18 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 > и задача застрянет в `approved` навсегда. Для операторских control-plane задач всегда добавляй
 > `tags: ["operator"]`.
 
+### Способ E — операторский batch (приоритетная пачка задач)
+Чтобы влить сразу пачку well-specified задач с приоритетом ВЫШЕ audit/auto-идей — `tools\operator-delegate.ps1`
+(обёртка над `Add-OperatorBatch`, `lib\backlog-core.ps1`). Все задачи помечаются `tags:['operator', 'batch:<id>']`,
+`approved + severity critical + SkipCurator`, клеймятся первыми (operator-tier в `Get-NextRunnableIdea`), и
+дают один общий отчёт-сводку по `batchId` (`Get-OperatorBatchProgress`). Возвращает `batchId` — единственная
+ручка, чтобы следить за всей пачкой.
+
+> **⚠️ Переоткрытие/смена статуса задачи (`Set-Idea`).** Терминальную задачу (`done`/`rejected`) НЕЛЬЗЯ
+> понизить в нетерминальный статус без `-Reason` вида `operator:…` (или `reaper:…`) — иначе мутация
+> игнорируется (защита от случайного сброса терминального исхода). А `Set-Idea -Status failed` требует
+> `-FailureEvidence`; без доказательства срабатывает `outcome-ledger-block` и задача НЕ помечается failed.
+
 ---
 
 ## 4. Как мост работает командой (параллель)
@@ -210,8 +222,8 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 | codex-specialist ×2 | codex gpt-5.3-codex/high | 3 | 3 | 2 | код-специфика |
 | claude-sonnet ×3 | claude sonnet | 3 | 3 | 3 | frontend/docs/config |
 | **claude-fable ×2** | claude-opus-4-8 (id claude-fable) | **5** | **5** | 1 | **только важное architectural/deep-think** |
-| deepseek-pro ×2 | deepseek v4-pro | 4 | **2** | 3 | сильный и дешёвый |
-| gemini-flash ×2 | gemini 2.5-flash | 3 | **1** | 4 | дешёвый, быстрый, простое |
+| deepseek-pro ×2 | deepseek v4-pro | **2** | **2** | 3 | дешёвый; strength 2 ⇒ только simple-задачи |
+| gemini-flash ×2 | gemini 2.5-flash | **2** | **1** | 4 | дешёвый, быстрый; strength 2 ⇒ только simple-задачи |
 
 `strength/cost/speed` — шкала 1–5. `domains` — backend / frontend / docs / config / scripts / any.
 
@@ -253,6 +265,8 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
   **paid** (deepseek/gemini API → `cost_usd`). Цены — `config.usage.prices`.
 - Сводка burn-rate — через API пульта / `Get-UsageSummary` (см. MONITORING_RUNBOOK).
 - Хочешь дешевле — больше gemini-flash/deepseek (cost 1–2) в пуле, меньше fable/codex-xhigh (cost 5).
+- **`config.usage.dailyCapUsd`** — живой потолок paid-расхода за 24ч (сейчас `0` = выключен). При превышении
+  `operator-pulse` краснит cost-строку и сигналит `usage.dailyCapUsd exceeded` (это предупреждение, а не стоп).
 
 ---
 
@@ -360,12 +374,21 @@ MicroDebate → FinalV2+RedTeam → Decision Record), чекпойнты под 
    Никогда не редактируй скрипты моста в редакторе, который сохраняет без BOM.
 4. **Circuit-breaker.** Если за 30 мин >5 «крашевых» рестартов — мост уходит в 15-мин cooldown
    (драйверы стоят). Чистые выходы (code 0) теперь НЕ считаются крахами. Сброс — см. §9.
+   **Hard-freeze (жёстче cooldown):** если доминирующая причина рестартов детерминистичная (доля ≥0.8),
+   breaker пишет `control\cb-freeze.flag` и блокирует ВЕСЬ запуск драйверов до вмешательства оператора —
+   восстановление только вручную (удалить флаг, см. §9). Отдельный supervisor-restart-limiter
+   (`restartLimitMaxPerHour`) в проде фактически выключен: config даёт `1000/час` (cooldown 5 мин) при
+   код-дефолтах `10/час`, `30 мин` — так что этот второй ограничитель почти не срабатывает.
 5. **Verify-gate для проектов.** Driver теперь определяет repo root задачи (`Get-TaskRepoRoot`) и
    проверяет project diff, а не bridge diff. Для проектных каналов QA должен гонять install/typecheck/build
    проекта. Если агент пишет только план и пытается `STATUS: DONE`, guard должен отклонить закрытие.
 6. **Quality bypass guard.** Driver блокирует опасные обходы качества в project diff: `ignoreBuildErrors`,
    `ignoreDuringBuilds`, `@ts-nocheck`, verify-команды с `|| true` / принудительным `exit 0`.
-7. **Elevated sandbox (`danger-full-access`).** По умолчанию coder работает в `workspace-write`. Сейчас
+7. **Supervisor сам убивает «зависшие» процессы (hung-detection).** Сервер: 3 подряд неудачных
+   `/api/health`-пробы (интервал 30с) → принудительный kill+restart. Driver: ~25 мин подряд без
+   изменения CPU (25 проб × 60с) → kill+restart. То есть медленный-но-живой процесс может быть убит и
+   перезапущен активным детектором; в чате видно «⚠ … принудительный перезапуск».
+8. **Elevated sandbox (`danger-full-access`).** По умолчанию coder работает в `workspace-write`. Сейчас
    на `danger-full-access` подняты ДВА канала: `literary-slop-video` и `oko`. Карта задаётся в
    `coder.sandboxModeByChannel`; `oko` добавлен через overlay `settings.json` (gitignored, переживает
    rollback) — поэтому config-only доки занижают объём elevated-доступа.
@@ -392,6 +415,21 @@ $st.heartbeat=(Get-Date).ToString('o')
 ```powershell
 $rf='C:\Users\rafie\.bridge-runtime\restarts.jsonl'
 Move-Item $rf "$rf.bak" -Force; New-Item -ItemType File $rf | Out-Null   # очистить окно рестартов
+```
+
+**Hard-freeze (мост заморожен, в чате «🛑 Circuit-breaker … Мост заморожен, жду оператора»):**
+breaker записал `control\cb-freeze.flag` и НЕ поднимает драйверы, пока флаг есть. Сними его вручную
+(глянь причину в файле, при необходимости почисти окно рестартов как выше):
+```powershell
+Remove-Item 'C:\Users\rafie\OneDrive\Documents\bridge\control\cb-freeze.flag' -Force
+```
+
+**Заглушить watchdog (он ложно откатывает/перезапускает):** создай kill-switch — пока файл есть,
+watchdog не делает НИЧЕГО. Только этот защищённый путь и слушается; легаси `control\watchdog.pause`
+больше НЕ читается.
+```powershell
+$priv="$env:USERPROFILE\.bridge-private"; New-Item -ItemType Directory $priv -Force | Out-Null
+New-Item -ItemType File (Join-Path $priv 'watchdog.pause') -Force | Out-Null   # снять = удалить файл
 ```
 
 **Два инстанса supervisor (мигание процессов):** оставь самый ранний по времени старта, убей новые
@@ -435,6 +473,8 @@ cd C:\Users\rafie\aipartners
 | `channels\<ch>\conversation.jsonl` | история чата/событий канала |
 | `channels\<ch>\qa-results.jsonl` | результаты проверок |
 | `control\restart.flag` | сигнал graceful-перезапуска драйверов |
+| `control\cb-freeze.flag` | hard-freeze circuit-breaker'а: блокирует запуск драйверов, снимается удалением (§9) |
+| `bridge.ps1` (+ `bridge.cmd`) | CLI-диспетчер оператора: `bridge replay <task_id>` / `bridge status` |
 | `control\driver.<ch>.out/err.log` | логи драйвера канала |
 | `control\supervisor.log` | лог супервизора |
 | `.bridge-runtime\restarts.jsonl` | окно рестартов для circuit-breaker |
@@ -467,6 +507,8 @@ cd C:\Users\rafie\aipartners
 | Сделать команду дешевле | больше gemini/deepseek (cost 1–2), меньше fable/codex-xhigh (cost 5) (§4-bis) |
 | Форсировать модель на задачу | `worker: <id>` в тексте задачи (§4-bis) |
 | Посмотреть расходы | usage.jsonl / Get-UsageSummary (§4-bis) |
+| Живой статус одной командой | `bridge status` (→ `tools\live-status.ps1`) |
+| Посмотреть сохранённые agent-вызовы задачи | `bridge replay <task_id>` (→ `tools\replay-cli.ps1`; `--list`, `--role`, `--turn`, `--full`) |
 
 ---
 

@@ -188,6 +188,13 @@ foreach($s in $sups){ $c=@($kids|?{$_.ParentProcessId -eq $s.ProcessId}).Count; 
 ```
 Оставь supervisor с детьми, лишний (0 детей) — `Stop-Process` (предварительно убедись, что это точно дубль).
 
+### 4.8 Doctor-активация по зацикливанию (`loop_detected` / `no_progress_loop`)
+Драйвер сам ловит две разновидности «топтания на месте» внутри задачи и активирует Doctor (видно в чате и `metrics.jsonl` как `doctor_event reason=...`):
+- **`loop_detected`** — 3 хода подряд с одинаковым fingerprint (`git diff --stat HEAD` + текст ответа); если зацикливание повторяется уже в режиме Doctor, задача прерывается (aborted). См. `driver/85-loop-mode-transitions.ps1`.
+- **`no_progress_loop`** — ≥4 ходов кодера подряд без изменений файлов (`no_progress_count`). Driver просит Codex объяснить блокер и поднимает Doctor.
+
+Это штатная самозащита — дай Doctor отработать; вмешивайся (§4.4/§5) только если задача после этого реально застряла.
+
 ---
 
 ## 5. ВОССТАНОВЛЕНИЕ (recovery) — полный чистый рестарт

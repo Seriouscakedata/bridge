@@ -1,6 +1,6 @@
 # Карта проекта: bridge
 
-> **[PROTECTED SERVICE] ЛАПА (computer-control)** — GUI-руки оператора для задач на ПК. Вызов: `[[ЛАПА: skill | key=val]]`. Навыки: `open-app`, `type`, `telegram-send`, `telegram-send-sticker`. Точка входа: `tools/computer-use.ps1` → `channels/computer-control/cc.py`. Архитектура: Planner(Flash Lite)→Executor(UIAutomation→Vision)→Reporter(Telegram). Гейты: verifier ≥0.40 (confidence), act (опасные шаги). Быстро+дёшево. Используй для GUI/ПК задач, НЕ для файлов/git.
+> **[PROTECTED SERVICE] ЛАПА (computer-control)** — GUI-руки оператора для задач на ПК. Вызов: `[[ЛАПА: skill | key=val]]`. Навыки: `open-app`, `type`, `telegram-send`, `telegram-send-sticker`. Точка входа: маркер `[[ЛАПА]]` → `tools/lapa-control.ps1` (`Invoke-LapaSkill`) → `python -m lapa.cli` с cwd = `C:\Users\rafie\bridge-projects\lapa` (overridable `$env:LAPA_ROOT`). Пакет лапы: `bridge-projects/lapa/lapa/` (`cli.py`, `resolver.py`, `selector.py`, `vision.py`, `act.py`, `verifier.py`). Старый `cc.py` (в `bridge-projects/computer-control/`) — отдельный legacy-проект, лапа его заменила; `tools/computer-use.ps1` — отдельный инструмент, не точка входа лапы. Архитектура: Resolver→Selector(UIAutomation→Vision)→Act→Verifier→Reporter(Telegram). Гейты: verifier ≥0.40 (confidence), act (опасные шаги). Быстро+дёшево. Используй для GUI/ПК задач, НЕ для файлов/git.
 
 _Обновлено: 2026-06-23 (инвентарь модулей/аудита/backlog/сервера сверен с кодом). Предыдущая актуализация: 2026-06-02, опорный коммит `4633fa8 fix(driver): audit project diffs and block quality bypasses`._
 
@@ -229,7 +229,11 @@ Readiness проекта считается по мягкому гейту:
 - `GET /api/code`
 - `POST /api/architect/run`
 - `POST /api/brainstorm`
-- `GET /api/runbook`
+- `POST /api/reflect` (форсирует немедленный цикл рефлексии — сбрасывает `reflect.last` и запускает `reflect.ps1`)
+- `GET /api/runbook` (one-click диагностический ZIP: git status/log, health.json, smoke, хвост логов, state-summary, worktrees; строки логов с `key|token|secret|password|bearer|authorization|gemini` редактируются)
+- `GET /api/task-latency` (последние 10 задач: `phase_timings` + топ-3 самых медленных фазы)
+- `GET /api/computer-use-history` (хвост `control/cu-history.jsonl` — лог действий лапы для UI)
+- `GET /api/computer-use-screenshot?name=<file>.png` (отдаёт скриншоты лапы из `control/cu-screenshots`)
 - `GET /api/metrics`
 - `GET /api/audit/latest`
 - `GET /api/radar`
@@ -271,7 +275,7 @@ Fast-lane:
 - Явный `[[FAST]]` считается только первой непустой строкой.
 - Описание задачи, где `[[FAST]]` встречается в середине текста, не должно включать fast-lane.
 
-Режимы задачи (`state.task_mode`): `normal`, `discuss`, `study`, `synthesis`, `fast`, `computer_action`.
+Режимы задачи (`state.task_mode`): `normal`, `discuss`, `study`, `synthesis`, `research`. (`fast` — НЕ режим: fast-lane это overlay skip-флагов поверх `task_mode='normal'` через `Set-FastLaneFlags`. `computer_action` — это intent классификатора, который driver разрешает в `task_mode='normal'` и роутит в `Invoke-LapaSkill`, а не отдельный режим.)
 
 - Decision Synthesis (`task_mode='synthesis'`, переключатель `config.synthesisMode.enabled=true`) заменяет старый двухмодельный role-based `discuss` для Deep/High-Stakes и явных discuss-задач.
 - No-LLM depth router `lib/decision-depth.ps1` классифицирует глубину (`Simple` / `Standard` / `Deep` / `High-Stakes`) и решает, идти ли в synthesis.

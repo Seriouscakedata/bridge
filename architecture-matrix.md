@@ -41,22 +41,23 @@ _Обновлено: 2026-06-23. Ручной reference-файл. Архитек
 ## Агенты / оркестрация
 | Capability | Status | Module | Notes |
 |---|---|---|---|
-| планировщик (план→Codex) | ✅ | driver/*.ps1 (40-agent-invoke) | STATUS: CONTINUE/DONE/RESEARCH/DISCUSS |
+| планировщик (план→Codex) | ✅ | driver/*.ps1 (40-agent-invoke) | STATUS: CONTINUE/DONE/CHAT/RESEARCH/DISCUSS (CHAT = ответ-только без Codex/действий); Codex может вернуть CONTINUE-CHUNK:N/M — многоэтапная задача продолжается следующим этапом (лимит maxChunksPerTask=10, потом форс-закрытие) |
 | Codex (кодер) | ✅ | driver/40-agent-invoke.ps1 | через xhigh, RUNJOB, FILE, VERIFIED |
 | независимый критик | ✅ | driver/40-agent-invoke.ps1 | DeepSeek-Pro ревью diff |
 | coder-bypass гейт | ✅ | driver/*.ps1 (83/86/87) | file-edits только через Codex |
 | discuss-mode | ✅ | driver/40-agent-invoke.ps1 | DISCUSS-ONLY маркер при закрытии без кода; для Deep/High-Stakes вытеснен task_mode='synthesis' |
 | Decision Synthesis | ✅ | lib/decision-synthesis.ps1 + lib/decision-depth.ps1 | task_mode='synthesis' (synthesisMode.enabled): no-LLM depth-роутер (Simple/Standard/Deep/High-Stakes) → stateless pipeline (3 слепых proposal → ConflictMatrix → CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record под channels/<slug>/decisions/<id>/); High-Stakes + high-sev red-team → needs_operator (без auto-implement) |
-| computer_action mode (лапа) | ✅ | driver/81-loop-idle-claim.ps1 | локальный mouse/window fast-lane без planner/coder/critic; intent-роутер distinguishes от обычных задач |
-| study-mode (с bug-markers) | ✅ | lib/study.ps1 | не триггерится на жалобы |
-| план-доска (EPIC/TASK/STEP) | ✅ | lib/plan.ps1 | `/api/plan`, парсинг `[[PLAN]]` |
+| computer_action (лапа) | ✅ | driver/81-loop-idle-claim.ps1 | НЕ отдельный task_mode: intent-роутер метит `computer_action` → резолвится в `task_mode='normal'` (intentComputerActionClosure); локальный mouse/window. fast-lane — это skip-флаги-оверлей (Set-FastLaneFlags: skip planner/critic/reflect) поверх normal, тоже НЕ task_mode |
+| research-mode (web-ход Claude) | ✅ | driver/86-loop-completion-checks.ps1 | task_mode='research' по `STATUS: RESEARCH` — отдельный web-поиск/чтение источников без Bash; research_count лимитирует число ходов |
+| study-mode (с bug-markers) | ✅ | lib/study.ps1 | не триггерится на жалобы; task_mode='study' |
+| план-доска (EPIC/TASK/STEP) | ✅ | lib/plan.ps1 | `/api/plan`, парсинг `[[PLAN]]`; агенты обновляют шаги по ходу маркерами `[[STEP-DONE: id \| результат]]` / `[[STEP: id \| status \| результат]]` (driver/84-loop-reply-markers.ps1) |
 | параллельные воркеры (worktree) | ✅ | lib/parallel.ps1 | `[[PARALLEL]]` маркер |
 | job manager (фоновые) | ✅ | lib/jobs.ps1 | `[[RUNJOB]]` маркер |
 
 ## Безопасность + проверки
 | Capability | Status | Module | Notes |
 |---|---|---|---|
-| SAFETY-gate (`[[SAFETY:]]`) | ✅ | driver/83-loop-agent-turn.ps1 | блокирует опасные действия Codex |
+| SAFETY-gate (`[[SAFETY:]]`) | ✅ | driver/83-loop-agent-turn.ps1 | HITL-пауза (НЕ авто-блок): задача абортится, оператор должен ответить «да, выполни» чтобы подтвердить опасное действие Codex |
 | verify-gate (`[[VERIFIED:]]`) | ✅ | driver/86-loop-completion-checks.ps1 | требует реальный запуск перед DONE |
 | API/UI verification rule | ✅ | driver/86-loop-completion-checks.ps1 | реальный HTTP + ui_audit |
 | ETS-JSON footgun lint | ✅ | smoke.ps1 | `-Depth>=12` и `raw\|ConvertTo-Json` |

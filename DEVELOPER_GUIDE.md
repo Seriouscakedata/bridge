@@ -56,6 +56,9 @@ HTTP-сервер на `http://+:8787/`:
 - REST API: `/api/status`, `/api/messages`, `/api/settings`, `/api/channels/*`, `/api/backlog`, `/api/brainstorm`, и т.д.;
 - принимает сообщения пользователя в чат, пишет их в `channels/<slug>/conversation.jsonl`;
 - **аутентификация по токену (Bearer / `?token=`) ИЛИ HTTP-Basic (user/password) из `auth.json`** — без креденшелов `/api/status` отдаёт `401` (это «жив», а не «сломан»). `auth.json`/`secrets.json` резолвятся из приватного стора ВНЕ корня моста (`Get-AuthPath` → `Get-PrivateFilePath`); путь внутри моста — лишь legacy-fallback.
+- **`GET /api/health` — единственный НЕаутентифицированный endpoint** (обрабатывается ДО `Test-Auth`, `CORS *`): с кредами отдаёт полную форму, без кредов — урезанную (`ok/uptime_sec/heartbeat_age_sec/recent_error_count_24h`). `ok = (heartbeat_age_sec < 120) AND (not paused) AND (recent_error_count_24h < 10)`. Используется canary/мониторингом.
+- **Голос/upload/screenshot (живые ручки):** `POST /api/stt` (распознавание речи — **платный live-вызов Gemini**, модель `config.sttModel`), `POST /api/upload` (вложения), `POST /api/screenshot` (скрин рабочего стола).
+- **Acceptance-транспорт:** `POST /api/scenario/result` (браузерный сценарий из `tools/scenarios/*.js` постит сюда результат) ↔ `GET /api/scenario/result?name=X` (`tools/scenario.ps1` поллит ответ). Это бэкбон верификации приёмки UI-сценариев.
 
 ### 2.3 driver.ps1 + driver/*.ps1 (entrypoint + модули)
 Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). `driver.ps1` оставлен как тонкий entrypoint: загружает библиотеки, dot-source'ит `driver/*.ps1`, выполняет self-test и вызывает startup/main loop из модулей:
@@ -155,10 +158,12 @@ bridge/
 - **Planner = Claude** (`config.planner = claude`). Думает, планирует, ревьюит, ведёт обсуждения.
 - **Coder = Codex** (`config.coder.agent = codex`, `sandboxMode = workspace-write`). Пишет код в песочнице.
 - **Критик** (`deepseek-v4-flash`/`-pro`) независимо проверяет правки (до `criticMaxRetries` попыток).
-- Режимы (`task_mode`): обычный `normal`/`code`, `discuss` (диалог двух моделей), `study` (глубокое изучение), `synthesis` (Multi-Model Decision Synthesis — см. §4.1-bis), `fast` (простая безопасная команда МОСТУ без полного planner↔coder цикла) и `computer_action` (действие на рабочем столе через «руки/лапу» — см. §4.1-ter). Намерение/режим выбирает `lib/intent.ps1` (`primary_mode`).
+- Реальные значения `task_mode` (что пишется в `state.json`): `normal` (он же `code`), `discuss` (диалог двух моделей), `study` (глубокое изучение), `synthesis` (Multi-Model Decision Synthesis — см. §4.1-bis) и `research` (Claude ищет/сверяет ВНЕШНИЕ источники, тулсет `Read/Grep/Glob/WebSearch/WebFetch` без Bash; `driver/82-loop-turn-setup.ps1`, `driver/40-agent-invoke.ps1:45`). Намерение/режим выбирает `lib/intent.ps1` (`primary_mode`).
+- **`fast` — НЕ task_mode, а оверлей skip-флагов поверх `normal`.** Fast-lane выставляет `task_mode='normal'` + `skip_planner`/`skip_critic` (`Set-FastLaneFlags`, `driver/00-task-session.ps1`); `effMode='fast'` в логах/телеметрии — только ярлык, не значение состояния. Гейт fast-lane — `fastLane.{autoDetect,minChars}`.
+- **`computer_action` тоже резолвится в `task_mode='normal'`** (`driver/81-loop-idle-claim.ps1:450`) — это intent/«руки-лапа» fast-lane, см. §4.1-ter, а не отдельное значение состояния.
 
 ### 4.1-bis Decision Synthesis (`synthesis` mode)
-При `synthesisMode.enabled = true` (сейчас включено) роутер глубины (`lib/decision-depth.ps1`, без LLM: Simple/Standard/Deep/High-Stakes) направляет Deep/High-Stakes-задачи и явный `discuss` в `task_mode = 'synthesis'` вместо старого диалога двух моделей. Движок — stateless artifact pipeline (`lib/decision-synthesis.ps1`, `Invoke-SynthesisPipeline`): TaskContract → 3 «слепых» предложения → ConflictMatrix → CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record, с чекпойнтами в `channels/<slug>/decisions/<id>/`. High-Stakes и high-severity red-team всегда выставляют `needs_operator` (без авто-реализации).
+При `synthesisMode.enabled = true` (сейчас включено) роутер глубины (`lib/decision-depth.ps1`, без LLM: Simple/Standard/Deep/High-Stakes) направляет Deep/High-Stakes-задачи и явный `discuss` в `task_mode = 'synthesis'` вместо старого диалога двух моделей. Тонкости роутера глубины (чтобы не удивляться, почему задача НЕ ушла в Deep): (1) **fast-path** — при intent=normal с высокой уверенностью задача идёт в Simple/Standard, даже если текст упоминает «архитектуру/дизайн»; name-drop сам по себе Deep не форсит; (2) **code-verb backstop** — императивная code-задача → Standard; (3) **High-Stakes-подавление** — ключевые слова (`secret/watchdog/supervisor/circuit-breaker/control-plane/security/...`) НЕ форсят High-Stakes на короткой/мелкой задаче (иначе мелочь зря гоняется через synthesis и падает на restart-cap). Движок — stateless artifact pipeline (`lib/decision-synthesis.ps1`, `Invoke-SynthesisPipeline`): TaskContract → 3 «слепых» предложения → ConflictMatrix → CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record, с чекпойнтами в `channels/<slug>/decisions/<id>/`. High-Stakes и high-severity red-team всегда выставляют `needs_operator` (без авто-реализации).
 
 ### 4.1-ter computer_action mode («руки/лапа»)
 Когда `lib/intent.ps1` классифицирует сообщение как «действие на рабочем столе прямо сейчас» (открыть
@@ -182,6 +187,8 @@ bridge/
 - Рутина (curator, intent, smoke) → `gemini-2.5-flash-lite` / `gemini-2.5-flash`.
 - Основные LLM-роли — DeepSeek (`deepseek-v4-flash` / `-pro`), см. `config.llm`.
 
+**Авто-эскалация модели (`lib/router.ps1`):** поверх tiering есть отдельный router — `triageModel` эскалируется в `deepModel` при `timeout_retry`, либо когда оконная success-rate triage-модели (из `turns.jsonl`) падает ниже `router.minSuccess` при наличии ≥`router.minSamples` сэмплов за `router.windowHours` (дефолты `0.5 / 5 / 24`).
+
 ### 4.3 Автономность (self-development)
 Мост сам берёт задачи из бэклога, когда простаивает. Контролируется:
 - `config.autonomy.enabled` — включена ли;
@@ -190,7 +197,17 @@ bridge/
 - `maxAutonomousTasksPerDay` — лимит (0 = безлимит);
 - `autonomyDisabledChannels` — каналы без автономии, если надо временно убрать конкуренцию за Codex; UI: 🤖/🚫 в меню каналов.
 
-Гейт — `Test-AutonomyReady` (driver.ps1). Бэклог: `lib/backlog.ps1` (загрузчик). Статусы идеи: `new → approved → running/working → done | rejected | held | auto-dropped | failed | superseded | cancelled` (`deduped` на входе). `green/yellow/red` — risk-TIERS (`Get-IdeaRiskTier`), не статусы.
+Гейт — `Test-AutonomyReady` (driver.ps1). Бэклог: `lib/backlog.ps1` (загрузчик). Статусы идеи: `new → approved → running/working → done | rejected | held | auto-dropped | failed | superseded | cancelled` (`deduped` на входе). Терминальные статусы автоматики:
+- **`auto-resolved`** — на claim-time `Test-IdeaStillRelevant` обнаружил, что задача уже сделана другим коммитом (`resolved_by_sha`); идея закрывается без работы (`backlog-core.ps1`). Считается как done в автономной статистике.
+- **`needs-review`** — после `attempts >= 5` `Set-BacklogAttemptsExhausted` снимает задачу с автоисполнения (`needs_review_reason='attempts-exhausted'`, `backlog-core.ps1:1532`). Чтобы вернуть в работу — оператор переводит обратно в `approved` (`Set-Idea -Status approved -Reason 'operator:…'`).
+- **`decomposed`** — родительский атом, который планировщик разбил на дочерние через `[[DECOMPOSED: N]]` (см. §4.3-quater), либо осиротевший parent, закрытый state-reaper'ом.
+- **`auto-stale`** — непривзятая `new`-идея старше `ideaStaleDays=14` авто-архивируется (`backlog-dedup.ps1`).
+
+`green/yellow/red` — risk-TIERS (`Get-IdeaRiskTier`), не статусы.
+
+**State-reaper (zombie-recovery):** зависшую `running`-задачу без живого `agent_pid`, без свежего worker-heartbeat (старше `HeartbeatMaxAgeSeconds=900`) и без активного runtime-state state-reaper авто-возвращает в `approved`, чтобы она переклеймилась; после `MaxZombieRetries=2` смертей подряд уходит в `held` на ревью (`lib/backlog-state-reaper.ps1`).
+
+**Embedding-дедуп на входе (`Add-Idea` может тихо вернуть null/existing id):** при cosine-similarity к уже известной идее `>= 0.88` возвращается id существующей (дедуп); `>= 0.85` к недавно отклонённой — идея дропается (silent null); `0.70–0.88` — лишь помечается «similar», но создаётся (`lib/backlog-dedup.ps1:74,79,82`).
 
 ### 4.3-bis Project Autopilot (project backlog generation)
 Для каналов, привязанных к внешнему проекту, добавлен отдельный слой автопилота, чтобы проект не
@@ -367,6 +384,12 @@ Driver пишет в чат телеметрию фронта (`selected`, `read
 Итог deterministic parallel wave сохраняется в project memory: success как `project_worklog`, partial/fail
 как `project_risk`.
 
+### 4.3-quater `[[DECOMPOSED: N]]` planner-split marker
+Когда планировщик решает разбить крупный atom на N дочерних, он эмитит атомы через `[[PROJECT_BACKLOG]]` и
+отдельной строкой `[[DECOMPOSED: N атомов]]` (`lib/prompt-builder.ps1`). Драйвер (`driver/86-loop-completion-checks.ps1:140`)
+ловит маркер, ставит родителю `status='decomposed'` и **закрывает его без хода кодера и без DONE-gate** —
+работа делегирована дочерним атомам. Это штатный путь «разложить на атомы», не ошибка.
+
 ### 4.4 Песочница кодера и auto-commit (это НЕ баг)
 Codex работает в **изолированной песочнице** (`workspace-write`): может писать файлы проекта, но **намеренно не имеет доступа к `.git`** (ACL на `.git/index.lock`). Поэтому:
 - Codex правит файлы → пытается `git commit` → получает `Permission denied` → честно сообщает «git заблокирован»;
@@ -395,7 +418,7 @@ Codex работает в **изолированной песочнице** (`wo
 ### 4.5 Аудит (статический + deep-audit)
 Ночью (окно `config.audit` 01:00–06:00; запуск раз за ОКНО — привязка к `winStart`, не sliding `floorHours`; `floorHours=20` — вторичный same-window guard) или вручную:
 1. **Статика**: `tools/audit.ps1` — security/functional грепы + DeepSeek.
-2. **findings-ledger** (`audit/findings-ledger.jsonl`) — машинный учёт находок (new→fixed→regressed, dedup).
+2. **findings-ledger** (`audit/findings-ledger.jsonl`) — машинный учёт находок с dedup по root-cause. Лайфцикл, который реально пишет код (`tools/audit.ps1`): первая встреча → `new`, повторная → `open`. `fixed`/`suppressed` код только ЧИТАЕТ (выставляются вне аудита); при повторном появлении такой находки она помечается `regressed` и снова попадает в отчёт. **Suppression:** уже известная (`open`) НЕ-критичная находка вырезается из текущего отчёта (`findings_ledger_suppressed_count`) — поэтому повторный non-critical перестаёт «мозолить глаза» после первой подачи; критичные показываются всегда.
 3. **usefulness-score** (`audit/usefulness.jsonl`) — насколько полезен аудит (action_rate + resolved_signal_delta + incident_capture).
 4. **deep-audit** (`tools/deep-audit.ps1`): многоагентный — N срезов параллельно (security/functional/reliability/architecture/dependency-model), каждый со своей моделью из `config.audit.deepAgents`, результаты сливаются.
 
@@ -406,16 +429,37 @@ root-cause дубли логируются как `intake-dedup`, очевидн
 `intake_gate` metadata. `SkipCurator` означает только "не запускать дешёвый LLM-curator"; он не
 обходит deterministic intake. Static critical filing в `tools/audit.ps1` также идёт через `Add-Idea`.
 
+**Security-evidence правила gate'а** (проверка против реального кода): security-находка только в комментарии → `auto-dropped`; нет реального dynamic-exec примитива (`Invoke-Expression` и т.п.) → `auto-dropped`; слабое/косвенное evidence секрета → `held`; реальное присваивание/использование → `allow`.
+
+**Второй слой — `cross_file_causal_map` hard hold** (`Test-BacklogFindingCausalMap`, `lib/backlog.ps1:266-306`): даже когда базовый gate вернул `allow`, для approved audit-source находки это переигрывается в `held` (`reason='cross_file_causal_map required'`), ПОКА finding не несёт ВСЕ: ≥2 затронутых файла, все файлы поимённо названы в тексте, file-roles, propagation-path, multi-layer failure-path и причинно-следственный язык. Это отсекает «однострочные» автозаявки без сквозной причинной карты.
+
+**Ночное окно (планировщик аудита):** `Start-AuditIfDue` (`driver/10-maintenance.ps1`) запускает аудит раз за ОККУРРЕНЦИЮ окна (`audit.windowStartHour`/`windowEndHour`, привязка к `winStart`, `floorHours=20` — вторичный same-window guard), с throttle попыток запуска за окно (`maxLaunchAttemptsPerWindow`) и ledger'ом запусков `audit/audit.launches.jsonl`.
+
 > Тонкость PowerShell: переменные регистронезависимы. `$functionalAgent` и param `$FunctionalAgent` — одна переменная. Эта коллизия валила deep-audit (см. §7).
 
 ### 4.6 Параллельные потоки (parallel)
 `lib/parallel.ps1` — раскладывает задачу на потоки, каждый в своём git-worktree (`wip/parallel/<hash>/<id>`), потом merge-стадия. Merge устойчив: при конфликте `git merge --abort` → retry `-X ours` → дерево никогда не остаётся unmerged.
 
-### 4.7 Память, doctor, foundry, radar
-- **memory** (`lib/memory.ps1`) — векторная память (embeddings, `gemini-embedding-001`), семантический recall в промпты.
-- **doctor** (`lib/doctor.ps1`) — самодиагностика и починка при сбоях задач.
+### 4.7 Память, auditor, doctor, foundry, radar
+- **memory** (`lib/memory.ps1`) — векторная память (embeddings, `gemini-embedding-001`), семантический recall в промпты. Секреты на диске могут быть **DPAPI-зашифрованы** ({`_dpapi:1`, `data:<base64>`}, `Protect-SecretsAtRest`, CurrentUser-scope); `Get-Secret` расшифровывает прозрачно, поэтому `secrets.json` бывает не plaintext, а DPAPI-обёрткой (читается только текущим Windows-юзером) — не только ACL.
+- **auditor** (`lib/auditor.ps1`) — read-only health-сенсор: каждые `auditor.intervalMin` собирает детерминистические триггеры (`wait_state_stuck`, `empty_reply_streak`, `same_task_too_long`, `critic_pingpong`, `commit_famine`, `stale_audit`, `working_tree_drift`, `restart_frequency`, `doctor_recidivism`) и через LLM присваивает один из 5 классов вердикта: `normal | transient | hung | corrupted_state | unsolvable`. ВАЖНО: `corrupted_state` и `unsolvable` — **только уведомление в чат** (Doctor НЕ вызывается, авто-починки нет); чинит лишь `hung`. `doctorRecidivismMax` (config-driven, сейчас **5**; in-code fallback-дефолт 2) гасит зацикливание Doctor.
+- **doctor** (`lib/doctor.ps1`) — самодиагностика и починка при сбоях задач. Лимиты: `maxRepairAttempts=3`, `maxRestartResumes=3`; при исчерпании `Abort-Doctor` ре-кьюит задачу в `held` с reason `doctor-exhausted`. Спец-кейсы: при `commit_famine`, если held-задача УЖЕ готова (есть коммит), Doctor закрывает её как `done` без повторной диагностики (`commit_famine_work_ready`); при `critic_pingpong` Doctor сам коммитит незакоммиченный diff (без Codex) и возобновляет задачу. Loop-детекторы драйвера эскалируют в Doctor: 3× идентичный progress-fingerprint → `loop_detected`; `no_progress_count >= 4` → `no_progress_loop` (`driver/85-loop-mode-transitions.ps1`).
+- **failed-task salvage** (`Invoke-FailedTaskSalvage`, `lib/doctor.ps1`, вызов из `driver/60-startup.ps1`): хвост упавшей задачи спасается так — если файлы парсятся (и smoke OK) → авто-коммит `[salvage] …`; если parse-broken/невалидно → `git stash` ТОЛЬКО этих файлов (обратимо `git stash pop`) + page оператору. Дерево всегда остаётся чистым, чтобы не блокировать очередь.
 - **foundry/toolforge** — синтез новых инструментов (`[[NEED-TOOL]]`) и проектов на лету.
 - **radar/techradar/architect** — брейншторм идей, deep-think диалоги Claude↔Codex, тех-радар.
+
+### 4.8 Справочник STATUS и управляющих маркеров
+**Финальные STATUS (последняя строка хода):** `STATUS: DONE` (готово), `STATUS: CONTINUE` (передать ход Codex), `STATUS: DISCUSS` (диалог), `STATUS: RESEARCH` (нужно искать внешние источники), `STATUS: CHAT` (только ответить/спросить пользователя — **без действий и без Codex**), `STATUS: FAILED`/`PARTIAL` (в parallel-воркерах), и `STATUS: CONTINUE-CHUNK:N/M` (см. ниже).
+
+**Чанкинг (`STATUS: CONTINUE-CHUNK:N/M`):** кодер может разбить задачу на этапы и закрывать их по одному. Драйвер (`driver/86-loop-completion-checks.ps1`) гейтит: чанк засчитывается только если HEAD сдвинулся (был коммит) — иначе требует закоммитить и повторить; принудительно закрывает после `config.chunking.maxChunksPerTask=10`.
+
+**Управляющие маркеры (помимо `[[OPUS]]`/`[[FABLE]]`/`[[DEEP-THINK]]` — модель, §4.2):**
+- `[[REASONING:high]]` — **подавляет fast-lane и поднимает reasoning-effort Codex** (`driver/40-agent-invoke.ps1`, `driver/81-loop-idle-claim.ps1`); это про усилие рассуждения, не про выбор модели.
+- `[[STEP-DONE: id | результат]]` и `[[STEP: id | status | результат]]` — агент обновляет статусы шагов на план-доске (`[[PLAN]]`) ПО ХОДУ задачи (`driver/84-loop-reply-markers.ps1`).
+- `[[PROJECT_BACKLOG]]` / `[[DECOMPOSED: N]]` — project-autopilot/декомпозиция (§4.3-bis, §4.3-quater); `[[NEED-TOOL]]` — foundry; `[[RUNJOB: … | <repo>]]` — фоновый job.
+
+### 4.9 Feature-dedup-gate
+При новой задаче `Test-FeatureSimilarity` сравнивает её с зарегистрированными фичами; при `sim >= 0.85` похожие фичи всплывают планировщику как анти-дубль, чтобы он РАСШИРИЛ существующую, а не строил новую с нуля.
 
 ---
 
@@ -430,7 +474,7 @@ root-cause дубли логируются как `intake-dedup`, очевидн
 Проблема: пачка self-dev правок ставила `restart.flag` на каждую правку → 18 рестартов/30 мин → шторм.
 Решение (двухуровневое):
 - **Пока задача РАБОТАЕТ** (`$rcBusy`: status working/coding + `current_task` + active_jobs) → `restart.flag` откладывается в `restart.deferred`. **Медленный Codex безопасен** — пока «работает», рестарта нет.
-- **Между задачами — решение по ПЛАНУ, не по таймеру** (2026-05-30): отложенный рестарт держится, пока в плане есть работа (`active_jobs` ИЛИ claimable-бэклог при включённой автономии). Рестарт срабатывает только когда **план опустел** (пачка завершена). Таймаут 300 c — только failsafe; жёсткий потолок отсрочки — 600 c.
+- **Между задачами — решение по ПЛАНУ, не по таймеру** (2026-05-30): отложенный рестарт держится, пока в плане есть работа (`active_jobs` ИЛИ claimable-бэклог при включённой автономии). Рестарт срабатывает только когда **план опустел** (пачка завершена). Таймаут 300 c — только failsafe; жёсткий потолок отсрочки — 600 c; абсолютный completion-backstop отложенного рестарта — 1800 c (`driver/80-loop-preflight.ps1`). Активный **deep-think discuss** дополнительно удерживает рестарт (`recycle: holding deferred restart (active deep-think discuss)`).
 
 Итог: целая пачка правок схлопывается в **один** рестарт после последней задачи.
 
@@ -442,6 +486,11 @@ root-cause дубли логируются как `intake-dedup`, очевидн
 - probe сканирует только **core** `.ps1` (top + `lib` + `tools`), без рекурсии в canary-worktree/sandbox;
 - блокирует resume только реальная фатальщина: parse-fail в core-файле или пропавший bridge-root;
 - **failsafe**: после 3 продлений cooldown — принудительный resume + эскалация оператору (живой мост с предупреждением лучше мёртвого).
+
+**Три РАЗНЫХ ограничителя рестартов — не путать:**
+1. **Circuit-breaker** (этот раздел) — окно `maxRestarts/windowMin` процесса целиком; классы в `restarts.jsonl` включают `task-survived-3x` (по `task_restart_count>=3`).
+2. **Supervisor restart-limiter** (`Test-SupervisorRestartAllowed`, `supervisor.ps1`) — второй независимый governor per-key с состоянием в `~/.bridge-runtime/restart-limits.json`; его подпись в логах — `SUPERVISOR-RESTART-LIMIT … start suppressed`. В проде он практически выключен (`maxPerHour`≈1000), не путай с breaker.
+3. **Per-task restart-cap force-fail** (`config.taskRestartCaps`, `driver/60-startup.ps1`) — трёх-осевой потолок на ОДНУ задачу: `apply=6` (доверенные apply-рестарты), `hard=3` (нетрусты/крэши), `total=8`. По превышении задача помечается `failed` и мост идёт дальше. Формулировка «3x» вводит в заблуждение — это именно три оси, а не один счётчик.
 
 ### 5.4 Ручное восстановление (если мост всё же умер)
 ```powershell
@@ -529,7 +578,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 ## 8. Конфигурация
 
 ### 8.1 config.json (в git — общий дефолт)
-Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`, `synthesisMode.{enabled,defaultDepth,proposerModels.C,judgeByTaskType,cheapModel,rubricWeights,maxDebate*}` (живой execution-путь Decision Synthesis).
+Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `sttModel` (модель платного голосового STT — живой вызов Gemini на `/api/stt`), `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `router.{minSuccess,minSamples,windowHours}` (эскалация triage→deep, см. §4), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `taskRestartCaps.{apply:6,hard:3,total:8}` (per-task потолок рестартов, см. §5.3), `autonomy.*`, `usage.dailyCapUsd` (живой суточный кап расходов; `0`=выключен, operator-pulse предупреждает при превышении), `audit.{windowStartHour,floorHours,deepAgents}`, `auditor.{intervalMin,doctorRecidivismMax}` (`auditor.cooldownMin` присутствует, но инертен — нигде в коде не читается), `doctor.{maxRepairAttempts:3,maxRestartResumes:3}`, `chunking.maxChunksPerTask:10`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
+
+**Decision Synthesis: живые vs мёртвые config-ключи.** В `synthesisMode` код реально читает ТОЛЬКО `enabled`, `proposerModels.C` (он же `cheapModel`/`claudeModel` где явно резолвятся) и `judgeByTaskType.*` (`lib/decision-synthesis.ps1`). Ключи `defaultDepth`, `maxDebateTopics`, `maxDebateRounds`, `rubricWeights.*`, `promoteAfterShadowRuns` в config.json присутствуют, но **инертны** — соответствующие значения (глубина, потолки дебатов, веса рубрики) захардкожены в коде; правка их в config ни на что не влияет.
 
 ### 8.2 settings.json (runtime, НЕ в git)
 Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated: `workpackExec.*`, `channelMaintenance.*`, `memory.verifyOnRecall`, `backlogPack.*`, `fastLane.{autoDetect,minChars}` — гейт `fast`-режима, `auditor.*`; `coder.sandboxModeByChannel` правится прямым редактированием — вне allowlist).
@@ -586,6 +637,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 `
 **Риски / технический долг:**
 - **Крупные файлы/модули** (`web/index.html`, `common.ps1`, отдельные `driver/*.ps1`) — всё ещё требуют точечных правок и обязательного self-test, но главный риск старого `driver.ps1`-монолита снижен.
 - **Высокая связность механизмов** (~68 lib-модулей) — баги во взаимодействии (штормы, deadlock — большинство уже вылечено).
+- **`lib/delivery-mode.ps1` — SHADOW-классификатор, НЕ wired в живой драйвер.** Это pure read-only «task delivery mode» классификатор для shadow-интеграции; его flow/mode-енумы НЕ управляют реальным поведением loop'а — не путай их имена с настоящими `task_mode` (§4.1).
 - **Хрупкая платформа**: PS 5.1 + Windows + OneDrive + Defender + UAC дают целый класс инфраструктурных сбоев.
 - **Стабильность — главный риск.** Большинство инцидентов — не логика, а рестарт-штормы/порча state. Направление развития верное: «укреплять, а не наращивать» (Foundation-задачи), держать runtime вне OneDrive, продолжать дробить крупные зоны без изменения поведения.
 
