@@ -1,0 +1,438 @@
+[
+  {
+    "slug": "oko-gate-regression-proof",
+    "title": "Prove FinetuneGate rejects worse detection candidates",
+    "task": "Add regression tests that verify FinetuneGate evaluates detection outputs, maps class ids to label names, gates on person_precision and accuracy, and refuses a synthetically worse candidate.",
+    "chapter": "C-safety-core",
+    "wave": 1,
+    "parallel_group": "safety-serial",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_finetune_gate.py"
+    ],
+    "depends_on": [],
+    "acceptance": [
+      "A fake current model and fake candidate model are evaluated through detection-style predictions, not classification probs.",
+      "The test fails if labels are compared as numeric class ids instead of names.",
+      "The test fails if a candidate with worse person_precision can be marked improved.",
+      "The test proves the candidate is not promoted when gate verdict is negative."
+    ],
+    "checks": [
+      "pytest tests/test_finetune_gate.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "critical",
+    "serial_reason": "Safety boundary must be proven before scheduler or promotion work."
+  },
+  {
+    "slug": "oko-finetune-gate-detection-fix",
+    "title": "Fix FinetuneGate detection evaluation and gate metrics",
+    "task": "Update FinetuneGate so evaluation uses detector outputs, maps cls indices to names, requires person_precision and accuracy improvement with epsilon, preserves previous model, and never promotes on failed comparison.",
+    "chapter": "C-safety-core",
+    "wave": 1,
+    "parallel_group": "safety-serial",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\finetune_gate.py"
+    ],
+    "depends_on": [
+      "oko-gate-regression-proof"
+    ],
+    "acceptance": [
+      "FinetuneGate no longer reads classification-only probs for detection eval.",
+      "Metric verdict includes person_precision and accuracy.",
+      "Worse candidate returns a negative verdict and leaves active model unchanged.",
+      "Previous model path or marker is retained for rollback."
+    ],
+    "checks": [
+      "pytest tests/test_finetune_gate.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "critical",
+    "serial_reason": "Depends on failing/meaningful regression coverage."
+  },
+  {
+    "slug": "oko-atomic-model-promotion",
+    "title": "Make model promotion atomic and rollbackable",
+    "task": "Replace unlink/copy promotion with an atomic file or pointer swap that is safe on Windows when possible, records previous active model, and writes a rollback marker.",
+    "chapter": "C-safety-core",
+    "wave": 1,
+    "parallel_group": "safety-serial",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\finetune_gate.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_finetune_gate.py"
+    ],
+    "depends_on": [
+      "oko-finetune-gate-detection-fix"
+    ],
+    "acceptance": [
+      "No code path unlinks the active model before the replacement is ready.",
+      "Promotion writes an auditable previous-model or rollback marker.",
+      "A simulated promotion failure leaves the original active model readable."
+    ],
+    "checks": [
+      "pytest tests/test_finetune_gate.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "critical",
+    "serial_reason": "Must follow gate correctness and precede auto-promotion paths."
+  },
+  {
+    "slug": "oko-empty-scene-sampler",
+    "title": "Add EmptySceneSampler triggers to CropCollector",
+    "task": "Extend CropCollector with an EmptySceneSampler that captures true-negative frames by timer, no-detection threshold, and scene-memory background_only signal while suppressing capture when person or animal is detected.",
+    "chapter": "A-data-collection",
+    "wave": 2,
+    "parallel_group": "collection",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\crop_collector.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_crop_collector.py"
+    ],
+    "depends_on": [
+      "oko-gate-regression-proof"
+    ],
+    "acceptance": [
+      "Timer trigger can save an empty frame after configured interval.",
+      "No-detection frame threshold can save an empty frame.",
+      "Scene-memory background_only can save an empty frame.",
+      "Any person or animal detection blocks empty-frame capture."
+    ],
+    "checks": [
+      "pytest tests/test_crop_collector.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": ""
+  },
+  {
+    "slug": "oko-empty-negative-metadata",
+    "title": "Persist empty/background metadata schema",
+    "task": "Store empty negatives under runs/labels/<cam>/ with sample_type=empty_negative, storage-only class_name background or empty, timestamp, camera_id, frame_hash, trigger_reason, and source detections snapshot.",
+    "chapter": "A-data-collection",
+    "wave": 2,
+    "parallel_group": "collection",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\crop_collector.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_crop_collector.py"
+    ],
+    "depends_on": [
+      "oko-empty-scene-sampler"
+    ],
+    "acceptance": [
+      "Written metadata contains all required fields.",
+      "Frame hash is stable for identical image content.",
+      "Storage class_name does not imply a YOLO object class."
+    ],
+    "checks": [
+      "pytest tests/test_crop_collector.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": "Uses sampler output schema from previous atom."
+  },
+  {
+    "slug": "oko-hard-negative-capture",
+    "title": "Capture hard negatives with provenance",
+    "task": "Add hard_negative sample_type for false positives, rejected detections, and Gemini-relabeled background or other where live model fired person or animal.",
+    "chapter": "A-data-collection",
+    "wave": 2,
+    "parallel_group": "collection",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\crop_collector.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_crop_collector.py"
+    ],
+    "depends_on": [
+      "oko-empty-negative-metadata"
+    ],
+    "acceptance": [
+      "Hard-negative records use sample_type=hard_negative.",
+      "Metadata keeps the original model detection and rejection or relabel reason.",
+      "Hard negatives are distinguishable from ordinary empty negatives in manifests."
+    ],
+    "checks": [
+      "pytest tests/test_crop_collector.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": "Shares CropCollector metadata paths with empty negatives."
+  },
+  {
+    "slug": "oko-yolo-empty-label-export",
+    "title": "Export empty scenes as empty YOLO label files",
+    "task": "Update DatasetExporter so empty_negative and hard_negative background examples become image files with empty YOLO label files and do not add a background class to names.",
+    "chapter": "B-dataset-layer",
+    "wave": 3,
+    "parallel_group": "dataset",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\dataset_exporter.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_dataset_exporter.py"
+    ],
+    "depends_on": [
+      "oko-empty-negative-metadata",
+      "oko-hard-negative-capture"
+    ],
+    "acceptance": [
+      "Negative samples produce image plus existing empty label file.",
+      "names and nc are backward compatible and contain no background object class.",
+      "Exporter manifest reports positive, empty_negative, and hard_negative counts."
+    ],
+    "checks": [
+      "pytest tests/test_dataset_exporter.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": "Requires metadata fields from collection atoms."
+  },
+  {
+    "slug": "oko-dataset-balance-policy",
+    "title": "Add deterministic dataset balancing policy",
+    "task": "Add a policy-driven DatasetExporter balancer with max_empty_ratio, max_hard_negative_ratio, min_positive_count or equivalent ratios, deterministic seeded sampling, and a count manifest.",
+    "chapter": "B-dataset-layer",
+    "wave": 3,
+    "parallel_group": "dataset",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\dataset_exporter.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_dataset_exporter.py"
+    ],
+    "depends_on": [
+      "oko-yolo-empty-label-export"
+    ],
+    "acceptance": [
+      "Fixed seed produces the same selected sample ids across runs.",
+      "Configured ratios cap empty and hard-negative counts.",
+      "Manifest logs raw and selected counts by sample_type."
+    ],
+    "checks": [
+      "pytest tests/test_dataset_exporter.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": "Builds on negative export representation."
+  },
+  {
+    "slug": "oko-gemini-label-quality-guard",
+    "title": "Guard Gemini training-time labels",
+    "task": "Add Gemini labeling safeguards for training-time data: confidence threshold, abstention/agreement handling, human spot-check sample manifest, and hard exclusion from held-out eval.",
+    "chapter": "B-dataset-layer",
+    "wave": 3,
+    "parallel_group": "dataset",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\gemini_labeler.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_gemini_labeler.py"
+    ],
+    "depends_on": [
+      "oko-dataset-balance-policy"
+    ],
+    "acceptance": [
+      "Low-confidence Gemini labels are abstained, not accepted silently.",
+      "Disagreements are surfaced for spot-check or hard-negative handling.",
+      "Held-out eval export rejects Gemini-labeled samples."
+    ],
+    "checks": [
+      "pytest tests/test_gemini_labeler.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "high",
+    "serial_reason": "Must not poison held-out gate."
+  },
+  {
+    "slug": "oko-nightly-scheduler-cli",
+    "title": "Add NightlyTrainingScheduler CLI and phase order",
+    "task": "Create a CLI-driven NightlyTrainingScheduler that runs discover due days, lock, snapshot, Gemini labeling, YOLO export, train, evaluate, gate verdict, notify, and release lock in order.",
+    "chapter": "D-orchestration",
+    "wave": 4,
+    "parallel_group": "scheduler",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\nightly_scheduler.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_nightly_scheduler.py"
+    ],
+    "depends_on": [
+      "oko-atomic-model-promotion",
+      "oko-gemini-label-quality-guard"
+    ],
+    "acceptance": [
+      "CLI entrypoint can run the scheduler in dry-run mode.",
+      "Phases execute in the documented order.",
+      "Lock is released on success and on handled failure.",
+      "Artifacts are written under a per-run directory."
+    ],
+    "checks": [
+      "pytest tests/test_nightly_scheduler.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "high",
+    "serial_reason": "Integrates gate, export, labeling, and training phases."
+  },
+  {
+    "slug": "oko-nightly-ledger-idempotency",
+    "title": "Add run ledger and missed-night catch-up",
+    "task": "Implement per-date marker directories and STATUS files with PENDING, TRAINED, PROMOTED, ROLLED_BACK, and DRYRUN states; track manifest hash, artifacts, verdict, dry_run, resume, skip, and catch-up behavior.",
+    "chapter": "D-orchestration",
+    "wave": 4,
+    "parallel_group": "scheduler",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\nightly_ledger.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_nightly_ledger.py"
+    ],
+    "depends_on": [
+      "oko-nightly-scheduler-cli"
+    ],
+    "acceptance": [
+      "Completed dates are skipped idempotently for the same manifest hash.",
+      "Missed nights are discovered and queued.",
+      "Incomplete dates are resumed or safely skipped according to terminal status.",
+      "Ledger records dry_run flag and gate verdict."
+    ],
+    "checks": [
+      "pytest tests/test_nightly_ledger.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": "Scheduler must exist before ledger integration is meaningful."
+  },
+  {
+    "slug": "oko-gpu-inference-lock",
+    "title": "Add GPU inference lock for training",
+    "task": "Implement a GPU/inference lockfile acquired before training and always released, with stale-lock detection scoped to nightly training.",
+    "chapter": "D-orchestration",
+    "wave": 4,
+    "parallel_group": "gpu-guard",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\gpu_guard.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_gpu_guard.py"
+    ],
+    "depends_on": [
+      "oko-nightly-scheduler-cli"
+    ],
+    "acceptance": [
+      "Lock acquisition blocks concurrent training runs.",
+      "Release happens on normal completion and handled exceptions.",
+      "Stale locks are reported with age and owner metadata."
+    ],
+    "checks": [
+      "pytest tests/test_gpu_guard.py -q",
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "high",
+    "serial_reason": "Requires scheduler training boundary."
+  },
+  {
+    "slug": "oko-live-inference-degraded-mode",
+    "title": "Pause or degrade live inference during training",
+    "task": "Add a clearly timed live-inference pause or degraded mode controlled by the GPU guard, with status and Telegram notification hooks.",
+    "chapter": "D-orchestration",
+    "wave": 4,
+    "parallel_group": "gpu-guard",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\live\\inference_mode.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_live_inference_mode.py"
+    ],
+    "depends_on": [
+      "oko-gpu-inference-lock"
+    ],
+    "acceptance": [
+      "Live inference can enter and leave degraded or paused mode with a timeout.",
+      "Status includes mode, reason, start time, and expected deadline.",
+      "Notification hook receives start and finish events."
+    ],
+    "checks": [
+      "pytest tests/test_live_inference_mode.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "high",
+    "serial_reason": "Depends on lock semantics and affects live service behavior."
+  },
+  {
+    "slug": "oko-night-window-watchdog",
+    "title": "Abort and rollback when nightly window is exceeded",
+    "task": "Add a night-window watchdog for the 01:00-06:00 window that aborts training, releases locks, and triggers rollback handling when the window is exceeded.",
+    "chapter": "D-orchestration",
+    "wave": 4,
+    "parallel_group": "gpu-guard",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\night_window_watchdog.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_night_window_watchdog.py"
+    ],
+    "depends_on": [
+      "oko-nightly-ledger-idempotency",
+      "oko-gpu-inference-lock"
+    ],
+    "acceptance": [
+      "Watchdog reports inside-window and outside-window states deterministically with injected time.",
+      "Outside-window abort path marks the run rolled back or failed without promotion.",
+      "GPU/inference lock is released on watchdog abort."
+    ],
+    "checks": [
+      "pytest tests/test_night_window_watchdog.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "high",
+    "serial_reason": "Coordinates ledger and lock cleanup."
+  },
+  {
+    "slug": "oko-first-training-dry-run",
+    "title": "Default first real training to dry-run without auto-promotion",
+    "task": "Wire scheduler defaults so the first real train+compare run prints and notifies before/after metrics and gate verdict with auto_promote=false until operator confirmation.",
+    "chapter": "E-guarded-deployment",
+    "wave": 5,
+    "parallel_group": "dry-run",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\src\\oko\\training\\nightly_scheduler.py",
+      "C:\\Users\\rafie\\bridge-projects\\oko\\tests\\test_nightly_scheduler.py"
+    ],
+    "depends_on": [
+      "oko-night-window-watchdog",
+      "oko-live-inference-degraded-mode"
+    ],
+    "acceptance": [
+      "Default configuration has dry_run=true and auto_promote=false.",
+      "Dry-run performs train and compare but does not change active model.",
+      "Notification payload contains before metrics, after metrics, and gate verdict.",
+      "Auto-promote can only be enabled by explicit config change after operator review."
+    ],
+    "checks": [
+      "pytest tests/test_nightly_scheduler.py -q",
+      "pytest oko"
+    ],
+    "risk": "high",
+    "severity": "critical",
+    "serial_reason": "Final guard after scheduler, lock, watchdog, and gate are proven."
+  },
+  {
+    "slug": "oko-scheduler-trigger-decision",
+    "title": "Choose external trigger mechanism for nightly OKO run",
+    "task": "Document and implement the chosen trigger mechanism: bridge nightly hook or Windows Scheduled Task. Keep the trigger as a thin wrapper around the scheduler CLI.",
+    "chapter": "E-guarded-deployment",
+    "wave": 5,
+    "parallel_group": "trigger",
+    "files": [
+      "C:\\Users\\rafie\\bridge-projects\\oko\\docs\\nightly_training.md"
+    ],
+    "depends_on": [
+      "oko-first-training-dry-run"
+    ],
+    "acceptance": [
+      "Operator or architect decision is recorded before implementation.",
+      "Trigger invokes the scheduler CLI in dry-run mode by default.",
+      "Docs include how to disable the trigger and where logs are stored."
+    ],
+    "checks": [
+      "pytest oko"
+    ],
+    "risk": "medium",
+    "severity": "medium",
+    "serial_reason": "Open operator decision; implement only after scheduler CLI exists."
+  }
+]

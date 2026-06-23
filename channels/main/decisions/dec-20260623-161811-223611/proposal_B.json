@@ -1,0 +1,120 @@
+{
+    "proposer":  "B",
+    "understanding":  "Three new chapters for OKO, NOT a rebuild of the done 5-stage foundation. (1) Empty/background-scene sampling: extend CropCollector to periodically (timer or N frames without detection, ~5-10 min) store negative frames (no person/animal AND scene-memory says background-only) labelled class=\u0027background\u0027/\u0027empty\u0027 into runs/labels/\u003ccam\u003e/, so the fine-tuned model learns \u0027empty=empty\u0027 and stops hallucinating. (2) A nightly (~01:00-06:00) self-correcting retrain loop: day\u0027s collection (positives + empties + hard-negatives) -\u003e gemini-2.5-flash labelling (training-time only) -\u003e DatasetExporter (YOLO) -\u003e FinetuneGate (eval held-out, train on GPU, promote ONLY if better on person-precision AND accuracy, else rollback), with idempotent catch-up of missed nights and live-inference pause/timebox while the GPU trains. (3) First real run is a DRY-RUN: train+compare+Telegram verdict with before/after metrics, NO auto-promote until the operator confirms; and a mandatory verify-by-code that the FinetuneGate fix (99034ac5) is genuinely correct. I read the live code: the gate fix is in fact NOT correct (gates on accuracy only, reads classification .probs instead of detection .boxes, compares class-ids vs class_name so nothing ever matches, non-atomic promote), which makes the verify-by-code chapter the true critical path.",
+    "summary":  "Sequence the work gate-first, поглавно, atom = 1 file + 1 test, each gated by `pytest oko` and reviewed by Architect-Claude. Chapter 0 is a verify-by-code pass whose FAILING assertions become the spec to re-fix FinetuneGate (detection outputs via .boxes, class-id-\u003ename mapping, person-precision AND accuracy, atomic os.replace promote). Only then build the negatives path (CropCollector.collect_background + a debounced timer in LivePipeline.run, using empty-label YOLO negatives rather than \u0027background\u0027 boxes), a dataset balancer (positives:empty:hard-neg ratio with a logged manifest), and a single idempotent CLI entrypoint `python -m oko.training.nightly_run --date YYYY-MM-DD [--dry-run]` that the OS scheduler (Windows Task Scheduler) or the existing bridge nightly mechanism merely triggers. Idempotency/catch-up via per-date marker dirs with terminal STATUS files; GPU contention via a TRAINING.lock the live service honours plus a night-window timebox watchdog. Ship with config training.auto_promote=FALSE so the first (and every) run is a dry-run posting before/after person-precision \u0026 accuracy to Telegram until the operator flips the flag.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Treat FinetuneGate fix 99034ac5 as NOT verified and ship with auto-promotion DISABLED; Chapter 0 is a verify-by-code pass whose failing assertions are the re-fix spec.",
+                               "reason":  "Reading src/oko/training/finetune_gate.py at HEAD: compare_on_held_out gates on accuracy ONLY (line 50, no person-precision); _predict_all reads results[0].probs.top1 — a classification head that is None for a YOLO detection model, so every prediction becomes \u0027__missing__\u0027; predictions are stringified class-ids (\u00270\u0027) while EvalHarness compares against class_name (\u0027person\u0027), so actual==predicted can never hold; promote_or_rollback unlink()+copy2 is non-atomic. So \u0027done\u0027 is false and trusting it would let a worse or randomly-scored model promote — exactly the literary-slop failure the task warns about.",
+                               "tradeoff":  "Pushes the headline nightly-retrain feature behind one corrective chapter and makes the gate the critical path, but it is the only way to honour the person-precision-AND-accuracy and atomic-promote constraints.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Re-fix the gate as its own atom: _predict_all consumes detection outputs (results[0].boxes, top-confidence box\u0027s cls) mapped through the dataset names[] to label STRINGS; promote iff new.per_class[\u0027person\u0027].precision \u003e= current AND new.accuracy \u003e= current, each with a configurable epsilon margin.",
+                               "reason":  "EvalHarness already computes per_class[label][\u0027precision\u0027] keyed by class_name and an overall accuracy, so the metrics the person-precision-AND-accuracy gate needs already exist — only FinetuneGate\u0027s prediction extraction and comparison are wrong. Using .boxes + names[] makes predicted/actual comparable and makes \u0027person-precision\u0027 a real number.",
+                               "tradeoff":  "Reducing detection output to one top-box label per crop is a simplification of full mAP/IoU eval; adequate for a per-crop promotion gate but not a COCO-style detection evaluation.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Make promotion crash-safe: copy candidate best.pt to a temp path beside the current-weights link, archive the old weights first, then os.replace() (atomic rename on the same NTFS volume).",
+                               "reason":  "The current unlink()+copy2 leaves a window with no current weights; a crash mid-promote bricks live inference. os.replace is atomic within one volume.",
+                               "tradeoff":  "Requires the temp file on the same drive as the weights link; negligible cost.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Add CropCollector.collect_background(camera_id, frame_rgb, frame_id, timestamp, reason) and trigger it from LivePipeline.run() on a debounced timer (every 5-10 min) ONLY when the frame has no person/animal detection AND scene memory reports background-only.",
+                               "reason":  "Today CropCollector.collect() requires a Detection and is invoked only on VLM-confirmed positives (live.py:454), so no negatives are ever stored. A separate background path keyed on no-detection + scene-memory gives clean negatives without bbox guesswork.",
+                               "tradeoff":  "Adds small state (last-empty-capture time, no-detection counter) to the ~30fps hot loop; must stay cheap so it does not disturb capture cadence.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Represent empties as YOLO-canonical background IMAGES with EMPTY label files (true negatives), not as \u0027background\u0027 object boxes — keep nc/names back-compatible but stop emitting a class-2 box for negatives.",
+                               "reason":  "DatasetExporter currently writes a class-2 bbox line for every background crop (dataset_exporter.py:54,61), i.e. it teaches \u0027background\u0027 as a detectable object, which does not directly suppress person/animal false positives. Ultralytics learns \u0027empty=empty\u0027 from images that have no label lines.",
+                               "tradeoff":  "Switching to empty-label negatives changes the dataset contract and some existing exporter tests; treating background as a class is simpler but pedagogically wrong for FP suppression. Worth an A/B on held-out FP rate before fully committing.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Add an explicit balancer in the nightly export: cap and ratio positives : empty-negatives : hard-negatives (~3:1:1, configurable) with deterministic seeded sampling and a logged manifest of counts kept/dropped.",
+                               "reason":  "Unbounded negatives will swamp the few daily positives and collapse recall; the task explicitly demands balancing, and \u0027no silent caps\u0027 means logging what was sampled out.",
+                               "tradeoff":  "Hard-negatives (operator-rejected false alarms) need a concrete source/label; if that feed does not yet exist it becomes its own small prerequisite chapter rather than a free input.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "Implement the night job as a single idempotent CLI entrypoint `python -m oko.training.nightly_run --date YYYY-MM-DD [--dry-run]` that wires collect-\u003elabel-\u003eexport-\u003eeval-\u003egate-\u003e(promote|rollback); the scheduler only invokes it.",
+                               "reason":  "Separating \u0027what runs\u0027 from \u0027when it runs\u0027 makes the whole pipeline unit-testable under pytest oko (one fixture-driven end-to-end test) and lets either Windows Task Scheduler or the existing bridge nightly mechanism drive it. An injected clock + --date keeps non-deterministic time out of the testable core.",
+                               "tradeoff":  "Two moving parts (entrypoint + OS trigger) instead of one, but coupling the logic directly to Task Scheduler would make it effectively untestable.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Idempotency and catch-up via per-date marker dirs runs/training/\u003cdate\u003e/ with a terminal STATUS file (PENDING-\u003eTRAINED-\u003ePROMOTED/ROLLED_BACK/DRYRUN); on start, no-op if today is terminal, else process the most recent date lacking a terminal status.",
+                               "reason":  "A missed night (machine off) must be caught up exactly once and a re-run of a complete night must be a no-op; file-marker state survives restarts and is trivial to unit-test.",
+                               "tradeoff":  "Default catch-up processes only the latest missed night to bound GPU time; deeper historical backfill is opt-in rather than automatic.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Guard the single GPU with a lockfile runs/training/TRAINING.lock written before train() and removed in a finally block; the live service watches it and pauses inference, and train() runs under a timebox watchdog that aborts+rolls back if it exceeds the night window.",
+                               "reason":  "One GPU cannot run live inference and YOLO training simultaneously; an explicit lock plus timebox prevents both OOM and a runaway train bleeding into daytime. The task explicitly mandates pause/timebox of live inference during training.",
+                               "tradeoff":  "Pausing live inference opens a night-time blind spot; acceptable per the task but it must be bounded to 01:00-06:00 and logged, ideally with a lightweight motion-only fallback.",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "Default config training.auto_promote=FALSE: every run until the operator flips it executes train+compare and Telegrams before/after person-precision \u0026 accuracy plus the gate verdict, but calls promote ONLY if auto_promote AND gate passed; otherwise archive the candidate and roll back.",
+                               "reason":  "Directly satisfies the dry-run-first constraint and keeps a human in the loop until the freshly re-fixed gate has been observed to behave in production.",
+                               "tradeoff":  "No model can ever promote without a manual flag flip until the operator opts in — which is the intended safety property, not a defect.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The finetune_gate.py I read at HEAD is the post-99034ac5 state (the \u0027done\u0027 fix); if a newer un-merged fix exists elsewhere, atoms 1-3 must be re-validated against it first.",
+                        "The training machine has a single GPU shared between live inference and YOLO training.",
+                        "A hard-negative source (operator-rejected alerts / false alarms, e.g. from Telegram feedback) exists or can be derived; if not, building it is a prerequisite chapter, not a free input.",
+                        "The existing 3-class taxonomy person/animal/background is the intended detector scheme.",
+                        "gemini-2.5-flash labelling runs only inside the night job; the live path never calls Gemini for labels.",
+                        "`pytest oko` is the authoritative gate and currently passes on master.",
+                        "A Telegram notifier hook exists (FinetuneGate already accepts telegram_notifier) and can be wired to the operator chat for before/after verdicts."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Re-fixed gate is still subtly wrong and promotes a worse model (\u0027green\u0027 but lying).",
+                      "severity":  "high",
+                      "mitigation":  "auto_promote defaults FALSE + a dedicated regression test that feeds a deliberately-worse candidate and asserts NO promotion + adversarial Architect-Claude review of the gate atom specifically."
+                  },
+                  {
+                      "risk":  "Negative oversampling collapses recall (model learns to predict nothing).",
+                      "severity":  "medium",
+                      "mitigation":  "Ratio cap (atom 6) + track held-out person-recall as a secondary guard so a recall drop also blocks promotion."
+                  },
+                  {
+                      "risk":  "Background-as-class mislabelling fails to reduce false positives and adds a spurious detectable class.",
+                      "severity":  "medium",
+                      "mitigation":  "Adopt empty-label negatives (atom 5) and A/B the two representations on held-out FP rate before committing the dataset contract."
+                  },
+                  {
+                      "risk":  "Paused live inference creates a nightly security blind spot.",
+                      "severity":  "medium",
+                      "mitigation":  "Timebox training strictly to the 01:00-06:00 window, log start/stop, and run a lightweight motion-only fallback during training."
+                  },
+                  {
+                      "risk":  "Train crash / OOM mid-promote leaves no usable current weights.",
+                      "severity":  "high",
+                      "mitigation":  "Atomic os.replace promote (atom 3) + archived rollback target + lockfile cleanup and weights integrity check in a finally block."
+                  },
+                  {
+                      "risk":  "Idempotency race or double-run from two schedulers firing.",
+                      "severity":  "medium",
+                      "mitigation":  "Exclusive lock on the per-date marker dir; a second concurrent invocation no-ops; terminal STATUS prevents reprocessing."
+                  },
+                  {
+                      "risk":  "Scheduler never fires (Task Scheduler disabled or machine asleep), silently skipping training.",
+                      "severity":  "medium",
+                      "mitigation":  "Catch-up scan on next boot + a Telegram heartbeat alert when no training ran the previous night."
+                  },
+                  {
+                      "risk":  "Gemini labelling cost or quality drift corrupts the training set.",
+                      "severity":  "low",
+                      "mitigation":  "Cache labels per crop, periodic sample-audit of Gemini labels, keep labelling strictly training-time-only."
+                  }
+              ],
+    "minimal_version":  "A safe, mostly-manual slice that delivers the negatives plus a trustworthy gate without yet automating promotion: (1) CropCollector.collect_background + a debounced timer in LivePipeline.run using empty-label YOLO negatives; (2) verify-by-code tests that FAIL against the current gate (proving the 99034ac5 claims); (3) re-fix FinetuneGate — detection outputs via .boxes, class-id-\u003ename mapping, person-precision AND accuracy, atomic os.replace promote — until those tests pass; (4) a hand-run `python -m oko.training.nightly_run --dry-run --date \u003ctoday\u003e` that collects-\u003elabels-\u003eexports-\u003eevals-\u003eprints and Telegrams the before/after verdict with training.auto_promote=FALSE. No OS scheduler, no catch-up, no live-pause yet. Each step is one file + one test, gated by `pytest oko` and reviewed by Architect-Claude.",
+    "advanced_version":  "Full autonomy on top of the minimal slice: Windows Task Scheduler (or the existing bridge nightly mechanism) triggers the idempotent entrypoint nightly at ~01:00; per-date marker dirs give exactly-once execution plus catch-up of the last missed night; balanced positives:empty:hard-negative datasets with logged manifests; a TRAINING.lock pauses live inference under a night-window timebox watchdog with a motion-only fallback; after the operator flips training.auto_promote=true the re-fixed gate auto-promotes on person-precision AND accuracy improvement and atomically rolls back otherwise, every run posting before/after metrics to Telegram; a periodic background A/B of \u0027background-as-class\u0027 vs empty-label negatives on held-out FP rate; and archive retention with a one-command rollback to any of the last N weights."
+}

@@ -1,0 +1,161 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "statement":  "Extend CropCollector with an empty-scene sampler, triggered by a configurable timer or no-detection frame threshold, and scene memory background-only signal, to collect background frames.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Data Collection",
+                      "test":  "`pytest oko` verifies EmptySceneSampler collects frames under specified conditions (timer/frame threshold, no detection, background_only trigger).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "statement":  "Store empty/background examples in `runs/labels/\u003ccam\u003e/` with explicit metadata: `sample_type: empty_negative`, `class_name: background` or `empty`, timestamp, camera_id, frame_hash, trigger_reason, and source detections snapshot.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Data Storage",
+                      "test":  "`pytest oko` verifies empty/background samples are stored with correct metadata and file structure.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "statement":  "Represent empty scenes as YOLO-canonical background images with empty label files (true negatives), avoiding \u0027background\u0027 object boxes, while maintaining `nc/names` back-compatibility.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Dataset Preparation",
+                      "test":  "`pytest oko` verifies DatasetExporter produces empty label files for negative samples.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "statement":  "Store hard-negatives as a separate `sample_type: hard_negative`, sourced from false positives, rejected detections, or Gemini-labeled background/other where the model detected person/animal.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Data Collection",
+                      "test":  "`pytest oko` verifies hard-negative samples are stored with correct `sample_type` and source tracking.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "statement":  "Implement an explicit dataset balancer in DatasetExporter, accepting a configurable policy (e.g., max_empty_ratio, max_hard_negative_ratio, min_positive_count, or ratios like 3:1:1) with deterministic seeded sampling and a logged manifest of counts.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Dataset Preparation",
+                      "test":  "`pytest oko` verifies DatasetExporter applies balancing policy correctly (ratios, min counts, deterministic output, logged manifest).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "statement":  "Implement the nightly training pipeline as a NightlyTrainingScheduler (or CLI entrypoint) with distinct phases: discover due days, acquire lock, snapshot samples, Gemini labeling, export YOLO dataset, train candidate, evaluate current vs candidate, gate verdict, notify, and release lock, triggered by an external scheduler within the 01:00-06:00 window.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Training Pipeline Orchestration",
+                      "test":  "`pytest oko` verifies scheduler phases execute in order, handle locks, produce artifacts, and can be triggered via CLI.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "statement":  "Implement idempotency and catch-up for the NightlyTrainingScheduler via a run ledger or per-date marker directories with terminal STATUS files (e.g., PENDING, TRAINED, PROMOTED, ROLLED_BACK, DRYRUN), tracking date, input manifest hash, phase status, artifacts, verdict, and dry_run flag, allowing missed runs to be processed.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Training Pipeline Reliability",
+                      "test":  "`pytest oko` verifies ledger/marker files correctly track run status, manifest hash, and allow resuming/skipping runs.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "statement":  "Guard the GPU with an inference lock (e.g., lockfile) during training, pausing or timeboxing live inference into a degraded mode with a clear timeout and Telegram/status notification, and implementing a watchdog to abort/rollback if the night window is exceeded.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resource Management",
+                      "test":  "`pytest oko` verifies GPU lock mechanism, live inference pause/degradation, and timebox watchdog aborts.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "statement":  "Set `dry_run=true` or `training.auto_promote=FALSE` by default for the first (or all initial) runs: execute a full train+compare cycle, send Telegram notification with before/after metrics and gate verdict, but prevent auto-promotion until explicit operator confirmation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Safety/Deployment",
+                      "test":  "`pytest oko` verifies `dry_run` mode/`auto_promote=FALSE` by default, preventing model promotion, and sending Telegram notification with metrics.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "statement":  "Verify and re-fix FinetuneGate to correctly evaluate new models against current models on held-out data, specifically using detection outputs (e.g., `results[0].boxes`, top-confidence box\u0027s `cls` mapped to label strings) and gating on both `person-precision` AND `accuracy` (with configurable epsilon margin), rejecting candidates that are worse on person-precision even if other metrics improve.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Model Evaluation/Safety",
+                      "test":  "`pytest oko` regression tests for FinetuneGate, verifying correct use of detection outputs, label names, and gating logic for person-precision AND accuracy, including rejection of worse candidates.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "statement":  "Implement crash-safe, atomic model promotion (e.g., via pointer swap or `os.replace()` atomic rename) with preservation of the previous model and a rollback marker, rather than direct file overwrites.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Model Deployment/Safety",
+                      "test":  "`pytest oko` verifies atomic promotion (pointer swap/rename) and rollback capability.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom_12",
+                      "statement":  "Follow an atomic development principle: break down development into components where each corresponds to approximately one file and one test, verified by `pytest oko`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Development Process",
+                      "test":  "Codebase structure review, `pytest oko` coverage for each atom.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom_13",
+                      "statement":  "Integrate Gemini-2.5-flash for automated labeling of collected data during the nightly run, generating YOLO-format datasets via DatasetExporter.",
+                      "source_proposals":  [
+                                               "C"
+                                           ],
+                      "category":  "Data Labeling",
+                      "test":  "`pytest oko` verifies Gemini labeling produces correct YOLO format via DatasetExporter.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

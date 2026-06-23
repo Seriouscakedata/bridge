@@ -1,0 +1,48 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [operator] OKO ШЕДУЛЕР NIGHTLY-LOOP + EMPTY-FRAME-SAMPLING (НОВЫЙ компонент, НЕ дубль ранних autotrain-задач — те собрали фундамент 5 этапов; ЭТО про планировщик ночного запуска + сбор background/empty-кадров, которых ещё нет). Оператор одобрил msg 53853618. Проект OKO: C:\\Users\\rafie\\bridge-projects\\oko. Фундамент (5 этапов) собран, FinetuneGate-коррекция done, живой OKO перезапущен на новый код → CropCollector копит позитивы в runs/labels/\u003ccam\u003e/. ДОБАВИТЬ (поглавно, атомы 1 файл/тест, verify=pytest oko, Архитектор-Claude ревьюит):\n\n(1) СБОР ПУСТЫХ СЦЕН — юзер дословно: «надо иногда собирать пустую сцену и её тоже размечать, чтобы точно понимать что изображено». Расширить CropCollector: периодически (по таймеру / каждые N кадров без детекции, напр. раз в 5-10 мин) сохранять EMPTY-кадр (нет person/animal-детекции ИЛИ scene-memory говорит background-only) с меткой class=\u0027background\u0027/\u0027empty\u0027 в runs/labels/\u003ccam\u003e/. Это НЕГАТИВНЫЕ примеры — чтобы дообученная модель училась «пусто = пусто» и не галлюцинировала. Балансировать позитивы / пустые-негативы / hard-negatives (ложные срабатывания) в датасете.\n\n(2) НОЧНОЙ ПЛАНИРОВЩИК (день/ночь цикл, юзер ранее): scheduled job в ночном окне (~01:00-06:00): взять дневной сбор (позитивы + пустые + hard-neg) → gemini-2.5-flash разметка (training-time = разрешено) → DatasetExporter (YOLO-формат) → FinetuneGate (eval held-out → train на GPU → промоут НОВОЙ модели ТОЛЬКО если лучше текущей по person-precision И accuracy на held-out, иначе rollback). Идемпотентность (пропущенную ночь догнать), пауза/таймбокс live-инференса на время train (GPU занят). Сделать через существующий ночной механизм моста ИЛИ Windows scheduled task для OKO.\n\n(3) DRY-RUN ПЕРВОГО ОБУЧЕНИЯ + verify гейта: первый реальный прогон = режим train+compare+печать вердикта БЕЗ авто-промоута, под ревью оператора (Telegram-уведомление с before/after метриками); авто-промоут включить ПОСЛЕ подтверждения. ОБЯЗАТЕЛЬНО verify-by-code что FinetuneGate-фикс (99034ac5) реально корректен — eval сравнивает detection-выходы (не classification probs), метки=имена, gate-on-person-precision, атомарный промоут (literary-slop урок: не доверять «done», проверить что gate реально не пустит худшую).\n\nDiscuss-First: PLAN durable → декомпозиция поглавно. operator-авторизовано.",
+    "goal":  "Enhance the OKO system\u0027s object detection capabilities by implementing automated collection of empty/background scenes and establishing a nightly, self-correcting retraining pipeline. This will improve model robustness against false positives and ensure continuous model improvement through automated data labeling, training, and conditional promotion.",
+    "constraints":  [
+                        "The task is NOT a duplicate of earlier autotrain tasks (which focused on the 5-stage foundation).",
+                        "Implementation must be modular (\u0027поглавно\u0027), atomic (1 file/test per atom), and verified by `pytest oko`.",
+                        "Architect-Claude must review the implementation.",
+                        "Gemini-2.5-flash labeling is permitted during training time.",
+                        "New models are promoted ONLY if they demonstrate improvement over the current model in `person-precision` AND `accuracy` on held-out data; otherwise, a rollback must occur.",
+                        "The nightly scheduler must be idempotent (catch up on missed runs).",
+                        "Live inference must be paused or timeboxed during GPU-intensive training operations.",
+                        "The first training run must be a dry-run: train, compare, print verdict, WITHOUT auto-promotion, awaiting operator review and explicit confirmation via Telegram notification with before/after metrics.",
+                        "The FinetuneGate fix (commit 99034ac5) must be explicitly verified by code to ensure it correctly compares detection outputs (not classification probabilities), uses label names, gates on `person-precision`, and ensures atomic promotion.",
+                        "The system must balance positive examples, empty-negatives, and hard-negatives in the dataset.",
+                        "Empty scene collection must be periodic (timer-based or every N frames without detection, e.g., 5-10 min)."
+                    ],
+    "known_context":  [
+                          "This is an auto-task from the backlog.",
+                          "The operator approved message 53853618.",
+                          "Project path: `C:\\Users\\rafie\\bridge-projects\\oko`.",
+                          "The 5-stage foundation for OKO is complete.",
+                          "FinetuneGate correction is done.",
+                          "The live OKO system has been restarted with new code.",
+                          "CropCollector currently collects positive examples into `runs/labels/\u003ccam\u003e/`.",
+                          "The system has existing bridge nightly mechanisms OR Windows scheduled tasks can be used for OKO.",
+                          "Gemini-2.5-flash is the designated model for data labeling."
+                      ],
+    "output_format":  "JSON object matching this TaskContract schema",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "Verify CropCollector periodically saves frames with `class=\u0027background\u0027` or `class=\u0027empty\u0027` to `runs/labels/\u003ccam\u003e/` when no person/animal detection or scene memory indicates background-only.",
+                          "Verify the nightly scheduled job (e.g., via Windows Task Scheduler or existing bridge mechanism) triggers reliably within the ~01:00-06:00 window.",
+                          "Verify the scheduled job successfully collects daily positives, empty negatives, and hard negatives for training.",
+                          "Verify Gemini-2.5-flash is used for labeling the collected data during the scheduled run.",
+                          "Verify DatasetExporter correctly generates YOLO-format datasets from the labeled data.",
+                          "Verify FinetuneGate evaluates the new model against the current model using held-out data.",
+                          "Verify FinetuneGate promotes the new model *only if* it improves `person-precision` AND `accuracy` on held-out data compared to the current model.",
+                          "Verify FinetuneGate performs a rollback to the previous model if the new model does not meet the promotion criteria.",
+                          "Verify the \u0027dry-run\u0027 mode for the first training run: it completes training and evaluation, sends a Telegram notification with before/after metrics, and *does not* auto-promote the model without explicit operator confirmation.",
+                          "Verify by code (e.g., dedicated unit/integration tests) that the FinetuneGate fix (99034ac5) correctly compares detection outputs (not classification probabilities), uses label names for metrics, gates specifically on `person-precision`, and ensures atomic promotion.",
+                          "Verify the system handles missed nightly runs (idempotency) by catching up on the training process.",
+                          "Verify live inference is paused or timeboxed during GPU-intensive training operations to prevent performance degradation.",
+                          "Verify all new components and modifications are covered by passing `pytest oko` tests.",
+                          "Verify the new components adhere to the \u0027поглавно, атомы 1 файл/тест\u0027 development principle."
+                      ]
+}

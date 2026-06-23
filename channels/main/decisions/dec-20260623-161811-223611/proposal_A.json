@@ -1,0 +1,126 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно не повторять уже собранный autotrain-фундамент OKO, а спроектировать новый слой: периодический сбор пустых/background кадров в CropCollector и ночной self-training scheduler, который берет дневной сбор, размечает через Gemini-2.5-flash, экспортирует YOLO dataset, обучает кандидата и пропускает его через FinetuneGate. Первый прогон должен быть dry-run без автопромоута, а корректность FinetuneGate должна быть проверена кодом, включая detection outputs, label names, person-precision, accuracy и атомарный promote/rollback.",
+    "summary":  "Предлагаю реализовать задачу главами и атомами: сначала расширить CropCollector отрицательными примерами и manifest-метаданными, затем добавить балансировку positives/empty/hard-negatives в DatasetExporter, после этого ввести NightlyTrainingScheduler с ledger/lock/idempotency, Telegram verdict и dry-run по умолчанию, и отдельно закрыть тестами FinetuneGate-регрессии. Планировщик должен быть независимым компонентом OKO, запускаемым либо существующим ночным механизмом моста, либо Windows Scheduled Task, но вся бизнес-логика должна жить в коде OKO, чтобы ее можно было покрыть pytest.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить в CropCollector EmptySceneSampler с configurable min_interval_minutes, no_detection_frame_threshold и scene_memory_background_only trigger.",
+                               "reason":  "Пустые сцены должны попадать в датасет регулярно, но не спамить диск и не разбалансировать выборку.",
+                               "tradeoff":  "Таймерная логика проще и надежнее, но может пропускать редкие важные background-состояния; threshold по N кадрам точнее, но зависит от FPS и стабильности камеры.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Сохранять empty/background примеры в тот же корень runs/labels/\u003ccam\u003e/, но с явным sample_type: empty_negative, class_name: background или empty, timestamp, camera_id, frame_hash, trigger_reason и source detections snapshot.",
+                               "reason":  "Единый storage упрощает exporter, а sidecar metadata нужна для идемпотентности, аудита и последующей балансировки.",
+                               "tradeoff":  "Появится больше метаданных и миграционная совместимость со старыми positive-only файлами.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Hard-negatives хранить как отдельный sample_type: hard_negative, получая их из ложных срабатываний, rejected detections или разметки Gemini, где модель видела person/animal, а labeler подтвердил background/other.",
+                               "reason":  "Hard negatives полезнее случайных пустых кадров для снижения false positives.",
+                               "tradeoff":  "Нужна защита от label noise: ошибочно помеченные hard-negative кадры могут ухудшить recall.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "DatasetExporter должен принимать policy баланса, например max_empty_ratio, max_hard_negative_ratio, min_positive_count и deterministic sampling seed.",
+                               "reason":  "Требование явно говорит балансировать позитивы, пустые-негативы и hard-negatives, иначе ночной сбор может утонуть в background кадрах.",
+                               "tradeoff":  "Жесткая балансировка может выкинуть часть полезных редких negatives; зато делает training runs воспроизводимыми.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Ночной pipeline оформить как NightlyTrainingScheduler с фазами: discover due days, acquire lock, snapshot samples, Gemini labeling, export YOLO, train candidate, evaluate current vs candidate, gate verdict, notify, release lock.",
+                               "reason":  "Фазовая машина делает процесс наблюдаемым, тестируемым и возобновляемым после падений.",
+                               "tradeoff":  "Больше кода, чем простой PowerShell cron, но меньше скрытого состояния и проще pytest-проверки.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Идемпотентность реализовать через run ledger: date, input manifest hash, phase status, artifact paths, verdict, dry_run flag и completion marker.",
+                               "reason":  "Пропущенную ночь можно догнать без повторной разметки и без двойного обучения на одном snapshot.",
+                               "tradeoff":  "Нужно внимательно версионировать ledger schema и обрабатывать partially completed runs.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "Запуск в окне 01:00-06:00 делать внешним триггером, но catch-up решение оставлять внутри NightlyTrainingScheduler.",
+                               "reason":  "Windows Task Scheduler или bridge nightly mechanism должны только дергать команду; правила missed runs не должны зависеть от конкретного scheduler backend.",
+                               "tradeoff":  "Два слоя конфигурации: OS/bridge schedule и OKO pipeline policy.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "На время train брать GPU/inference lock и переводить live inference в pause или timeboxed degraded mode с явным timeout и Telegram/status-сообщением.",
+                               "reason":  "Обучение на GPU не должно незаметно ломать live inference.",
+                               "tradeoff":  "Во время ночного обучения возможна временная потеря live-detection качества или задержка кадров.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Первый прогон установить dry_run=true по умолчанию: train+compare+verdict+Telegram metrics, но без записи promoted model pointer.",
+                               "reason":  "Это прямо требуется оператором: автопромоут только после ручного подтверждения.",
+                               "tradeoff":  "Даже хорошая модель не попадет в production автоматически до подтверждения, но это снижает риск первого включения.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "FinetuneGate покрыть отдельными regression tests: candidate worse person-precision is rejected even if other metrics improve; candidate must be evaluated via detection outputs with label names; promotion must be atomic.",
+                               "reason":  "Нельзя доверять статусу done; нужно доказать кодом, что gate не пропустит худшую модель.",
+                               "tradeoff":  "Потребуются fake detector fixtures и временные model artifact directories, но тесты будут быстрыми и детерминированными.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Promotion делать через atomic pointer swap или atomic rename с сохранением previous model и rollback marker, а не прямой перезаписью файлов модели.",
+                               "reason":  "При падении процесса нельзя получить half-promoted production model.",
+                               "tradeoff":  "Нужна небольшая дисциплина в layout артефактов модели и cleanup старых кандидатов.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "Разработку разбить на атомы 1 файл/1 тест: CropCollector empty sampling, sample manifest, dataset balancing, scheduler ledger, scheduler phases, inference lock, Telegram dry-run notification, FinetuneGate tests, scheduler entrypoint.",
+                               "reason":  "Такой порядок соответствует требованию поглавно и снижает риск большого неразбираемого изменения.",
+                               "tradeoff":  "Больше PR/commit overhead, зато проще ревью Architect-Claude и локализация регрессий.",
+                               "confidence":  0.9
+                           }
+                       ],
+    "assumptions":  [
+                        "В OKO уже есть CropCollector, DatasetExporter и FinetuneGate, которые можно расширять без полной замены архитектуры.",
+                        "runs/labels/\u003ccam\u003e/ является допустимым местом не только для positives, но и для sidecar metadata negative samples.",
+                        "Gemini-2.5-flash уже доступен в training-time окружении через существующий API/config secret.",
+                        "Telegram notification channel уже существует или может быть подключен через текущий операторский notifier.",
+                        "pytest oko можно запускать из репозитория OKO, а тесты могут использовать fake detector/trainer/labeler без реального GPU и Gemini.",
+                        "Живой inference процесс поддерживает управляемую pause/timebox команду либо это можно добавить через lock-файл/API без изменения модели детекции."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Пустые кадры будут собираться слишком часто и задавят positives в датасете.",
+                      "severity":  "high",
+                      "mitigation":  "Ввести min interval, per-camera quota, deterministic balancer и тесты на max_empty_ratio/max_hard_negative_ratio."
+                  },
+                  {
+                      "risk":  "Gemini-разметка negative/hard-negative примеров даст шумные labels.",
+                      "severity":  "medium",
+                      "mitigation":  "Сохранять confidence/reasoning metadata, применять held-out gate, ограничивать hard-negative ratio и отправлять low-confidence samples в quarantine/manual review."
+                  },
+                  {
+                      "risk":  "Ночной train может ухудшить live inference из-за конкуренции за GPU.",
+                      "severity":  "high",
+                      "mitigation":  "Использовать GPU/inference lock, ночное окно, timeout, graceful pause/degraded mode и аварийное освобождение lock по TTL."
+                  },
+                  {
+                      "risk":  "Идемпотентность будет нарушена при падении между labeling/export/train/promote.",
+                      "severity":  "high",
+                      "mitigation":  "Сделать ledger phase markers, input manifest hash, atomic artifact directories и resume/retry только с последней безопасной фазы."
+                  },
+                  {
+                      "risk":  "FinetuneGate может снова сравнивать не те метрики или silently promote худшую модель.",
+                      "severity":  "high",
+                      "mitigation":  "Добавить regression tests на detection outputs, label names, person-precision AND accuracy, rejection worse candidate и atomic promote/rollback."
+                  },
+                  {
+                      "risk":  "Первый dry-run случайно выполнит production promote из-за старого config/default.",
+                      "severity":  "high",
+                      "mitigation":  "Сделать dry_run=true default для нового scheduler, требовать explicit operator_confirmed_autopromote flag и покрыть это тестом."
+                  },
+                  {
+                      "risk":  "Windows Task Scheduler и bridge nightly mechanism могут продублировать запуск.",
+                      "severity":  "medium",
+                      "mitigation":  "Оставить один официальный entrypoint и обязательный scheduler lock/ledger, чтобы второй запуск завершался no-op."
+                  }
+              ],
+    "minimal_version":  "MVP: добавить EmptySceneSampler в CropCollector с сохранением empty_negative metadata; обновить DatasetExporter на баланс positives/empty/hard-negatives; добавить NightlyTrainingScheduler entrypoint с ledger, lock, dry_run=true, Telegram verdict и fakeable фазами; добавить regression tests FinetuneGate на detection metrics/person-precision/accuracy/atomic promotion; verify через pytest oko. Внешний запуск можно сначала оформить одной Windows Scheduled Task или bridge nightly hook, который вызывает OKO scheduler command.",
+    "advanced_version":  "Полная версия: adaptive sampling по камерам и времени суток, quarantine/manual review для спорных negatives, статистика drift/false-positive clusters, автоматический catch-up по нескольким пропущенным ночам с budget limits, live inference degraded mode вместо полной паузы, dashboard/Telegram approvals для включения autopromote, retention policy для artifacts, и периодический audit report по before/after метрикам, dataset composition и причинам reject/promote."
+}

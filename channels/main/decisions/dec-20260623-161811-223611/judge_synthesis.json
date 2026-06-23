@@ -1,0 +1,234 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom_01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Tri-proposal consensus. Collecting true-negative/background frames is standard, well-founded CV practice and directly attacks false positives. Multi-trigger sampler (timer, no-detection threshold, scene-memory background-only) is concrete and feasible as an extension of the existing CropCollector. Collection alone yields indirect risk reduction; value is realized downstream via atoms 03/05/10.",
+                      "total":  0.805
+                  },
+                  {
+                      "atom_id":  "atom_02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Highly specific metadata schema (sample_type, class_name, timestamp, camera_id, frame_hash, trigger_reason, detections snapshot) gives strong traceability and is cheap to implement. Single-proposal but complementary. Caveat to honor at implementation: `class_name: background` must remain storage metadata only — the YOLO export must follow atom_03 (empty label files, no \u0027background\u0027 boxes), so these two stay reconciled across storage vs. dataset layers.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "atom_03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Technically the correct YOLO convention: negatives are images with empty label files, not a synthetic \u0027background\u0027 object class. This actively prevents a common, model-degrading mistake while preserving nc/names back-compatibility. Simple, high-leverage, and the authoritative representation that atom_02\u0027s metadata should defer to.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "atom_04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Hard-negative mining from false positives, rejected detections, and Gemini-relabeled background is the most direct lever on precision and cleanly separated via its own sample_type. Feasibility/simplicity are moderate because it requires plumbing FP capture and relabel signals from several sources. Single-proposal but strongly motivated by the precision goal.",
+                      "total":  0.7975
+                  },
+                  {
+                      "atom_id":  "atom_05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Explicit, policy-driven balancer with deterministic seeded sampling and a logged manifest is correct and reproducible — class imbalance materially affects training, and the manifest makes runs auditable. Configurable ratios/min-counts are specific and bounded. Consensus (A,B).",
+                      "total":  0.835
+                  },
+                  {
+                      "atom_id":  "atom_06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Non-atomic: ~10 phases bundled into one decision atom, in tension with the atomic-development principle (atom_12); should be implemented as per-phase files/tests.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Tri-proposal consensus and the backbone of the whole pipeline; phase decomposition and an external scheduler within a fixed night window are sound choices. Highest implementation cost and lowest simplicity because it coordinates discovery, lock, snapshot, labeling, export, train, eval, gate, notify, release. Accept the design, but decompose per atom_12 — hence the scope penalty.",
+                      "total":  0.7775
+                  },
+                  {
+                      "atom_id":  "atom_07",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.8,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Run ledger / per-date markers with terminal STATUS files and an input manifest hash is the right idempotency + catch-up pattern for an unattended nightly job; it prevents duplicate/partial runs and enables safe resumes. State-machine adds modest complexity. Consensus (A,B), specific status set named.",
+                      "total":  0.8175
+                  },
+                  {
+                      "atom_id":  "atom_08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.6,
+                                     "impact":  0.85,
+                                     "simplicity":  0.45,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Non-atomic: bundles GPU lockfile, degraded live-inference mode, and night-window watchdog/rollback into one atom; each is its own component/test per atom_12.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Protecting a live-inference GPU from training contention and timeboxing the night window are important safety mechanisms (consensus A,B,C). Cost and complexity are the highest concern: a lockfile is trivial, but pausing/degrading live inference with a clean timeout and a watchdog that aborts/rolls back is intricate and must be built and tested carefully. Accept the intent; split into separate atoms — hence the scope penalty.",
+                      "total":  0.74
+                  },
+                  {
+                      "atom_id":  "atom_09",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Strongest atom in the set. Defaulting to dry_run / auto_promote=FALSE with a full train+compare cycle and Telegram before/after metrics, but requiring explicit operator confirmation, is the single biggest safety lever and is nearly free to implement (a config flag plus notification). Human-in-the-loop before any unattended promotion. Consensus (A,B,C).",
+                      "total":  0.9175
+                  },
+                  {
+                      "atom_id":  "atom_10",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The gate is the core safety boundary. Evaluating candidate vs. current on held-out data using actual detection outputs (results[0].boxes, top-confidence cls → label) and gating on person-precision AND accuracy with an epsilon margin — rejecting any candidate that regresses person-precision — is domain-appropriate and prevents promoting silent regressions. High cost because it is a \u0027verify and re-fix\u0027 of existing buggy logic, but the regression tests make it tractable. Consensus (A,B,C).",
+                      "total":  0.82
+                  },
+                  {
+                      "atom_id":  "atom_11",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Atomic promotion via os.replace()/pointer swap with previous-model preservation and a rollback marker is the correct, low-cost pattern; it eliminates half-written/corrupt model states going live and makes rollback trivial. Specific, simple, high risk-reduction. Consensus (A,B).",
+                      "total":  0.895
+                  },
+                  {
+                      "atom_id":  "atom_12",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.65,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.7
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Sound process principle (one component ≈ one file + one test, verified by `pytest oko`) that improves testability and keeps atoms shippable; it is also the standard that atoms 06 and 08 should be decomposed against. Impact and specificity are lower because it is a heuristic (\u0027approximately\u0027) guiding work rather than delivering functionality. Consensus (A,C).",
+                      "total":  0.7975
+                  },
+                  {
+                      "atom_id":  "atom_13",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.8,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.45,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Treats Gemini-2.5-flash labels as ground truth with no stated quality safeguard; VLM label noise can poison the dataset and the gate\u0027s held-out set.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Automated VLM labeling is the bottleneck-breaker that makes the nightly pipeline viable and is already implied by atom_06\u0027s labeling phase, so accept the direction — but modify: the statement omits label-quality controls. Add a confidence threshold, agreement/abstention handling, and human spot-check sampling, and ensure the held-out eval set (atom_10) is not itself Gemini-labeled. Single-proposal (C); risk-reduction scored low because, unmitigated, it introduces rather than reduces risk.",
+                      "total":  0.765
+                  }
+              ]
+}

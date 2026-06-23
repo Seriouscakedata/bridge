@@ -1,0 +1,320 @@
+{
+    "final_answer":  "Accept all 13 decision atoms to build OKO\u0027s empty-scene collection plus a self-correcting nightly retraining pipeline — 12 atoms as proposed and atom_13 (Gemini labeling) in modified form with label-quality safeguards. No atom is rejected outright; the judge returned 12 accepts and 1 modify, and the conflict matrix found no conflicts (micro-debate skipped). Two strong atoms anchor safety: the dry-run / auto_promote=FALSE default (atom_09, top score 0.92) and the verified-and-re-fixed FinetuneGate (atom_10) — together they guarantee no worse model is ever promoted unattended. Two bundled atoms (atom_06 nightly orchestrator, atom_08 GPU guard) are accepted in intent but DECOMPOSED into per-phase / per-component files+tests to honor the atomic-development principle (atom_12), matching the judge\u0027s scope penalties. Storage vs. dataset representation is reconciled: atom_02 keeps class_name=\u0027background\u0027 as storage metadata ONLY, while atom_03 is authoritative for the YOLO layer — negatives are images with EMPTY label files, never a synthetic \u0027background\u0027 object class. atom_13 is modified to add a confidence threshold, abstention/agreement handling, human spot-check sampling, and a hard rule that the held-out eval set (atom_10) is NOT Gemini-labeled, so VLM noise cannot poison the gate. Build order is safety-first: prove the gate correct BEFORE any auto-promotion path exists, ship the data-collection feature (the genuinely new component) in parallel, and keep promotion human-gated via Telegram until the operator confirms a dry-run night.",
+    "decisions":  [
+                      {
+                          "decision":  "atom_01 — Extend CropCollector with an EmptySceneSampler, multi-triggered by a configurable timer, a no-detection frame threshold, and the scene-memory background-only signal, to collect true-negative/background frames.",
+                          "rationale":  "Tri-proposal consensus (A,B,C), judge total 0.805. Collecting background frames is standard CV practice and the direct upstream lever against false positives; the user explicitly asked to periodically capture and label empty scenes. Implemented as an extension of the existing CropCollector, so feasibility is high.",
+                          "alternatives_considered":  [
+                                                          "Single-trigger (timer only) sampling — rejected as too brittle / misses event-driven gaps",
+                                                          "No empty-scene collection — leaves the model prone to hallucinating presence on background"
+                                                      ],
+                          "risk":  "Collection alone yields only indirect risk reduction; over-collection could flood the dataset with near-identical empty frames. Mitigated by the balancer (atom_05) and frame_hash dedup (atom_02).",
+                          "test":  "`pytest oko` verifies EmptySceneSampler collects frames under each trigger (timer, no-detection threshold, scene-memory background_only) and not when a person/animal is detected."
+                      },
+                      {
+                          "decision":  "atom_02 — Store empty/background examples in runs/labels/\u003ccam\u003e/ with explicit metadata: sample_type=empty_negative, class_name=background|empty, timestamp, camera_id, frame_hash, trigger_reason, and a source-detections snapshot.",
+                          "rationale":  "Single-proposal (A) but complementary, judge total 0.8125. Rich, specific metadata gives strong traceability and is cheap. frame_hash enables dedup; trigger_reason and the detections snapshot make every sample auditable.",
+                          "alternatives_considered":  [
+                                                          "Minimal metadata (path + timestamp only) — rejected, loses provenance/auditability",
+                                                          "Treating class_name as a dataset label — rejected, see reconciliation with atom_03"
+                                                      ],
+                          "risk":  "class_name=\u0027background\u0027 could leak into the YOLO label layer and create a spurious object class. Mitigated by making atom_03 authoritative: class_name here is STORAGE metadata only.",
+                          "test":  "`pytest oko` verifies empty/background samples are written with the full metadata schema and correct file structure under runs/labels/\u003ccam\u003e/."
+                      },
+                      {
+                          "decision":  "atom_03 — Represent empty scenes in the YOLO export as background images with EMPTY label files (true negatives); never emit a \u0027background\u0027 object box. Preserve nc/names back-compatibility.",
+                          "rationale":  "Single-proposal (B), highest judge total in the data layer (0.875). This is the correct YOLO convention and actively prevents a common, model-degrading mistake (synthetic background class). It is the authoritative dataset representation that atom_02\u0027s storage metadata defers to.",
+                          "alternatives_considered":  [
+                                                          "Adding a \u0027background\u0027 object class with boxes — rejected (degrades detector, breaks nc/names)",
+                                                          "Dropping empty frames at export — rejected, defeats the purpose of negative mining"
+                                                      ],
+                          "risk":  "Low. Must keep the export reconciled with atom_02 storage metadata so background-tagged storage maps to empty-label-file output.",
+                          "test":  "`pytest oko` verifies DatasetExporter produces image+empty-label-file pairs for negative samples and does not introduce a background class into names."
+                      },
+                      {
+                          "decision":  "atom_04 — Store hard-negatives as a separate sample_type=hard_negative, sourced from false positives, rejected detections, and Gemini-relabeled background/other where the live model fired person/animal.",
+                          "rationale":  "Single-proposal (A), judge total 0.7975. Hard-negative mining is the most direct lever on precision and is cleanly separated by its own sample_type so the balancer can ratio it independently.",
+                          "alternatives_considered":  [
+                                                          "Folding hard-negatives into generic empty_negatives — rejected, loses the high-value FP signal and balancing control",
+                                                          "No hard-negative capture — rejected, leaves precision regressions uncorrected"
+                                                      ],
+                          "risk":  "Moderate feasibility: requires plumbing FP-capture and relabel signals from several sources (live inference, gate rejections, Gemini disagreement). Build incrementally.",
+                          "test":  "`pytest oko` verifies hard-negative samples are stored with sample_type=hard_negative and correct source-tracking provenance."
+                      },
+                      {
+                          "decision":  "atom_05 — Add an explicit, policy-driven dataset balancer to DatasetExporter (configurable max_empty_ratio, max_hard_negative_ratio, min_positive_count or ratios such as 3:1:1) with deterministic seeded sampling and a logged manifest of counts.",
+                          "rationale":  "Consensus (A,B), judge total 0.835. Class imbalance materially affects training; deterministic seeding makes runs reproducible and the manifest makes them auditable.",
+                          "alternatives_considered":  [
+                                                          "Unbalanced \u0027use everything\u0027 export — rejected (imbalance skews training)",
+                                                          "Hard-coded ratio — rejected in favor of a configurable policy"
+                                                      ],
+                          "risk":  "Placeholder ratios (3:1:1) need tuning against the real collected distribution; wrong ratios could starve positives or over-weight negatives. The logged manifest surfaces this each run.",
+                          "test":  "`pytest oko` verifies the balancer applies the policy correctly (ratios, min counts), is deterministic under a fixed seed, and writes the count manifest."
+                      },
+                      {
+                          "decision":  "atom_06 (DECOMPOSED) — Build the nightly pipeline as a NightlyTrainingScheduler whose phases are implemented as SEPARATE files+tests (one per atom_12), not a monolith: discover due days → acquire lock → snapshot samples → Gemini labeling → export YOLO → train candidate → evaluate current-vs-candidate → gate verdict → notify → release lock. Triggered by an external scheduler within the 01:00–06:00 window.",
+                          "rationale":  "Tri-proposal consensus (A,B,C), judge total 0.7775 with a 0.05 scope penalty for bundling ~10 phases. The phased design and fixed night window are sound; the decomposition resolves the tension with the atomic-development principle.",
+                          "alternatives_considered":  [
+                                                          "One monolithic scheduler object — rejected (violates atom_12, untestable in units)",
+                                                          "Internal long-running daemon instead of external scheduler trigger — deferred to open question on scheduler mechanism"
+                                                      ],
+                          "risk":  "Highest implementation cost / lowest simplicity; it coordinates many components. Per-phase files+tests and the run ledger (atom_07) keep each piece shippable and recoverable.",
+                          "test":  "`pytest oko` verifies phases execute in order, acquire/release the lock, produce the expected artifacts, and can be driven via a CLI entrypoint."
+                      },
+                      {
+                          "decision":  "atom_07 — Implement idempotency + catch-up via a run ledger / per-date marker directories with terminal STATUS files (PENDING, TRAINED, PROMOTED, ROLLED_BACK, DRYRUN), tracking date, input manifest hash, phase status, artifacts, verdict, and the dry_run flag; allow missed nights to be processed.",
+                          "rationale":  "Consensus (A,B), judge total 0.8175. The correct idempotency pattern for an unattended nightly job — prevents duplicate/partial runs and enables safe resume after a crash.",
+                          "alternatives_considered":  [
+                                                          "No state tracking / fire-and-forget — rejected (duplicate or lost runs)",
+                                                          "DB-backed state — rejected as overkill vs. file markers for a single-host job"
+                                                      ],
+                          "risk":  "State-machine adds modest complexity; a stale lock from a crashed run must be reclaimable (tie to the watchdog, atom_08c).",
+                          "test":  "`pytest oko` verifies marker/ledger files track status and manifest hash correctly and that a missed/incomplete date is detected and either resumed or skipped idempotently."
+                      },
+                      {
+                          "decision":  "atom_08 (DECOMPOSED into 08a/08b/08c) — Guard the GPU during training: (08a) an inference lockfile; (08b) pause or degrade live inference into a clearly-timed degraded mode with a Telegram/status notification; (08c) a night-window watchdog that aborts and rolls back if the 01:00–06:00 window is exceeded. Each sub-component is its own file+test.",
+                          "rationale":  "Consensus (A,B,C), judge total 0.74 with a 0.05 scope penalty for bundling. Protecting a live-inference GPU from training contention and timeboxing the window are important; the lockfile is trivial but the degraded-mode and watchdog are intricate and must be tested separately.",
+                          "alternatives_considered":  [
+                                                          "Single bundled resource-manager atom — rejected (violates atom_12)",
+                                                          "Killing live inference entirely during training — kept as a degraded-mode option pending operator preference (open question)"
+                                                      ],
+                          "risk":  "Highest concern alongside atom_06: degrading live inference cleanly and aborting/rolling back mid-train is error-prone. Build and test 08a→08b→08c in that order.",
+                          "test":  "`pytest oko` verifies the GPU lock is acquired/released, live inference enters degraded/paused mode with a timeout + notification, and the watchdog aborts and triggers rollback when the window is exceeded."
+                      },
+                      {
+                          "decision":  "atom_09 — Default dry_run=true / training.auto_promote=FALSE: run a full train+compare cycle, send a Telegram notification with before/after metrics and the gate verdict, but PREVENT auto-promotion until explicit operator confirmation.",
+                          "rationale":  "Consensus (A,B,C), strongest atom in the set (0.9175). Nearly free (a config flag + notification) and the single biggest safety lever — human-in-the-loop before any unattended promotion. Directly satisfies the mandated first-run dry-run contract.",
+                          "alternatives_considered":  [
+                                                          "Auto-promote from night one — rejected (unverified gate + no operator review)",
+                                                          "Manual-only training forever — rejected, defeats the continuous-improvement goal once trust is established"
+                                                      ],
+                          "risk":  "Low. Residual question is the criterion for flipping auto_promote to TRUE (see open questions); until then promotion stays human-gated.",
+                          "test":  "`pytest oko` verifies that with dry_run=true / auto_promote=FALSE no model is promoted, and a Telegram notification with before/after metrics + verdict is emitted."
+                      },
+                      {
+                          "decision":  "atom_10 — Verify-by-code and re-fix FinetuneGate: evaluate candidate-vs-current on a held-out set using actual DETECTION outputs (results[0].boxes; top-confidence box cls → label string), and gate on person-precision AND accuracy with a configurable epsilon margin, REJECTING any candidate that regresses person-precision even if other metrics improve. Explicitly confirm the 99034ac5 fix is real.",
+                          "rationale":  "Consensus (A,B,C), judge total 0.82. The gate is the core safety boundary of the unattended pipeline. The task flags this verification as ОБЯЗАТЕЛЬНО and cites the \u0027literary-slop\u0027 lesson: do not trust \u0027done\u0027 — prove by regression tests that the gate refuses a worse model.",
+                          "alternatives_considered":  [
+                                                          "Gating on classification probabilities — rejected (wrong signal; this was the original bug)",
+                                                          "Gating on accuracy alone / aggregate improvement — rejected (would let a person-precision regression through)",
+                                                          "Trusting the prior \u0027done\u0027 status without code-level verification — rejected per the literary-slop lesson"
+                                                      ],
+                          "risk":  "High cost — a verify-and-re-fix of existing buggy logic. Regression tests make it tractable and are the gating prerequisite for any auto-promotion path.",
+                          "test":  "`pytest oko` regression tests assert the gate reads detection outputs, maps cls→label names, gates on person-precision AND accuracy with epsilon, and rejects a synthetically-worse candidate while accepting a clearly-better one."
+                      },
+                      {
+                          "decision":  "atom_11 — Implement crash-safe atomic model promotion via os.replace()/pointer swap, preserving the previous model and writing a rollback marker; never overwrite the live model file in place.",
+                          "rationale":  "Consensus (A,B), judge total 0.895. Atomic rename eliminates half-written/corrupt models going live and makes rollback trivial — low cost, high risk-reduction.",
+                          "alternatives_considered":  [
+                                                          "Direct file overwrite on promote — rejected (corruption window, no rollback)",
+                                                          "Copy-then-delete — rejected (non-atomic, leaves a torn state)"
+                                                      ],
+                          "risk":  "Low. Must ensure the pointer/symlink-or-current-file convention is consistent with how live inference loads the model.",
+                          "test":  "`pytest oko` verifies promotion is atomic (rename/pointer swap), the previous model is preserved, a rollback marker is written, and rollback restores the prior model."
+                      },
+                      {
+                          "decision":  "atom_12 — Adopt the atomic-development principle: each component ≈ one file + one test, verified by `pytest oko`; this is the governing standard that atoms 06 and 08 are decomposed against, and Architect-Claude reviews each atom.",
+                          "rationale":  "Consensus (A,C), judge total 0.7975. Improves testability and keeps atoms shippable. It is a process heuristic (\u0027approximately\u0027), so it guides work rather than delivering functionality directly.",
+                          "alternatives_considered":  [
+                                                          "Large multi-feature commits — rejected (unreviewable, untestable in units)"
+                                                      ],
+                          "risk":  "Heuristic boundary; some phases legitimately span more than one file. Apply judgment, keep one test per shippable unit.",
+                          "test":  "Codebase-structure review plus `pytest oko` coverage existing for each atom before it is considered done."
+                      },
+                      {
+                          "decision":  "atom_13 (MODIFIED) — Integrate Gemini-2.5-flash for automated nightly labeling → YOLO via DatasetExporter, WITH added label-quality controls: a confidence threshold, agreement/abstention handling, human spot-check sampling, and a hard rule that the held-out evaluation set used by the gate (atom_10) is NOT Gemini-labeled (use a trusted/human-labeled held-out).",
+                          "rationale":  "Single-proposal (C), judge verdict \u0027modify\u0027, total 0.765 with a 0.03 penalty. Automated VLM labeling is the bottleneck-breaker that makes nightly training viable (and is already implied by atom_06\u0027s labeling phase), but the original statement treated VLM output as ground truth. Unmitigated, VLM noise poisons both the training set and — fatally — the gate\u0027s held-out set.",
+                          "alternatives_considered":  [
+                                                          "Trust Gemini labels as ground truth with no safeguards — rejected (label noise poisons dataset and gate)",
+                                                          "Gemini-label the held-out eval set too — rejected (would make the gate compare against noisy targets)",
+                                                          "Human-label everything — rejected (defeats the automation goal; reserve humans for spot-checks and held-out)"
+                                                      ],
+                          "risk":  "VLM label noise; risk-reduction scored low because, unmitigated, it INTRODUCES risk. The threshold/abstention/spot-check controls and the non-Gemini held-out provenance are mandatory mitigations, not optional.",
+                          "test":  "`pytest oko` verifies Gemini labeling emits correct YOLO format, applies the confidence threshold and abstention handling, samples for human spot-check, and that the gate\u0027s held-out set is sourced from a non-Gemini (trusted) provenance."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Represent empty scenes as a synthetic \u0027background\u0027 object class with bounding boxes.",
+                         "why":  "Violates YOLO convention; negatives must be images with empty label files. A background object class degrades the detector and breaks nc/names back-compatibility (per atom_03, which is authoritative over atom_02\u0027s storage metadata)."
+                     },
+                     {
+                         "decision":  "Treat Gemini-2.5-flash labels as ground truth with no quality safeguards, including labeling the gate\u0027s held-out set.",
+                         "why":  "VLM label noise poisons the training set and, worse, the held-out set the gate compares against — silently defeating the entire safety boundary. Requires confidence threshold, abstention/agreement handling, human spot-check, and a non-Gemini held-out (atom_13 modify)."
+                     },
+                     {
+                         "decision":  "Implement the nightly pipeline as a single monolithic scheduler object.",
+                         "why":  "Bundling ~10 phases into one unit violates the atomic-development principle (atom_12) and is untestable in units; decomposed into per-phase files+tests (atom_06 scope penalty)."
+                     },
+                     {
+                         "decision":  "Bundle the GPU lockfile, degraded live-inference mode, and night-window watchdog into one component.",
+                         "why":  "Each is a distinct, independently-testable concern; bundling violates atom_12. Split into 08a/08b/08c (atom_08 scope penalty)."
+                     },
+                     {
+                         "decision":  "Gate model promotion on classification probabilities, or on accuracy alone / aggregate metric improvement.",
+                         "why":  "Classification probs were the original 99034ac5 bug; the gate must read detection outputs. Accuracy-only (or aggregate) gating would let a person-precision regression through — the gate must reject ANY candidate that regresses person-precision (atom_10)."
+                     },
+                     {
+                         "decision":  "Promote a new model by overwriting the live model file in place.",
+                         "why":  "Creates a corruption window where a half-written model can go live and leaves no rollback path; use atomic os.replace/pointer swap with previous-model preservation and a rollback marker (atom_11)."
+                     },
+                     {
+                         "decision":  "Auto-promote from the first night without operator review.",
+                         "why":  "The gate is unverified at first run and the contract mandates a dry-run; default auto_promote=FALSE with Telegram before/after metrics until explicit operator confirmation (atom_09)."
+                     }
+                 ],
+    "open_questions":  [
+                           "Scheduler mechanism: use the existing bridge nightly mechanism or a dedicated Windows scheduled task to trigger the 01:00–06:00 window? Contract allows either; needs an operator/architect decision.",
+                           "Source of the trusted, non-Gemini held-out evaluation set (human-labeled subset vs. a reserved trusted slice) — who/what provides ground truth, given Gemini labels are barred from the held-out set?",
+                           "Concrete dataset balance policy values — 3:1:1 (positive:empty:hard-negative) is a placeholder; needs tuning against the real collected distribution once the manifest reports actual counts.",
+                           "Gemini labeling thresholds: specific confidence cutoff, abstention rule, and spot-check sampling rate.",
+                           "Empty-scene sampling cadence: final timer interval (5 vs 10 min) and/or no-detection frame threshold, pending observed live data volume.",
+                           "GPU contention policy during training: fully pause live inference or run a degraded mode, and what degraded-mode latency/availability is acceptable to the operator (atom_08b).",
+                           "Promotion-trust criterion: after how many successful dry-run nights (or which explicit operator action) does training.auto_promote flip from FALSE to TRUE?"
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "A — Data collection (the new component)",
+                                    "atoms":  [
+                                                  "atom_01",
+                                                  "atom_02",
+                                                  "atom_04"
+                                              ],
+                                    "steps":  [
+                                                  "EmptySceneSampler as a CropCollector extension with timer / no-detection-threshold / scene-memory background-only triggers",
+                                                  "Empty/background storage metadata schema (sample_type=empty_negative, class_name as storage-only, frame_hash, trigger_reason, detections snapshot)",
+                                                  "Hard-negative capture (sample_type=hard_negative) from FPs / rejected detections / Gemini disagreement"
+                                              ]
+                                },
+                                {
+                                    "phase":  "B — Dataset layer",
+                                    "atoms":  [
+                                                  "atom_03",
+                                                  "atom_05",
+                                                  "atom_13"
+                                              ],
+                                    "steps":  [
+                                                  "YOLO export: negatives as images with empty label files (authoritative; reconcile with A\u0027s storage metadata)",
+                                                  "Policy-driven balancer with deterministic seeded sampling + logged manifest",
+                                                  "Gemini-2.5-flash labeling with confidence threshold / abstention / spot-check, held-out set kept non-Gemini"
+                                              ]
+                                },
+                                {
+                                    "phase":  "C — Safety core (build and prove BEFORE any auto-promote path)",
+                                    "atoms":  [
+                                                  "atom_10",
+                                                  "atom_11"
+                                              ],
+                                    "steps":  [
+                                                  "Verify-by-code + re-fix FinetuneGate: detection outputs, cls→label, person-precision AND accuracy with epsilon, reject regressions — write the regression tests first",
+                                                  "Atomic model promotion via os.replace/pointer swap + previous-model preservation + rollback marker"
+                                              ]
+                                },
+                                {
+                                    "phase":  "D — Orchestration \u0026 reliability",
+                                    "atoms":  [
+                                                  "atom_06",
+                                                  "atom_07",
+                                                  "atom_08a",
+                                                  "atom_08b",
+                                                  "atom_08c"
+                                              ],
+                                    "steps":  [
+                                                  "NightlyTrainingScheduler phases as separate files+tests, CLI-triggerable in the 01:00–06:00 window",
+                                                  "Run ledger / per-date markers with terminal STATUS files, manifest hash, idempotent catch-up",
+                                                  "GPU inference lockfile (08a)",
+                                                  "Degraded/paused live-inference mode with timeout + Telegram/status notification (08b)",
+                                                  "Night-window watchdog that aborts + rolls back on overrun, reclaims stale locks (08c)"
+                                              ]
+                                },
+                                {
+                                    "phase":  "E — Guarded deployment",
+                                    "atoms":  [
+                                                  "atom_09"
+                                              ],
+                                    "steps":  [
+                                                  "Default dry_run=true / auto_promote=FALSE: full train+compare cycle, Telegram before/after metrics + gate verdict, no promotion without operator confirmation",
+                                                  "Run the first real night as a dry-run under operator review; flip auto_promote to TRUE only after explicit confirmation"
+                                              ]
+                                },
+                                {
+                                    "phase":  "Governing",
+                                    "atoms":  [
+                                                  "atom_12"
+                                              ],
+                                    "steps":  [
+                                                  "Hold to one-file/one-test atoms verified by `pytest oko`; Architect-Claude reviews each atom before it is marked done"
+                                              ]
+                                }
+                            ],
+    "next_step":  "Start with atom_10: verify-by-code that the FinetuneGate fix (99034ac5) genuinely compares detection outputs (not classification probabilities), maps cls→label names, gates on person-precision AND accuracy, and promotes atomically — write the `pytest oko` regression tests that prove the gate REFUSES a synthetically-worse candidate. The gate is the safety boundary the entire unattended pipeline depends on, and per the literary-slop lesson its \u0027done\u0027 status must be proven by code before any auto-promotion path is built.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "Held-out ground truth is the current model\u0027s own output, making the gate circular. crop_collector.py:70,84 sets class_name = detection.class_name (the live model\u0027s prediction at capture time), and eval_harness.evaluate compares the candidate\u0027s predictions against that same field as \u0027truth\u0027.",
+                                  "why":  "A candidate scores \u0027better\u0027 by agreeing MORE with the current model\u0027s past detections — including its false positives. The gate measures self-agreement, not correctness, so it structurally rewards reproducing the current model (incl. its errors) and cannot validate real improvement. atom_13 (Gemini labels) is meant to replace this, but the decision never states the held-out ground truth must come from an INDEPENDENT/human source; open_questions lists held-out \u0027construction\u0027 but omits the label-source validity problem. If held-out is labeled by the same Gemini that labels training, the gate measures agreement-with-Gemini and a Gemini-trained candidate beats the current model almost by construction — defeating the gate\u0027s conservatism."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "\u0027FinetuneGate-коррекция done\u0027 (known_context) is false; the live gate is the explicitly-REJECTED design and is non-functional. finetune_gate.py:50 gates on accuracy ALONE with strict \u0027\u003e\u0027, no person-precision, no epsilon. _predict_all (:94-96) reads classification .probs.top1 and emits str(cls_id) (e.g. \u00273\u0027), which evaluate compares against name labels (e.g. \u0027person\u0027) — they can never match, so accuracy is ALWAYS 0.0 for BOTH models, improved is ALWAYS False, and the gate NEVER promotes anything.",
+                                  "why":  "The decision builds atoms 01-09 \u0027on top of\u0027 a gate it characterizes as merely needing test-verification (\u0027prove it\u0027s done\u0027). In reality the gate (a) implements the rejected accuracy-only path, (b) has the exact cls-id-vs-label-name bug atom_10 names, and (c) for a detection model results[0].probs is None so every prediction is \u0027__missing__\u0027. Step 1 is a rewrite, not a verification — the project\u0027s true state is mis-stated, under-scoping the highest-risk work and invalidating the claim that the 5-stage foundation\u0027s safety core is complete."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The existing pytest suite is a false green that proves nothing about the gate. test_finetune_gate.py:70-95 mocks the eval harness and asserts only that an \u0027improved\u0027 key exists and is a bool; no test checks person-precision gating, detection outputs, cls→name mapping, atomic promotion, or epsilon.",
+                                  "why":  "success_tests \u0027all new components covered by passing pytest oko\u0027 and \u0027verified by pytest oko\u0027 are satisfiable while the gate is broken — exactly the \u0027literary-slop: don\u0027t trust done\u0027 failure the contract warns about, present in the foundation\u0027s own tests. Any claim of \u0027pytest oko green\u0027 as evidence the gate is safe is unfounded; the green suite co-exists with a gate that can never promote and never checks the safety metric."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The gate omits recall, and this feature actively biases the model toward the failure recall would catch. atom_10 gates on person-precision AND accuracy only. The new empty/hard-negative collection (atoms 01-05) floods the dataset and held-out with negatives.",
+                                  "why":  "A candidate that suppresses detections scores HIGH person-precision (few, confident TPs) and HIGH accuracy (held-out dominated by empties), so it passes the gate while missing real persons/intrusions — the dangerous direction for a security detector. The empty-collection feature structurally pushes toward this exact regime, and the gate is blind to it. Gating on precision+accuracy without recall/F1 lets a \u0027detect almost nothing\u0027 model win."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "atom_10 mandates detection-box evaluation, but the entire data/eval stack is crop-classification with no IoU matching. CropRecord stores a single cropped object + one class_name; eval_harness builds a single-label-per-item confusion matrix (eval_harness.py:96-108). True detection person-precision needs IoU-matched TP/FP against ground-truth boxes on full frames.",
+                                  "why":  "The decision calls correct box handling \u0027fiddly (feasibility 0.7).\u0027 In fact it requires a NEW evaluation subsystem (IoU matching, multi-box GT) AND a NEW held-out representation (full frames with box annotations) that the foundation does not produce — the positives are crops. This is a major architectural gap mislabeled as a small fix, and it conflicts with the crop-based positives already being collected into runs/labels/\u003ccam\u003e/."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Promotion is non-atomic in the live code, contradicting atom_11\u0027s \u0027os.replace/pointer-swap\u0027 claim. finetune_gate.py:82-83 does current_weights_link.unlink() then shutil.copy2(new, current) — a multi-second window where NO model exists at the active path. On win32 the intended os.replace also raises PermissionError if the live detector holds the .pt file handle.",
+                                  "why":  "A crash or power loss mid-copy destroys the active model with no in-place fallback (the archive is a copy of the OLD weights, but the live link is already gone). The decision asserts atomicity as an existing property; it isn\u0027t. And the Windows-specific open-handle failure mode means even the planned os.replace needs the live inference process to release the model handle under the GPU lock — never specified in atom_08."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The nightly trigger assumes the host is awake 01:00-06:00 — unverified and likely false on this machine. The scheduler mechanism is still an open_question; the host is a personal Windows desktop (OneDrive\\Documents) that probably sleeps/hibernates overnight.",
+                                  "why":  "Windows Task Scheduler will not run a sleeping/hibernating machine without explicit wake timers (and never wakes on battery/modern-standby). success_test \u0027triggers reliably within the ~01:00-06:00 window\u0027 then has no verified implementation. Catch-up (atom_07) masks the miss but pushes training into the DAY against the live detector — the GPU-contention scenario atom_08 was designed to avoid — turning a missed window into a daytime degradation."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The held-out set is not actually frozen across nights, and the split leaks near-duplicates. eval_harness.freeze_held_out (:57-65) shuffles the full GROWING pool with fixed seed=42; because the pool length changes nightly, the held-out membership changes every run. The split is random with no temporal/camera dedup.",
+                                  "why":  "The dry-run \u0027before/after\u0027 comparison and the gate\u0027s current-vs-candidate verdict are evaluated against a DIFFERENT held-out each night, so cross-night metrics and the operator\u0027s before/after report are not comparable. Random splitting (:58) puts near-identical consecutive frames in both train and held-out, inflating both models\u0027 metrics and letting an overfit candidate pass. open_questions flags held-out \u0027refresh\u0027 but not the leakage or the moving-target problem."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Catch-up of missed nights conflicts with the timebox watchdog, and idempotency semantics are ambiguous. atom_07 catches up N missed dates \u0027exactly once\u0027 each; atom_08\u0027s watchdog aborts+rolls back if the 01:00-06:00 window is exceeded.",
+                                  "why":  "Multiple sequential YOLO trainings on a single GPU cannot fit one ~5-hour window, so a backlog of missed nights causes every catch-up run to overrun and abort → permanent no-promote. No per-run time budget or \u0027train newest, defer rest\u0027 policy is specified. Separately, the manifest-hash + \u0027exactly once\u0027 rules conflict for late-arriving same-day samples: re-run because the hash changed, or skip because the date is terminal? Undefined."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Readiness has no positive floor and the empty-frame storage collides with the crop-classification index. check_readiness (finetune_gate.py:18-24) counts all index.jsonl lines; atom_02 stores empties into runs/labels/\u003ccam\u003e/ with class_name=background.",
+                                  "why":  "Once empties share index.jsonl, min_samples=100 can be met with ZERO positives, triggering training on a degenerate all-negative dataset. Empties are full FRAMES, but CropCollector/index.jsonl model single cropped objects with a class_name, and eval_harness.load_crops will treat \u0027background\u0027 as a classification label and try to classify whole frames. atom_02/03\u0027s storage choice is never reconciled with the existing crop-based readiness/eval path it must coexist with."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The empty sampler is blind exactly where false positives occur. The \u0027no-detection\u0027 trigger (atom_01) only captures frames when there is NO detection, so it skips empty scenes in which the model hallucinates a detection — the FP-prone scenes that cause \u0027галлюцинации.\u0027",
+                                  "why":  "The sampler collects only \u0027easy\u0027 empties and never the hard empties that produce the false positives the feature is meant to correct. The hard-negative channel (atom_04) is the intended remedy but depends on reliably identifying FPs/Gemini-disagreements — itself unsolved (feasibility 0.75) and circular with the self-labeled data (finding 1). Net: the negative set may be rich in uninformative empties and poor in the corrective signal the goal requires."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The pipeline hard-depends on Gemini availability/cost/rate-limits inside the night window with no fallback. atom_06 sequences labeling as a phase before export/train; a labeling failure aborts the run.",
+                                  "why":  "Nightly full-day labeling has unbounded, unaddressed cost/quota, and a Gemini outage or rate-limit during 01:00-06:00 means no training that night — which then piles into catch-up (finding 9). No degraded path (label a sample, defer, retry) is specified, so an external API becomes a single point of failure for the whole self-correcting loop."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The dry-run→promote handoff is undefined and Telegram is the only notify/confirm channel. The trained-but-withheld candidate\u0027s retention and one-action promotion after operator confirmation are unspecified; a terminal DRYRUN marker (atom_07) makes catch-up skip that date.",
+                                  "why":  "After the operator reviews the before/after report and confirms, there is no defined way to promote THAT validated candidate — the DRYRUN-marked date is skipped on catch-up, so confirmation has nothing to act on without a fresh night, and the metrics the operator approved are stale. Telegram is also the sole delivery/confirmation path with no ack/retry/alternate; a delivery failure or no operator response silently stalls the loop in dry-run indefinitely."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

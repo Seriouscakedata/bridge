@@ -1,0 +1,94 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires extending the OKO object detection system with two new capabilities: (1) automated collection of empty/background scenes as negative examples to reduce false positives, and (2) a nightly self-correcting retraining pipeline that labels data with Gemini-2.5-flash, trains a new model, and promotes it only if it improves person-precision and accuracy on held-out data. The implementation must be modular, atomic, verified by pytest, and include a dry-run mode for the first training cycle with operator review before enabling auto-promotion. The FinetuneGate fix (commit 99034ac5) must be explicitly verified to ensure correct metric comparison and atomic promotion logic.",
+    "summary":  "Implement empty-scene sampling in CropCollector (periodic background frame capture with class=\u0027background\u0027/\u0027empty\u0027) and a nightly scheduler that aggregates daily positives, empty-negatives, and hard-negatives, labels them via Gemini-2.5-flash, exports YOLO datasets, trains a new model, and conditionally promotes it via FinetuneGate based on held-out person-precision and accuracy. First run is dry-run with Telegram notification and no auto-promotion; auto-promotion enabled after operator confirmation. All components verified by pytest with atomic file/test structure.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Extend CropCollector with a timer-based empty-scene sampler that saves frames with class=\u0027background\u0027/\u0027empty\u0027 when no person/animal detection occurs for N frames or scene memory indicates background-only.",
+                               "reason":  "The operator explicitly requested periodic empty-scene collection to teach the model that \u0027empty = empty\u0027, preventing hallucination. Timer-based (every 5-10 min) or frame-count-based triggers ensure consistent negative sampling without manual intervention.",
+                               "tradeoff":  "Timer-based sampling may capture transitional states (person entering frame) as empty; mitigation: use scene memory confirmation and minimum no-detection window. Storage overhead increases with negative samples; mitigation: configurable retention and balanced sampling.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement a nightly scheduler (Windows Task Scheduler or bridge mechanism) that runs in the 01:00-06:00 window, aggregates daily positives, empty-negatives, and hard-negatives, and triggers the retraining pipeline.",
+                               "reason":  "Nightly retraining aligns with low-activity hours, minimizing interference with live inference. Idempotency ensures missed runs are caught up. The existing bridge nightly mechanism provides a proven foundation.",
+                               "tradeoff":  "Windows Task Scheduler is simpler but less integrated; bridge mechanism offers better state management but more complexity. Choose bridge mechanism for idempotency and state tracking, falling back to Task Scheduler if unavailable.",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Use Gemini-2.5-flash for labeling collected data during the nightly run, generating YOLO-format datasets via DatasetExporter.",
+                               "reason":  "Gemini-2.5-flash is operator-designated and permitted during training time. Automated labeling eliminates manual annotation bottleneck and enables continuous dataset growth.",
+                               "tradeoff":  "Gemini labeling may introduce errors; mitigation: confidence thresholding on labels, human review spot-checks, and using only high-confidence labels for training.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "FinetuneGate must evaluate new model against current model on held-out data using detection outputs (not classification probabilities), label names, and gate specifically on person-precision AND accuracy.",
+                               "reason":  "The operator explicitly requires verification that the FinetuneGate fix (99034ac5) correctly compares detection outputs, uses label names, and gates on person-precision. This prevents regressions from misconfigured metrics.",
+                               "tradeoff":  "Detection-output comparison is more computationally expensive than probability comparison but is necessary for correctness. Held-out split reduces training data; mitigation: stratified split preserving class balance.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "First training run executes in dry-run mode: full train+compare cycle with Telegram notification of before/after metrics, but NO auto-promotion without explicit operator confirmation.",
+                               "reason":  "Operator review requirement ensures the pipeline behaves correctly before enabling autonomous model promotion. Telegram notification provides immediate visibility into metrics.",
+                               "tradeoff":  "Dry-run delays full automation but prevents accidental promotion of inferior models. Operator must be available to review; mitigation: notification includes clear pass/fail verdict and actionable confirmation prompt.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Live inference must be paused or timeboxed during GPU-intensive training to prevent resource contention.",
+                               "reason":  "GPU is a shared resource; concurrent inference and training degrade both. Pausing inference ensures training completes reliably and inference resumes with updated model.",
+                               "tradeoff":  "Pausing inference creates a detection gap during training window; mitigation: timebox training to complete within the 01:00-06:00 window, and implement graceful pause/resume with state preservation.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "All new components must follow atomic development principle: 1 file per atom, 1 test per atom, verified by `pytest oko`.",
+                               "reason":  "The task constraints mandate modular, testable implementation. Atomic structure enables isolated debugging, clear code review by Architect-Claude, and reliable regression testing.",
+                               "tradeoff":  "Atomic structure increases file count and may feel fragmented; mitigation: clear module organization and comprehensive integration tests alongside unit tests.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "The existing CropCollector codebase is accessible and modifiable at C:\\Users\\rafie\\bridge-projects\\oko.",
+                        "The bridge nightly mechanism or Windows Task Scheduler is available and configurable for OKO.",
+                        "Gemini-2.5-flash API access is configured and operational for training-time labeling.",
+                        "DatasetExporter and FinetuneGate components exist and are functional from the 5-stage foundation.",
+                        "GPU resources are sufficient to complete training within the 01:00-06:00 window.",
+                        "Scene memory module provides reliable background-only detection signals.",
+                        "Telegram notification integration is already established in the bridge/OKO system.",
+                        "Held-out dataset exists or can be created from historical data for FinetuneGate evaluation.",
+                        "Operator will review and confirm the dry-run results within a reasonable timeframe after notification."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Empty-scene sampler captures frames with partial or distant persons, contaminating negative dataset.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement strict no-detection threshold (e.g., 30+ consecutive frames without any detection) and scene memory confirmation. Add configurable confidence floor for \u0027empty\u0027 classification."
+                  },
+                  {
+                      "risk":  "Gemini-2.5-flash labeling produces incorrect or inconsistent annotations, degrading model quality.",
+                      "severity":  "high",
+                      "mitigation":  "Apply high confidence threshold for Gemini labels, implement label validation heuristics, retain human-in-the-loop spot-check capability, and log all Gemini-labeled data for audit."
+                  },
+                  {
+                      "risk":  "FinetuneGate incorrectly compares models due to metric miscalculation or label mismatch, allowing inferior model promotion.",
+                      "severity":  "high",
+                      "mitigation":  "Explicitly verify FinetuneGate fix (99034ac5) via dedicated unit tests that inject known detection outputs and assert correct comparison. Include integration test with synthetic held-out data where ground truth is known."
+                  },
+                  {
+                      "risk":  "Nightly scheduler fails silently, causing missed training cycles and stale model.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement idempotent catch-up logic, health-check monitoring with Telegram alerts on failure, and persistent state tracking of last successful run."
+                  },
+                  {
+                      "risk":  "GPU contention during training degrades live inference or causes training timeout.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement explicit inference pause with timeout, resource monitoring, and graceful fallback to CPU-only inference if training exceeds window."
+                  },
+                  {
+                      "risk":  "Dataset imbalance (too many negatives relative to positives) causes model bias toward \u0027empty\u0027 predictions.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement configurable sampling ratios in DatasetExporter, dynamically balance positive/empty/hard-negative counts, and monitor class distribution in training logs."
+                  }
+              ],
+    "minimal_version":  "Implement empty-scene sampler in CropCollector (timer-based, class=\u0027background\u0027/\u0027empty\u0027) and nightly scheduler that aggregates data, runs Gemini labeling + YOLO export + FinetuneGate evaluation with dry-run mode and Telegram notification. Verify FinetuneGate fix via targeted unit tests. All changes atomic with pytest coverage.",
+    "advanced_version":  "Minimal version plus: adaptive empty-scene sampling rate based on false-positive rate, Gemini label confidence filtering with active learning feedback loop, automated dataset balancing with configurable ratios, comprehensive integration tests simulating full nightly cycle with synthetic data, and a dashboard for monitoring dataset composition and model promotion history."
+}
