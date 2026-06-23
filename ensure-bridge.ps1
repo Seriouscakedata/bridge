@@ -128,7 +128,8 @@ if (-not (Test-ProcAlive 'supervisor.ps1')) {
   $needRespawn = $false
   if ($wdProcs.Count -eq 0) {
     ELog "watchdog DEAD -> respawn"; $needRespawn = $true
-  } elseif ($wdStaleMin -gt 45) {  # 2026-06-22: 25->45 (operator harden: the watchdog's own cycle legitimately blocks ~30min while it tolerates a busy driver (hbAge up to 1800s) + runs smoke; a 25min staleness bar false-respawned a WORKING watchdog mid-cycle, which itself caused churn). 45min still catches a genuinely dead watchdog.
+  } elseif ($wdStaleMin -gt 75) {  # 2026-06-23: 45->75 (operator harden, EVIDENCE-DRIVEN). The 25->45 bump (06-22) UNDER-shot: ensure-bridge.log shows the watchdog smoke cycle crept to 47-50min, so the 45min bar false-fired EVERY ~50min (10 consecutive "watchdog HUNG (smoke stale 47-50m, proc alive)" through 06-23 05:17; 736 lifetime kill+respawns). A speed audit ranked this the #1 time-loss: each false kill interrupts a LIVE task and forces re-claim + full re-QA. 75min sits above the observed ~50min p99 with creep margin, still catches a genuinely dead watchdog. TODO: also make circuit-breaker.ps1:193 (task-survived-3x force-fail) duration-aware so a still-committing task is not rolled back.
+            # 2026-06-22: 25->45 (operator harden: the watchdog's own cycle legitimately blocks ~30min while it tolerates a busy driver (hbAge up to 1800s) + runs smoke; a 25min staleness bar false-respawned a WORKING watchdog mid-cycle, which itself caused churn).
     # 2026-06-20: 12->25 min (operator directive: add time where a timeout kills a WORKING process).
     # The watchdog's own smoke cycle (parse 307 ps1 + endpoint checks) legitimately takes ~12.5 min,
     # so a 12-min staleness bar false-killed a HEALTHY-but-slow watchdog mid-smoke (~2/3 of cycles
