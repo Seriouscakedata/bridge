@@ -124,7 +124,12 @@ try {
           $exitReason += '; deep_status=' + [string]$result.deep_status
         }
       } catch {}
-      Write-AuditRunnerTerminal -Root $BridgePath -Slug $Channel -Decision 'completed_partial' -Reason 'partial' -ExitReason $exitReason -ReportPath $reportPath -RuntimeSeconds $runtimeSeconds
+      if ([string]::IsNullOrWhiteSpace($reportPath)) {
+        Write-AuditRunnerTerminal -Root $BridgePath -Slug $Channel -Decision 'failed' -Reason 'empty_report' -ExitReason ("empty_report; {0}" -f $exitReason) -ReportPath $reportPath -RuntimeSeconds $runtimeSeconds
+        exit 1
+      } else {
+        Write-AuditRunnerTerminal -Root $BridgePath -Slug $Channel -Decision 'completed_partial' -Reason 'partial' -ExitReason $exitReason -ReportPath $reportPath -RuntimeSeconds $runtimeSeconds
+      }
     }
   } else {
     Write-AuditRunnerLog -Root $BridgePath -Message ("audit skipped: channel={0} did not stay idle for {1} min" -f $Channel, $MaxWaitMinutes)
