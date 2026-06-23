@@ -1,0 +1,282 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.7,
+                                     "impact":  0.8,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Persisting SceneModel via SceneStore.save on every frame adds non-trivial I/O overhead in the live loop; cadence should be throttled/decoupled.",
+                                            "value":  0.03
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,C) and well-specified (names methods and target file). Sound direction, but \u0027on every frame\u0027 save is the weak point — high write amplification in the hot path. Modify to update in-memory each frame but persist on an interval or on change.",
+                      "total":  0.7625
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B), high reversibility, low cost. Wall-clock (not frame-count) warmup per camera_id is the correct guard against premature suppression and is trivially testable. Configurable range is sensible.",
+                      "total":  0.865
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C) and the core suppression mechanism. The conjunctive predicate (furniture match AND near-zero motion) plus plate-diff backstop for real persons is the right safety posture; complexity is justified by the false-suppression risk it controls.",
+                      "total":  0.8275
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.75,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single, explicit decision point that withholds both VLM wake and alert is a clean, auditable design that avoids scattered suppression logic. Yielding a suppressed PipelineEventResult keeps the outcome observable and testable.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.7,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Reuses the existing _static_track_ids signal rather than inventing a new detector — low cost, high reversibility, and makes the signal durable/cross-restart via SceneModel. Good leverage of in-place machinery to populate FurnitureRegistry.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.65,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.6
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Process gate requiring green pytest before architect review/shipment is low-cost insurance against regressions. Specificity is lower (a policy rather than a concrete artifact) and it overlaps DA-007, but the gate is complementary and worth keeping.",
+                      "total":  0.785
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.7,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Enumerates the concrete coverage cases (warmup, promoted furniture, moving objects, non-promoted detections) that exercise the riskiest suppression paths. Complements DA-006\u0027s gate with feature-specific assertions; the named scenarios give it strong specificity.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Scoping to Chapter 2 first and decomposing into pure functions (scene update, suppression predicate) plus wiring and a config section maximizes testability and shipping cadence while deferring Stages 2-5. Strong, low-risk decomposition discipline.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.65,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Calling vlm_description a \u0027provisional label\u0027 conflicts with DA-010 and invites machine-parsing of free text into a class; ambiguity flagged in the conflict matrix.",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Consensus (A,C) and foundational for the data flywheel — well-specified metadata schema and storage path. Must be modified per the review: store vlm_description as raw human-context metadata, explicitly NOT parsed into a class, so it aligns with DA-010\u0027s labeling stance.",
+                      "total":  0.7775
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Resolves the DA-009/DA-010 conflict in the correct direction: derive Stage-2 labels from YOLO\u0027s agreed bbox+class confirmed by VLM/operator, never from brittle VLM free-text parsing. Avoids label noise at low cost; this is the authoritative labeling policy.",
+                      "total":  0.8675
+                  },
+                  {
+                      "atom_id":  "DA-011",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,C). A held-out harness on a frozen, automatically immutable split manifest is the right guard against data leakage and the prerequisite for trustworthy promotion gating (DA-014). Precision/recall/confusion-matrix outputs are concrete and actionable.",
+                      "total":  0.8175
+                  },
+                  {
+                      "atom_id":  "DA-012",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.85,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C). Versioned export with images/labels/data.yaml/manifest.json is standard YOLO practice and reproducible. Mapping furniture/confirmed-normal to hard negatives (empty label files) directly targets the false-positive problem the system is built to reduce.",
+                      "total":  0.8425
+                  },
+                  {
+                      "atom_id":  "DA-013",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus (A,B). Keeping GPU fine-tuning out-of-band with preflight checks and fixed inputs (dataset_version, base_weights, train_config) protects the live inference loop from resource contention and non-determinism — clean separation of concerns with strong risk reduction.",
+                      "total":  0.85
+                  },
+                  {
+                      "atom_id":  "DA-014",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.9,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C). Atomic promotion gated on clear margin AND no per-class recall regression beyond epsilon is the safest possible swap policy and the highest-leverage safeguard. High implementation cost and intrinsic complexity lower feasibility/simplicity, but the risk reduction fully warrants it.",
+                      "total":  0.82
+                  },
+                  {
+                      "atom_id":  "DA-015",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C). Explicit rollback command plus automatic rollback on post-promotion validation failure pairs with DA-014 to make promotion fully recoverable. Low complexity relative to its strong safety payoff.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "DA-016",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.6,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Full consensus (A,B,C), trivially feasible, low cost. A single Telegram confirmation after a successful switch and manifest recording gives operator-visible closure without notification spam. Impact and risk-reduction are modest (it\u0027s observability, not a safeguard), but it\u0027s a clean, correct finishing touch.",
+                      "total":  0.815
+                  }
+              ]
+}

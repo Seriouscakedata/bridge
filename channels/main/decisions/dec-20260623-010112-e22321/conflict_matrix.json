@@ -1,0 +1,33 @@
+{
+    "consensus_atoms":  [
+                            "DA-001",
+                            "DA-002",
+                            "DA-003",
+                            "DA-009",
+                            "DA-011",
+                            "DA-012",
+                            "DA-013",
+                            "DA-014",
+                            "DA-015",
+                            "DA-016"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "DA-009",
+                                           "DA-010"
+                                       ],
+                          "axis":  "Data labeling strategy for training",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "DA-009",
+                        "severity":  "minor",
+                        "why":  "The statement in DA-009 to store `vlm_description as provisional label` creates ambiguity and potential conflict with DA-010. DA-010 explicitly states that for Stage-2 training labels, VLM free-text descriptions should *not* be parsed into classes. If \u0027provisional label\u0027 in DA-009 implies any form of machine-parsing or derivation of a class from the `vlm_description`, it directly contradicts DA-010. Even if it\u0027s meant as raw text for human context, calling it a \u0027provisional label\u0027 is misleading given DA-010\u0027s strong stance against using VLM free-text for class derivation.",
+                        "fix":  "Clarify DA-009 to state that the `vlm_description` is stored as raw text metadata for human review and context, explicitly *not* to be parsed into a machine-readable class, even provisionally. This aligns with DA-010\u0027s intent to rely on YOLO\u0027s classes confirmed by VLM/operator for training.",
+                        "cost":  "low"
+                    }
+                ]
+}

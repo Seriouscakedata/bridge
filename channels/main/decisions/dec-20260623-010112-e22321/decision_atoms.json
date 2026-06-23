@@ -1,0 +1,195 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "DA-001",
+                      "statement":  "Integrate SceneStore.get_or_create and SceneStore.save into pipeline/live.py to update SceneModel (BackgroundPlate, SpatialGrid, FurnitureRegistry) on every frame.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Scene Model Integration",
+                      "test":  "Unit tests for SceneStore methods; integration test in `live.py` to ensure SceneModel is updated and saved.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-002",
+                      "statement":  "Introduce a wall-clock-based warmup guard (2-5 minutes, configurable) per camera_id before activating furniture suppression.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Suppression Logic",
+                      "test":  "Unit tests for warmup logic (wall-clock vs. frame-count); integration tests verifying suppression is inactive during warmup.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-003",
+                      "statement":  "Implement VLM-gate suppression requiring BOTH a promoted-furniture class/IoU match AND near-zero motion (plate-diff) in the matched cells, gated by warmup. The plate-diff acts as a safety backstop for real persons.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Suppression Logic",
+                      "test":  "Unit tests for suppression predicate (furniture match, motion score, warmup state); integration tests for VLM-gate behavior under various conditions (moving object, static furniture, person near furniture).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-004",
+                      "statement":  "Implement suppression as a single, explicit decision point in live.py that withholds both the VLM wake and the alert, yielding a suppressed PipelineEventResult.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Suppression Logic",
+                      "test":  "Integration tests verifying that suppressed events do not trigger VLM or alerts, and the PipelineEventResult reflects suppression.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-005",
+                      "statement":  "Populate the FurnitureRegistry using the existing `_static_track_ids` signal from `events/builder.py`, making this signal durable and cross-restart via SceneModel.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Scene Model Integration",
+                      "test":  "Unit tests for FurnitureRegistry population logic; integration tests ensuring static tracks are correctly promoted to furniture.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-006",
+                      "statement":  "Ensure every decision atom is covered by `pytest` in `bridge-projects/oko`, with tests running green before architect review and chapter shipment.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Development Process",
+                      "test":  "CI/CD gate, code review check for test presence and pass.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-007",
+                      "statement":  "Cover SceneModel integration and VLM-gate suppression with unit and integration tests, including cases for warmup, promoted furniture, moving objects, and non-promoted detections.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Code review of test coverage, execution of specified tests.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-008",
+                      "statement":  "Prioritize and build only Chapter 2 (Stage-1 live integration) first, decomposing it into pure functions for scene update and suppression predicate, wiring, and a config section. Stages 2-5 will be separate, future chapters.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Project Management / Decomposition",
+                      "test":  "Codebase structure review, adherence to chapter scope.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-009",
+                      "statement":  "Implement a dedicated module for accumulating labeled crops from confirmed person/animal events in `runs/labels/\u003ccamera_id\u003e/`, storing each crop with metadata JSON (vlm_description as provisional label, bbox, conf, cell, timestamp, camera_id, model_version).",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Data Collection",
+                      "test":  "Unit tests for data storage format; integration tests for event-to-crop capture.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-010",
+                      "statement":  "For Stage-2 training labels, use YOLO\u0027s own agreed bbox+class (confirmed by VLM/operator) rather than parsing VLM free-text descriptions into classes.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Data Labeling Strategy",
+                      "test":  "Code review of label generation logic; verification of label format.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "DA-011",
+                      "statement":  "Implement a held-out evaluation harness that computes precision, recall, and confusion matrix on a frozen, automatically immutable split manifest of accumulated labels and current YOLO output.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Evaluation",
+                      "test":  "Unit tests for metric computation; integration tests for manifest generation and data splitting.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-012",
+                      "statement":  "Export YOLO dataset to `runs/datasets/\u003cversion\u003e/` (with images, labels, data.yaml, manifest.json), converting agreed detections to labels and furniture/confirmed-normal to hard negatives (empty label files).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Dataset Export",
+                      "test":  "Unit tests for dataset format compliance; integration tests for export process.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-013",
+                      "statement":  "Implement GPU fine-tuning as an out-of-band process (separate CLI/scheduled job) with preflight checks and fixed inputs (dataset_version, base_weights, train_config), never in the live inference loop.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Training Pipeline",
+                      "test":  "Unit tests for preflight checks; integration tests for training job execution.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-014",
+                      "statement":  "Implement atomic model promotion: save old weights, place new weights, run held-out evaluation, and switch active pointer/config ONLY if new weights outperform current by a clear margin AND no per-class recall regresses beyond an epsilon. Otherwise, discard new weights.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Model Promotion",
+                      "test":  "Unit tests for promotion logic (metric comparison, rollback trigger); integration tests for atomic weight swap and config update.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "DA-015",
+                      "statement":  "Implement rollback as an explicit command to restore previous active weights, with automatic rollback triggered upon failure of post-promotion validation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Model Management",
+                      "test":  "Unit tests for rollback command; integration tests for auto-rollback on validation failure.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "DA-016",
+                      "statement":  "Send a single Telegram confirmation after successful active model switch and promotion manifest recording.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Notification",
+                      "test":  "Unit tests for notification trigger; integration tests for single notification delivery.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  }
+              ]
+}

@@ -1,0 +1,150 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно продолжить OKO auto-training после готового Stage 1 scaffold: сначала аккуратно встроить SceneModel в live pipeline и VLM-gate, чтобы снизить ложные срабатывания на стабильной мебели, затем по главам добавить сбор реальных событий, held-out evaluation, экспорт YOLO dataset и gated fine-tune/promotion с rollback и Telegram confirmation. Работу нужно дробить на атомы, каждый атом малый, проверяемый pytest в C:\\Users\\rafie\\bridge-projects\\oko, с ревью архитектора после глав.",
+    "summary":  "Предлагаю идти строго главами. Глава 2 является обязательной первой поставкой: на каждом кадре обновлять SceneModel через SceneStore, но включать suppression только после warmup 2-5 минут и только при двух условиях одновременно: detection совпадает с promoted furniture и motion относительно background plate близок к нулю. Дальше строить append-only контур данных: label crops из подтвержденных person/animal events, frozen held-out split, YOLO export с hard negatives, затем отдельный train/eval/promote pipeline, где promotion атомарный, обратимый и разрешен только при улучшении held-out метрик.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Глава 2.1: добавить в pipeline/live.py инициализацию SceneStore и получение SceneModel по camera_id через get_or_create.",
+                               "reason":  "SceneModel должен жить на уровне камеры и переиспользоваться между кадрами, иначе plate/grid/furniture не будут durable и suppression будет нестабилен.",
+                               "tradeoff":  "Минимально трогает live pipeline, но добавляет зависимость pipeline от memory.scene API.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "Глава 2.2: на каждом кадре обновлять BackgroundPlate, SpatialGrid и FurnitureRegistry до VLM-gate решения, затем вызывать SceneStore.save.",
+                               "reason":  "Suppression должен видеть актуальное состояние сцены и историю стабильных объектов до принятия решения будить VLM или отправлять тревогу.",
+                               "tradeoff":  "Есть риск IO overhead на каждом кадре; при необходимости save можно сделать throttled/debounced отдельным атомом после тестов.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Глава 2.3: ввести warmup guard 2-5 минут на camera_id до активации furniture suppression.",
+                               "reason":  "Background plate и furniture promotion требуют накопления стабильного контекста; раннее подавление может скрыть реальные события.",
+                               "tradeoff":  "Первые минуты после старта ложные срабатывания еще возможны, зато снижается риск false negative.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "Глава 2.4: suppression разрешать только если detection совпал с promoted-furniture и motion score относительно background plate ниже порога near-zero.",
+                               "reason":  "Один только spatial match с мебелью недостаточен: человек рядом с мебелью не должен быть подавлен. Двойное условие уменьшает риск пропуска реального person/animal.",
+                               "tradeoff":  "Порог motion потребует калибровки и тестовых fixtures, часть ложных срабатываний останется до настройки.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Глава 2.5: покрыть SceneModel integration unit tests и VLM-gate suppression tests на warmup, promoted furniture, moving object и non-promoted detection.",
+                               "reason":  "Это самый рискованный участок, влияющий на тревоги; тесты должны фиксировать, что VLM не будится только в безопасном случае.",
+                               "tradeoff":  "Потребуется создать небольшие fake frames/detections, но это дешевле регрессий в live pipeline.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Этап 2.1: добавить отдельный модуль накопления label crops для подтвержденных person/animal events в runs/labels/\u003ccamera_id\u003e/.",
+                               "reason":  "Сбор данных должен быть отделен от live.py, чтобы не раздувать pipeline и упростить тестирование формата.",
+                               "tradeoff":  "Появится новый интерфейс события/лейбла, который нужно стабилизировать.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "Этап 2.2: сохранять рядом с crop metadata JSON: vlm_description как provisional label, bbox, conf, cell, timestamp, camera_id, model_version.",
+                               "reason":  "Для последующего eval/export нужны не только изображения, но и происхождение, confidence и пространственный контекст.",
+                               "tradeoff":  "Больше данных на диске; нужен простой retention/cleanup отдельным будущим атомом.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "Этап 3.1: реализовать frozen held-out split manifest, который после создания не меняется автоматически.",
+                               "reason":  "Сравнение моделей имеет смысл только на неизменном срезе, иначе promotion можно случайно подогнать под меняющиеся данные.",
+                               "tradeoff":  "Часть новых данных не попадет в held-out до ручной или явно версионированной пересборки.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Этап 3.2: добавить eval harness с precision, recall и confusion matrix по накопленным labels и текущему YOLO output.",
+                               "reason":  "Promotion gate должен опираться на измеримые метрики, а не на отдельные примеры или training loss.",
+                               "tradeoff":  "Качество метрик зависит от качества provisional labels; понадобится статус provisional/confirmed.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "Этап 4.1: экспортировать YOLO dataset в runs/datasets/\u003cversion\u003e/ с images, labels, data.yaml и manifest.json.",
+                               "reason":  "Стандартный YOLO формат упрощает обучение, воспроизводимость и откат к конкретному датасету.",
+                               "tradeoff":  "Нужно поддерживать mapping классов и версионирование dataset snapshots.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "Этап 4.2: agreed detections экспортировать как labels, а furniture/confirmed-normal сохранять как hard negatives без label-файлов или с пустыми label-файлами согласно YOLO trainer expectations.",
+                               "reason":  "Hard negatives учат модель не поднимать person/animal на стабильных объектах сцены.",
+                               "tradeoff":  "Неверно подтвержденные negatives могут ухудшить recall, поэтому источник confirmed-normal должен быть явно маркирован.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Этап 5.1: fine-tune запускать отдельной командой/модулем с GPU preflight, фиксированными входами dataset_version/base_weights/train_config.",
+                               "reason":  "Training не должен быть побочным эффектом live pipeline; воспроизводимость нужна для диагностики и rollback.",
+                               "tradeoff":  "Появляется отдельная операционная команда, но она безопаснее и тестируемее.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Этап 5.2: promotion делать атомарно: сохранить старые веса, положить новые рядом, прогнать held-out eval, сравнить с baseline, затем переключить active pointer/config только при улучшении.",
+                               "reason":  "Это выполняет ключевое ограничение: новая YOLO модель попадает в систему только если бьет текущую на held-out.",
+                               "tradeoff":  "Promotion logic сложнее простой замены файла, зато rollback становится надежным.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Этап 5.3: rollback реализовать как явную команду восстановления предыдущих active weights плюс автоматический rollback при провале post-promotion validation.",
+                               "reason":  "Пользователь должен иметь быстрый путь назад при деградации модели или ошибке деплоя.",
+                               "tradeoff":  "Нужно хранить историю weights и metadata, что увеличит объем runs/models.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Этап 5.4: Telegram confirmation отправлять ровно один раз после успешного переключения active model и записи promotion manifest.",
+                               "reason":  "Подтверждение должно означать завершенный факт promotion, а не начало обучения или предварительный успех eval.",
+                               "tradeoff":  "Если Telegram недоступен после promotion, нужно логировать pending notification без повторного promotion.",
+                               "confidence":  0.86
+                           }
+                       ],
+    "assumptions":  [
+                        "Stage 1 scaffold в src/oko/memory/scene.py уже имеет стабильный публичный API SceneStore.get_or_create, SceneStore.save и методы обновления plate/grid/furniture либо их можно добавить малыми атомами.",
+                        "pipeline/live.py уже имеет доступ к camera_id, frame, detections и VLM-gate decision point.",
+                        "Существуют классы detection с bbox/class/conf или их можно адаптировать через тонкий helper без переписывания pipeline.",
+                        "VLM description доступен в момент подтвержденного person/animal event и может быть сохранен как provisional label.",
+                        "YOLO inference/training уже используется в проекте или может быть вызван через существующую ultralytics/YOLO интеграцию.",
+                        "Telegram notifier уже есть в OKO или будет добавлен как маленький adapter с mockable интерфейсом.",
+                        "Claude review является внешним процессом после завершения атомов главы; код должен оставлять понятные manifests/tests для ревью."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Suppression может скрыть реального человека или животное, если объект находится рядом с promoted furniture.",
+                      "severity":  "high",
+                      "mitigation":  "Включать suppression только после warmup и только при совпадении с promoted furniture плюс near-zero motion; добавить тесты moving-object-near-furniture и conservative thresholds."
+                  },
+                  {
+                      "risk":  "Сохранение SceneStore на каждом кадре может создать IO latency или повредить файл при сбое.",
+                      "severity":  "medium",
+                      "mitigation":  "Начать с простого save для корректности, затем добавить atomic writes и throttled save отдельным атомом, если pytest/perf покажет проблему."
+                  },
+                  {
+                      "risk":  "Provisional VLM labels могут быть шумными и ухудшить fine-tune.",
+                      "severity":  "high",
+                      "mitigation":  "Хранить статус label source, отделить provisional от confirmed, frozen held-out не пересобирать неявно, promotion разрешать только по held-out improvement."
+                  },
+                  {
+                      "risk":  "Dataset hard negatives могут случайно содержать реальные person/animal объекты.",
+                      "severity":  "high",
+                      "mitigation":  "Экспортировать hard negatives только из promoted furniture/confirmed-normal источников после warmup и с metadata audit trail."
+                  },
+                  {
+                      "risk":  "Held-out leakage между train и eval исказит promotion decision.",
+                      "severity":  "high",
+                      "mitigation":  "Использовать immutable manifest со stable IDs/hash, проверять пересечения image/crop hashes в eval harness."
+                  },
+                  {
+                      "risk":  "GPU training может быть недоступен или нестабилен на машине пользователя.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавить preflight check и fail-fast без изменения active weights; CPU fallback не использовать для gated production fine-tune без явного решения."
+                  },
+                  {
+                      "risk":  "Promotion или rollback может оставить систему в смешанном состоянии weights/config.",
+                      "severity":  "high",
+                      "mitigation":  "Использовать active pointer/config switch, promotion manifest, backup old weights и atomic replace where possible; тестировать failure paths."
+                  },
+                  {
+                      "risk":  "Telegram confirmation может отправиться дважды при retry.",
+                      "severity":  "medium",
+                      "mitigation":  "Записывать notification idempotency key в promotion manifest и отправлять только после successful active switch."
+                  }
+              ],
+    "minimal_version":  "Минимальная полезная версия: завершить только Главу 2. Встроить SceneStore в pipeline/live.py, обновлять SceneModel по кадрам, добавить warmup 2-5 минут и conservative VLM-gate suppression для promoted furniture + near-zero motion. Покрыть pytest кейсами и передать главу на ревью архитектору. Это уже уменьшит ложные срабатывания без запуска auto-training.",
+    "advanced_version":  "Полная версия: после Главы 2 последовательно реализовать сбор labeled crops, frozen held-out eval harness, YOLO dataset export с hard negatives, GPU fine-tune command, gated promotion, rollback и single Telegram confirmation. Каждый этап поставлять атомами с pytest в C:\\Users\\rafie\\bridge-projects\\oko и отдельным review checkpoint после главы."
+}

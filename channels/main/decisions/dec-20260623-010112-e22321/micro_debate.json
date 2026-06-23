@@ -1,0 +1,18 @@
+{
+    "skipped":  false,
+    "topics":  [
+                   {
+                       "atom_ids":  [
+                                        "DA-009",
+                                        "DA-010"
+                                    ],
+                       "rounds":  [
+                                      {
+                                          "for":  "DA-009 advocates for capturing the VLM\u0027s full free-text description as a provisional label. This approach maximizes information capture, providing rich, human-readable context that is invaluable for understanding edge cases, manual review, and potentially for future, more nuanced classification tasks. It avoids premature data loss and supports flexible downstream processing.",
+                                          "against":  "DA-010 argues against parsing VLM free-text descriptions into classes for training labels. Relying on natural language for primary labels introduces significant complexity and fragility; parsing is error-prone and inconsistent. For robust Stage-2 training, it\u0027s far more practical and reliable to use YOLO\u0027s own structured `bbox+class` output, confirmed by VLM/operator, as the direct source for labels.",
+                                          "resolution":  "For the purpose of generating structured training labels, the primary label should be derived from YOLO\u0027s `bbox+class` (confirmed by VLM/operator) rather than attempting to parse VLM free-text descriptions."
+                                      }
+                                  ]
+                   }
+               ]
+}

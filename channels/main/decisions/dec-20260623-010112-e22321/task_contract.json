@@ -1,0 +1,36 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] OKO автообучение — ПРОДОЛЖЕНИЕ (Этап 1 scaffold ГОТОВ: src/oko/memory/scene.py SceneModel/SceneStore/BackgroundPlate/SpatialGrid/FurnitureRegistry + tests зелёные). Проект OKO: C:\\Users\\rafie\\bridge-projects\\oko, durable-план AUTOTRAIN_PLAN.md. Цель юзера: ДООБУЧИТЬ YOLO на его сценах. ДАЛЕЕ по главам: (Гл.2) ВРЕЗАТЬ Этап 1 в pipeline/live.py — на каждом кадре обновлять SceneModel камеры (plate/grid/furniture через SceneStore.get_or_create+save), и в VLM-gate пути ПОДАВЛЯТЬ детекцию, совпавшую с promoted-furniture И ~0 движения vs background plate (не будить VLM, не слать тревогу) — это правильное лекарство от ложных срабатываний; 2-5 мин warmup перед активацией. (Этап 2) копить размеченные кропы из реальных person/animal-событий в runs/labels/\u003ccamera_id\u003e/ (VLM-описание = провизорный лейбл + bbox+conf+cell). (Этап 3) held-out eval-harness: precision/recall/confusion на накопленном, заморозить held-out срез. (Этап 4) export YOLO-формат датасета runs/datasets/ (agreed-детекции=лейблы, furniture/confirmed-normal=hard negatives). (Этап 5) gated fine-tune YOLO на GPU + промоут ТОЛЬКО если бьёт текущую на held-out + авто-rollback (хранить старые веса) + 1 Telegram-подтверждение. Декомпозировать ПОГЛАВНО на АТОМЫ (1 файл / малое изменение / проходит свои тесты); verify ОБЯЗАН = pytest в bridge-projects/oko. Архитектор (Claude) ревьюит атомы каждой главы.",
+    "goal":  "To fine-tune YOLO on user-specific scenes by implementing a multi-stage auto-training pipeline, including scene model integration, false positive suppression, data collection, evaluation, dataset export, and gated model promotion with rollback capabilities.",
+    "constraints":  [
+                        "Task must be decomposed chapter-by-chapter into ATOMS (1 file / small change / passes its own tests).",
+                        "All new/modified code must pass `pytest` in `bridge-projects/oko`.",
+                        "Architect (Claude) must review atoms of each chapter.",
+                        "VLM-gate suppression requires 2-5 minutes warmup before activation.",
+                        "YOLO model promotion is ONLY allowed if it outperforms the current model on the held-out evaluation set.",
+                        "Automatic rollback mechanism must be implemented to store and restore old weights.",
+                        "A single Telegram confirmation must be sent upon successful model promotion."
+                    ],
+    "known_context":  [
+                          "Stage 1 scaffold is ready: `src/oko/memory/scene.py` (SceneModel/SceneStore/BackgroundPlate/SpatialGrid/FurnitureRegistry) with green tests.",
+                          "Project root is `C:\\Users\\rafie\\bridge-projects\\oko`.",
+                          "Durable plan is outlined in `AUTOTRAIN_PLAN.md`.",
+                          "The target model for training is YOLO.",
+                          "Existing `pipeline/live.py` and `VLM-gate` components are present for integration."
+                      ],
+    "output_format":  "An improved, fine-tuned YOLO model deployed in the system, an operational auto-training pipeline, and a robust detection system with reduced false positives.",
+    "task_type":  "architecture",
+    "risk":  "high",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "All `pytest` tests in `bridge-projects/oko` pass for new and modified code.",
+                          "SceneModel (plate/grid/furniture) is correctly updated on each frame in `pipeline/live.py` via `SceneStore.get_or_create+save`.",
+                          "VLM-gate successfully suppresses detections matching promoted-furniture with near-zero motion vs background plate, after a 2-5 minute warmup period.",
+                          "System correctly accumulates labeled crops from real person/animal events in `runs/labels/\u003ccamera_id\u003e/` with VLM-description, bbox, confidence, and cell information.",
+                          "Held-out evaluation harness correctly calculates and reports precision, recall, and confusion matrix on accumulated data.",
+                          "Dataset in YOLO format is correctly exported to `runs/datasets/`, including agreed-detections as labels and furniture/confirmed-normal as hard negatives.",
+                          "Gated fine-tuning process successfully trains YOLO on GPU.",
+                          "New YOLO model is promoted ONLY if it outperforms the current model on the held-out evaluation set.",
+                          "Automatic rollback mechanism correctly restores previous YOLO weights if promotion criteria are not met or if explicitly triggered.",
+                          "A Telegram confirmation is sent upon successful promotion of a new YOLO model."
+                      ]
+}

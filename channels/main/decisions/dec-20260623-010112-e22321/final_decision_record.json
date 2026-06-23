@@ -1,0 +1,312 @@
+{
+    "final_answer":  "Proceed with the OKO auto-training program decomposed chapter-by-chapter into testable atoms, accepting all 16 decision atoms (14 as-is, DA-001 and DA-009 with judge-mandated modifications). Chapter 2 (Stage-1 live integration) ships first and alone: SceneModel is updated in pipeline/live.py and furniture suppression is added as a single, explicit, conjunctive decision point — suppress a detection only when it matches promoted furniture AND shows near-zero motion versus the background plate, gated behind a per-camera wall-clock warmup (2-5 min). Persistence is decoupled from the hot path (in-memory every frame, disk on interval/change). FurnitureRegistry is populated by reusing the existing _static_track_ids signal, made durable via SceneModel. Stages 2-5 are deferred to later chapters: collect labeled crops (vlm_description stored ONLY as raw human-context metadata, never parsed into a class), derive training labels from YOLO\u0027s agreed bbox+class confirmed by VLM/operator, build a held-out eval harness on a frozen immutable split, export a versioned YOLO dataset (furniture/confirmed-normal as hard negatives), and run out-of-band GPU fine-tuning with atomic, margin-and-per-class-recall-gated promotion, explicit + auto rollback, and a single Telegram confirmation. The one substantive conflict (DA-009 vs DA-010, labeling strategy) is resolved in favor of structured YOLO labels over VLM free-text parsing. Every atom must be green under pytest in bridge-projects/oko before architect review.",
+    "decisions":  [
+                      {
+                          "decision":  "DA-001 (modified): Integrate SceneStore.get_or_create/save into pipeline/live.py to update SceneModel (BackgroundPlate, SpatialGrid, FurnitureRegistry) — update in-memory on every frame, but throttle disk persistence to an interval or on-change rather than per-frame.",
+                          "rationale":  "Consensus of proposals A and C, well-specified down to method names and target file. Updating scene state per frame is necessary, but the judge flagged that SceneStore.save() in the live loop causes write amplification in the hot path; decoupling persistence cadence keeps the live loop cheap while preserving cross-restart durability.",
+                          "alternatives_considered":  [
+                                                          "Persist SceneModel via SceneStore.save on every frame (rejected: non-trivial I/O overhead / write amplification in the live inference loop)",
+                                                          "Keep SceneModel purely in-memory with no persistence (rejected: loses durability and cross-restart continuity of plate/grid/furniture)"
+                                                      ],
+                          "risk":  "A throttled-persistence bug could lose recent scene state on an unclean crash; mitigate with periodic flush plus an on-shutdown flush and idempotent get_or_create.",
+                          "test":  "Unit tests for SceneStore.get_or_create/save; integration test in live.py asserting SceneModel is updated in-memory each frame and persisted on the configured cadence (interval/change), not per-frame."
+                      },
+                      {
+                          "decision":  "DA-002 (accept): Add a wall-clock-based warmup guard (2-5 min, configurable) per camera_id before furniture suppression activates.",
+                          "rationale":  "Consensus (A,B), high reversibility, low cost. Wall-clock — not frame-count — is the correct guard against premature suppression while the background plate and furniture registry are still stabilizing, and it is trivially testable.",
+                          "alternatives_considered":  [
+                                                          "Frame-count-based warmup (rejected: decouples warmup from real elapsed time and FPS variability)",
+                                                          "No warmup / immediate suppression (rejected: suppresses against an unstable plate, risking false suppression of real persons)"
+                                                      ],
+                          "risk":  "Misconfigured warmup window either delays protection or activates too early; bounded and configurable range plus tests mitigate.",
+                          "test":  "Unit tests for wall-clock warmup logic per camera_id; integration tests verifying suppression is inactive during warmup and active after it."
+                      },
+                      {
+                          "decision":  "DA-003 (accept): VLM-gate suppression requires BOTH a promoted-furniture class/IoU match AND near-zero motion (plate-diff) in the matched cells, gated by warmup; plate-diff is the safety backstop for real persons.",
+                          "rationale":  "Full consensus (A,B,C) and the core mechanism of the chapter. The conjunctive predicate ensures a real person near or in front of furniture still wakes the gate because they create motion against the background plate; complexity is justified by the false-suppression risk it controls.",
+                          "alternatives_considered":  [
+                                                          "Suppress on furniture match alone (rejected: would silence real persons standing near furniture)",
+                                                          "Suppress on motion alone (rejected: defeats the purpose of furniture-aware suppression)"
+                                                      ],
+                          "risk":  "Threshold tuning (IoU, motion score) is sensitive; a too-lax motion threshold could suppress a slow/static person. Conservative defaults + warmup + the conjunction lower this risk.",
+                          "test":  "Unit tests for the suppression predicate across {furniture match, motion score, warmup state}; integration tests for moving object, static furniture, and person-near-furniture cases."
+                      },
+                      {
+                          "decision":  "DA-004 (accept): Implement suppression as a single, explicit decision point in live.py that withholds both the VLM wake and the alert, yielding a suppressed PipelineEventResult.",
+                          "rationale":  "A single auditable decision point avoids suppression logic scattered across the pipeline and keeps the outcome observable and testable; emitting a suppressed PipelineEventResult preserves traceability of why an event was dropped.",
+                          "alternatives_considered":  [
+                                                          "Suppress at multiple sites (VLM call site and alert site separately) (rejected: harder to audit, risk of inconsistent state)",
+                                                          "Silently drop suppressed events with no result object (rejected: loses observability/metrics)"
+                                                      ],
+                          "risk":  "Centralizing the decision concentrates logic; a bug there affects all suppression. Strong unit coverage of the single predicate mitigates.",
+                          "test":  "Integration tests verifying suppressed events trigger neither VLM nor alert and that PipelineEventResult reflects the suppression reason."
+                      },
+                      {
+                          "decision":  "DA-005 (accept): Populate FurnitureRegistry from the existing _static_track_ids signal in events/builder.py, making the signal durable and cross-restart via SceneModel.",
+                          "rationale":  "Reuses in-place machinery rather than inventing a new static-object detector — low cost, high reversibility, and promotes an ephemeral runtime signal into durable scene knowledge.",
+                          "alternatives_considered":  [
+                                                          "Build a new dedicated furniture/static-object detector (rejected: higher cost and duplication of an existing signal)",
+                                                          "Keep _static_track_ids ephemeral per session (rejected: loses cross-restart furniture knowledge needed for suppression)"
+                                                      ],
+                          "risk":  "If _static_track_ids over-promotes a temporarily stationary person/animal to furniture, suppression could be applied wrongly; the DA-003 motion backstop and promotion thresholds mitigate.",
+                          "test":  "Unit tests for FurnitureRegistry population from _static_track_ids; integration tests ensuring static tracks promote to furniture and persist across restart."
+                      },
+                      {
+                          "decision":  "DA-006 (accept): Gate every atom on green pytest in bridge-projects/oko before architect review and chapter shipment.",
+                          "rationale":  "Low-cost insurance against regressions and a precondition for the architect-review constraint. It is a policy gate; it overlaps but complements the concrete coverage of DA-007.",
+                          "alternatives_considered":  [
+                                                          "Review-then-test (rejected: wastes architect cycles on un-validated atoms)",
+                                                          "Ship without a hard green-test gate (rejected: violates the task\u0027s verify=pytest constraint)"
+                                                      ],
+                          "risk":  "Tests can be green yet shallow; pair with DA-007\u0027s named scenario coverage.",
+                          "test":  "CI/process gate plus code-review check that each atom ships with passing tests."
+                      },
+                      {
+                          "decision":  "DA-007 (accept): Cover SceneModel integration and VLM-gate suppression with unit + integration tests for warmup, promoted furniture, moving objects, and non-promoted detections.",
+                          "rationale":  "Enumerates the concrete coverage cases that exercise the riskiest suppression paths, giving the DA-006 gate feature-specific assertions.",
+                          "alternatives_considered":  [
+                                                          "Rely only on the generic pytest gate (rejected: would not guarantee the high-risk suppression scenarios are exercised)"
+                                                      ],
+                          "risk":  "Named scenarios may still miss real-world edge cases (e.g., partial occlusion); treat as a living suite extended as field cases arrive.",
+                          "test":  "Execution of the enumerated scenario tests and code review of coverage."
+                      },
+                      {
+                          "decision":  "DA-008 (accept): Build only Chapter 2 (Stage-1 live integration) first, decomposed into pure functions (scene update, suppression predicate) plus wiring and a config section; Stages 2-5 are separate future chapters.",
+                          "rationale":  "Maximizes testability and shipping cadence and matches the task\u0027s chapter-by-chapter atomization constraint; pure functions are unit-testable in isolation before being wired into live.py.",
+                          "alternatives_considered":  [
+                                                          "Attempt full Stages 1-5 in one sweep (rejected: violates atom/chapter decomposition discipline and balloons risk)",
+                                                          "Wire logic directly into live.py without extracting pure functions (rejected: hurts testability)"
+                                                      ],
+                          "risk":  "Deferring Stages 2-5 delays the data flywheel; acceptable because suppression delivers immediate false-positive reduction value.",
+                          "test":  "Codebase-structure review confirming pure functions, config section, and Chapter 2 scope adherence."
+                      },
+                      {
+                          "decision":  "DA-009 (modified): Add a module that accumulates labeled crops from confirmed person/animal events in runs/labels/\u003ccamera_id\u003e/ with metadata JSON — store vlm_description as RAW human-context metadata explicitly NOT parsed into a class; also record bbox, conf, cell, timestamp, camera_id, model_version.",
+                          "rationale":  "Consensus (A,C) and foundational for the data flywheel. The judge/conflict review require clarifying that vlm_description is raw context for human review, not a provisional machine label, so it aligns with DA-010\u0027s labeling stance and avoids label noise.",
+                          "alternatives_considered":  [
+                                                          "Store vlm_description as a \u0027provisional label\u0027 usable for training (rejected via micro-debate: invites brittle free-text-to-class parsing, conflicts with DA-010)",
+                                                          "Discard vlm_description entirely (rejected: loses valuable human-review context for edge cases)"
+                                                      ],
+                          "risk":  "Crop accumulation can grow storage unbounded and capture PII; add retention/rotation policy and treat as sensitive data.",
+                          "test":  "Unit tests for the metadata schema (vlm_description present but flagged non-label); integration tests for confirmed-event-to-crop capture."
+                      },
+                      {
+                          "decision":  "DA-010 (accept): For Stage-2 training labels, use YOLO\u0027s own agreed bbox+class (confirmed by VLM/operator), not parsed VLM free-text.",
+                          "rationale":  "Authoritative resolution of the DA-009/DA-010 conflict: structured, confirmed detections are reliable label sources; free-text parsing is error-prone and inconsistent. Low cost, directly reduces label noise feeding the fine-tune.",
+                          "alternatives_considered":  [
+                                                          "Parse VLM free-text descriptions into training classes (rejected via micro-debate: fragile, inconsistent, introduces label noise)"
+                                                      ],
+                          "risk":  "If VLM/operator confirmation is sparse, labeled volume may be low; offset by hard-negative mining (DA-012) and accumulation over time.",
+                          "test":  "Code review of label-generation logic and verification that emitted labels derive from confirmed bbox+class, not free text."
+                      },
+                      {
+                          "decision":  "DA-011 (accept): Build a held-out evaluation harness computing precision, recall, and confusion matrix on a frozen, automatically immutable split manifest of accumulated labels vs current YOLO output.",
+                          "rationale":  "Consensus (A,C) and the prerequisite for trustworthy promotion gating (DA-014). A frozen immutable split is the right guard against data leakage between train and eval.",
+                          "alternatives_considered":  [
+                                                          "Re-split data each eval run (rejected: causes leakage and non-comparable metrics across model versions)",
+                                                          "Evaluate on training data (rejected: meaningless, over-optimistic metrics)"
+                                                      ],
+                          "risk":  "A held-out split that is unrepresentative (e.g., one camera/time-of-day) yields misleading gates; stratify the manifest by camera_id/conditions.",
+                          "test":  "Unit tests for metric computation (precision/recall/confusion); integration tests for manifest generation, immutability, and split stability."
+                      },
+                      {
+                          "decision":  "DA-012 (accept): Export a versioned YOLO dataset to runs/datasets/\u003cversion\u003e/ (images, labels, data.yaml, manifest.json); agreed detections become labels, furniture/confirmed-normal become hard negatives (empty label files).",
+                          "rationale":  "Full consensus (A,B,C). Standard, reproducible YOLO layout; mapping furniture/confirmed-normal to hard negatives directly targets the false-positive problem the system exists to reduce.",
+                          "alternatives_considered":  [
+                                                          "Unversioned single dataset directory overwritten each run (rejected: not reproducible, breaks rollback/audit)",
+                                                          "Omit hard negatives (rejected: forgoes the strongest lever against false positives)"
+                                                      ],
+                          "risk":  "Mislabeled hard negatives (a furniture region that occasionally contains a person) could teach the model to ignore real detections; rely on confirmed-normal provenance and DA-014 per-class recall gate.",
+                          "test":  "Unit tests for dataset/format compliance (data.yaml, empty-label hard negatives, manifest.json); integration tests for the full export."
+                      },
+                      {
+                          "decision":  "DA-013 (accept): Run GPU fine-tuning out-of-band (separate CLI/scheduled job) with preflight checks and fixed inputs (dataset_version, base_weights, train_config) — never in the live inference loop.",
+                          "rationale":  "Consensus (A,B). Keeps the live loop free of resource contention and non-determinism; fixed, recorded inputs make each training run reproducible and auditable.",
+                          "alternatives_considered":  [
+                                                          "Train inside or alongside the live pipeline (rejected: resource contention, latency spikes, non-deterministic live behavior)"
+                                                      ],
+                          "risk":  "Out-of-band job may drift from the live model\u0027s preprocessing/config; pin train_config and validate via the shared held-out harness before promotion.",
+                          "test":  "Unit tests for preflight checks (inputs present/valid, GPU available); integration test for an end-to-end training job invocation."
+                      },
+                      {
+                          "decision":  "DA-014 (accept): Atomic promotion — save old weights, stage new weights, run held-out eval, and switch the active pointer/config ONLY if new weights beat current by a clear margin AND no per-class recall regresses beyond epsilon; otherwise discard.",
+                          "rationale":  "Full consensus (A,B,C) and the highest-leverage safeguard. The margin-plus-per-class-recall gate prevents an aggregate win from masking a regression on a safety-critical class (e.g., person).",
+                          "alternatives_considered":  [
+                                                          "Promote on a single aggregate metric (e.g., mAP) (rejected: can hide per-class recall regressions on critical classes)",
+                                                          "Manual-only promotion (rejected: doesn\u0027t meet the gated-auto-promotion goal; still allowed as override)"
+                                                      ],
+                          "risk":  "High implementation complexity; an incorrect comparison or non-atomic swap could activate a worse model. Mitigate with atomic pointer swap, the immutable held-out split (DA-011), and rollback (DA-015).",
+                          "test":  "Unit tests for promotion logic (margin compare, per-class epsilon, discard path); integration tests for atomic weight swap + config update."
+                      },
+                      {
+                          "decision":  "DA-015 (accept): Provide an explicit rollback command to restore previous active weights, with automatic rollback triggered on post-promotion validation failure.",
+                          "rationale":  "Full consensus (A,B,C). Pairs with DA-014 to make every promotion fully recoverable; low complexity relative to its safety payoff.",
+                          "alternatives_considered":  [
+                                                          "No rollback / forward-fix only (rejected: leaves a bad model live until a new train cycle completes)",
+                                                          "Manual rollback only (rejected: too slow when post-promotion validation fails in production)"
+                                                      ],
+                          "risk":  "Auto-rollback flapping if post-promotion validation is noisy; require a stable failure signal and keep N prior weight sets retained.",
+                          "test":  "Unit tests for the rollback command; integration tests for auto-rollback on post-promotion validation failure."
+                      },
+                      {
+                          "decision":  "DA-016 (accept): Send a single Telegram confirmation after a successful active-model switch and promotion-manifest recording.",
+                          "rationale":  "Full consensus (A,B,C), trivially feasible, low cost. Gives the operator visible closure on a successful promotion without notification spam.",
+                          "alternatives_considered":  [
+                                                          "Notify on every training/eval step (rejected: notification spam)",
+                                                          "No notification (rejected: violates the explicit single-confirmation requirement and reduces operator awareness)"
+                                                      ],
+                          "risk":  "Telegram delivery failure leaves the operator unaware of a switch; log the promotion regardless and treat the notification as best-effort with a retry.",
+                          "test":  "Unit tests that the notification fires exactly once after switch+manifest; integration test for single delivery."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Parse VLM free-text descriptions into machine-readable training classes (DA-009\u0027s original \u0027provisional label\u0027 framing).",
+                         "why":  "Micro-debate and conflict review resolved against it: free-text-to-class parsing is fragile, inconsistent, and injects label noise. Stage-2 labels must come from YOLO\u0027s agreed bbox+class confirmed by VLM/operator (DA-010); vlm_description is kept only as raw human-context metadata (DA-009 modified)."
+                     },
+                     {
+                         "decision":  "Persist SceneModel to disk via SceneStore.save on every frame.",
+                         "why":  "Judge flagged write amplification in the live hot path. Replaced by in-memory update per frame with throttled (interval/on-change) persistence (DA-001 modified)."
+                     },
+                     {
+                         "decision":  "Attempt Stages 1-5 together rather than shipping Chapter 2 first.",
+                         "why":  "Violates the chapter-by-chapter atom decomposition constraint and concentrates risk; DA-008 scopes Chapter 2 (live integration) first and defers Stages 2-5 to later chapters."
+                     },
+                     {
+                         "decision":  "Promote a new model on a single aggregate metric.",
+                         "why":  "An aggregate win can mask a per-class recall regression on a safety-critical class. DA-014 requires a clear margin AND no per-class recall regression beyond epsilon."
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact suppression thresholds: furniture IoU/class-match threshold and the plate-diff \u0027near-zero motion\u0027 score, plus the default warmup duration within the 2-5 min band — to be tuned per camera or globally?",
+                           "Persistence cadence for SceneModel (time interval vs change-magnitude trigger) and crash-durability target (acceptable max loss window).",
+                           "Quantitative promotion gate values: the \u0027clear margin\u0027 delta and the per-class recall epsilon, and which class(es) are treated as safety-critical (e.g., person).",
+                           "Held-out split policy: split ratio, stratification keys (camera_id, time-of-day, class balance), and minimum labeled volume before the first eval/train is allowed.",
+                           "Retention/rotation and privacy policy for accumulated crops in runs/labels/ (PII handling, max storage/age).",
+                           "Number of prior weight sets to retain for rollback and the concrete post-promotion validation signal that triggers auto-rollback.",
+                           "FurnitureRegistry promotion criteria from _static_track_ids (dwell time / stationarity threshold) and demotion when furniture is moved/removed."
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "chapter":  "Chapter 2 — Stage-1 live integration (BUILD FIRST)",
+                                    "atoms":  [
+                                                  "DA-008",
+                                                  "DA-001",
+                                                  "DA-002",
+                                                  "DA-003",
+                                                  "DA-004",
+                                                  "DA-005",
+                                                  "DA-006",
+                                                  "DA-007"
+                                              ],
+                                    "steps":  [
+                                                  "DA-008: Define Chapter 2 scope; create pure functions for scene update and the suppression predicate, plus a config section (warmup band, thresholds, persistence cadence).",
+                                                  "DA-001 (mod): Wire SceneStore.get_or_create/save into pipeline/live.py — update SceneModel in-memory each frame, persist on interval/on-change (+ on-shutdown flush).",
+                                                  "DA-005: Populate FurnitureRegistry from events/builder.py _static_track_ids and persist via SceneModel for cross-restart durability.",
+                                                  "DA-002: Add per-camera_id wall-clock warmup guard (configurable 2-5 min) gating suppression.",
+                                                  "DA-003: Implement the conjunctive suppression predicate (promoted-furniture match AND near-zero plate-diff motion in matched cells), warmup-gated, with plate-diff backstop for real persons.",
+                                                  "DA-004: Add a single explicit suppression decision point in live.py that withholds both VLM wake and alert and yields a suppressed PipelineEventResult.",
+                                                  "DA-006 + DA-007: Author unit + integration tests (warmup, promoted furniture, moving object, person-near-furniture, non-promoted detection); ensure pytest green before architect review.",
+                                                  "Architect (Claude) reviews Chapter 2 atoms; ship only when green."
+                                              ]
+                                },
+                                {
+                                    "chapter":  "Stage 2 — Labeled-crop data collection",
+                                    "atoms":  [
+                                                  "DA-009",
+                                                  "DA-010"
+                                              ],
+                                    "steps":  [
+                                                  "DA-009 (mod): Module to accumulate crops from confirmed person/animal events in runs/labels/\u003ccamera_id\u003e/ with metadata JSON (vlm_description as RAW non-label context + bbox, conf, cell, timestamp, camera_id, model_version).",
+                                                  "DA-010: Generate Stage-2 training labels from YOLO\u0027s agreed bbox+class (VLM/operator-confirmed), never from free-text parsing.",
+                                                  "Tests green; architect review."
+                                              ]
+                                },
+                                {
+                                    "chapter":  "Stage 3 — Held-out evaluation harness",
+                                    "atoms":  [
+                                                  "DA-011"
+                                              ],
+                                    "steps":  [
+                                                  "DA-011: Build eval harness computing precision/recall/confusion matrix against a frozen, automatically immutable split manifest of accumulated labels vs current YOLO output.",
+                                                  "Tests green; architect review."
+                                              ]
+                                },
+                                {
+                                    "chapter":  "Stage 4 — YOLO dataset export",
+                                    "atoms":  [
+                                                  "DA-012"
+                                              ],
+                                    "steps":  [
+                                                  "DA-012: Export versioned dataset to runs/datasets/\u003cversion\u003e/ (images, labels, data.yaml, manifest.json); agreed detections -\u003e labels, furniture/confirmed-normal -\u003e hard negatives (empty label files).",
+                                                  "Tests green; architect review."
+                                              ]
+                                },
+                                {
+                                    "chapter":  "Stage 5 — Gated fine-tune, promotion, rollback, notify",
+                                    "atoms":  [
+                                                  "DA-013",
+                                                  "DA-014",
+                                                  "DA-015",
+                                                  "DA-016"
+                                              ],
+                                    "steps":  [
+                                                  "DA-013: Out-of-band GPU fine-tune CLI/scheduled job with preflight checks and fixed inputs (dataset_version, base_weights, train_config).",
+                                                  "DA-014: Atomic promotion — save old weights, stage new, run held-out eval, switch active pointer/config ONLY on clear margin AND no per-class recall regression beyond epsilon; else discard.",
+                                                  "DA-015: Explicit rollback command + automatic rollback on post-promotion validation failure (retain N prior weight sets).",
+                                                  "DA-016: Single Telegram confirmation after successful switch + manifest recording.",
+                                                  "Tests green; architect review."
+                                              ]
+                                }
+                            ],
+    "next_step":  "Start Chapter 2 (DA-008 + DA-001): extract the pure scene-update and suppression-predicate functions with the warmup-gated, conjunctive logic and a config section, plus wire throttled SceneStore.get_or_create/save into pipeline/live.py — then write their pytest unit tests in bridge-projects/oko and confirm green before architect review.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-005 misidentifies what `_static_track_ids` contains: it is NOT a furniture signal. In events/builder.py:245-253 (`_is_static_person_or_animal_track`) the set is gated by `_class_is_person_or_animal(...)`, so it ONLY ever holds static PERSON/ANIMAL tracks. A chair/couch/table (YOLO class \u0027chair\u0027, \u0027couch\u0027, ...) can never enter it. Populating FurnitureRegistry from this signal therefore promotes the locations where real people SIT STILL (sofa, desk chair, bed) as suppressible \u0027furniture\u0027 with class_name=\u0027person\u0027.",
+                                  "why":  "The suppression predicate (DA-003) then matches a future \u0027person\u0027 detection at that bbox + low motion and withholds both VLM and alert. A person watching TV, sleeping, working, collapsing in a medical emergency, or an intruder deliberately freezing all become static person tracks and get suppressed. The decision\u0027s stated guarantee (\u0027protects a real person standing in front of furniture\u0027) is inverted: the mechanism specifically silences motionless real people. The signal cannot distinguish a genuine still person from a static false-positive (mannequin/coat/poster), so it cannot be a safe furniture source. This defeats the security purpose of the system."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "DA-003\u0027s \u0027near-zero motion vs background plate\u0027 backstop is self-defeating because BackgroundPlate.update (scene.py:42-49) BAKES any non-moving pixel into the plate via EMA (α=0.05, ~tens-of-frames time constant). A person who stops moving is absorbed into the \u0027background\u0027 within seconds; afterward plate-diff for that region ≈ 0.",
+                                  "why":  "The decision calls the plate-diff term \u0027the non-negotiable safety backstop that protects a real person standing in front of furniture.\u0027 But a person who STANDS STILL (the literal scenario) is averaged into the plate and then reads as zero-motion → both suppression conditions satisfied → suppressed. The backstop only protects a person while they keep moving; a still person (fall, sleep, hiding) is exactly the dangerous case and is exactly the one it fails to protect."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Promoted furniture is permanent: in scene.py:97-121 `promoted=True` is sticky (no code path ever sets it False, no time decay/expiry), eviction explicitly protects promoted entries (lines 105-109), and the state is persisted durably to furniture.json across restarts. A single long stationary period (~promotion_threshold=900 observed frames, easily reached by one movie-length sit) permanently marks a \u0027person@region\u0027 as suppressible.",
+                                  "why":  "Combined with finding 1, a one-time transient event creates a PERMANENT silent blind spot for the \u0027person\u0027 class at that location that survives restarts forever, with no review, decay, or operator visibility. There is no mechanism to ever un-learn a bad promotion. This contradicts the plan\u0027s \u0027never silently degrade\u0027 safety guarantee."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The plate-diff motion input DA-001/DA-003 depend on does not exist and is unscoped. MotionResult (domain/frame.py:24-28) is whole-frame only (`has_motion`, `pixel_diff_ratio`, one `motion_bbox`) — no per-cell motion. BackgroundPlate.update needs a per-cell `moving` flag AND per-cell pixel RGB (a 12x16 downsample of every frame). Worse, live.py:159 calls `event_builder.process(captured.frame, detections)` with NO motion argument, so no motion signal flows in the live pipeline at all today.",
+                                  "why":  "DA-001 (\u0027update plate every frame\u0027) and DA-003 (\u0027near-zero plate-diff in the matched cells\u0027) treat per-cell motion as an available signal. It must be built from scratch (per-frame downsample + per-cell diff), a non-trivial per-frame compute the decision\u0027s risk section only frames as \u0027I/O-heavy.\u0027 Until that exists, the safety backstop cannot be computed; the success_test for DA-003 cannot be met as written."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "An equivalent suppression mechanism ALREADY exists and is never reconciled. live.py:324-336 (`_resolve_pending_vlm_event`) already withholds the VLM wake for a static person/animal track with `VlmGateDecision(should_query=False, reason=\u0027static_object\u0027)`, driven by the same `is_static_track`/`_static_track_ids` signal DA-005 reuses.",
+                                  "why":  "DA-004/DA-005 introduce a second, parallel furniture-suppression path over the identical signal without acknowledging the existing one — two sources of truth, duplicated/conflicting logic, and double-suppression. The decision claims a \u0027single explicit decision point,\u0027 but there will be two. The \u0027chair false-trigger\u0027 the plan cites as motivation is likely already partly handled here, so the marginal value of the new persistent path is overstated and its interaction undefined."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Warmup conflict between the accepted scaffold and DA-002. The \u0027ГОТОВ, tests green\u0027 SceneModel uses FRAME-COUNT warmup (scene.py:10 DEFAULT_WARMUP_FRAMES=3600; scene.py:132-136 `is_ready = frame_count \u003e= warmup_frames`), but DA-002 mandates and the success_test requires a WALL-CLOCK 2-5 minute warmup, and explicitly REJECTS frame-count warmup.",
+                                  "why":  "3600 frames equals 2-5 minutes only at ~12-30 fps. live.py itself notes the persistent camera \u0027delivers uneven bursts\u0027 and variable fps; at lower effective/VLM-gated rates the warmup is far longer than 5 min, at higher rates far shorter — violating the literal success_test. The accepted scaffold therefore does not satisfy DA-002, and switching to wall-clock (monotonic) would also LOSE the durable warmup that frame_count currently gives via meta.json (monotonic resets every restart → in an unstable/redeploying deployment, warmup never elapses and Stage-1 delivers zero benefit, silently)."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "DA-004\u0027s \u0027single synchronous suppression decision point\u0027 ignores the deferred VLM control flow. For person/animal events (the suppression target), the VLM wake is DEFERRED ~11s (live.py:25, 27, 170-200, `_DEFERRED_VLM_EVENT_TYPES`) and resolved later in `_resolve_ready_vlm_events`/`_resolve_pending_vlm_event`. The decision specifies neither where suppression slots in (at enqueue time vs at deferred-resolve time) nor how a suppressed event interacts with the pending-event queue, cooldowns, and incident-video build.",
+                                  "why":  "Suppressing at enqueue vs at resolve produces materially different behavior (e.g., whether the 11s incident clip is captured, whether `_vlm_cooldowns` is set). Treating suppression as a simple synchronous gate is an unhandled edge case that will surface as inconsistent suppression and possibly the suppressed PipelineEventResult never being emitted/surfaced (which DA-004\u0027s own risk flags as a debuggability hazard)."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "SceneStore.save (scene.py:189-251) writes 5 files (plate_grid.npy, plate_hits.npy, grid.json, furniture.json, meta.json) each atomically via tmp.replace, but NOT as an atomic set, and saves are throttled to 30s (save_interval_sec). A crash mid-save yields a torn SceneModel (e.g., new plate with old furniture and a frame_count/meta that disagrees), which load() silently accepts.",
+                                  "why":  "Promotion state and warmup/frame_count can become mutually inconsistent across files after a crash, and up to 30s of plate/furniture accumulation is lost. Because the suppression decision is gated on these persisted values, a torn or stale reload can change suppression behavior in ways not covered by the round-trip unit test DA-001 proposes."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "FurnitureRegistry signature/identity is lossy. `_sig` (scene.py:94-95) rounds bbox to 2 decimals and `observe` (scene.py:97-114) takes the first IoU≥0.6 match; with max_size=256 eviction (lines 105-109) can thrash on busy scenes.",
+                                  "why":  "Distinct nearby static objects can collide into one entry or evict each other before reaching promotion_threshold, making promotion non-deterministic on cluttered cameras and weakening the \u0027durable furniture knowledge\u0027 DA-005 claims. Minor, but it undercuts the reproducibility the held-out/eval stages later assume."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

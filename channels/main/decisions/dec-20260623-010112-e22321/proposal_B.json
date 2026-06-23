@@ -1,0 +1,115 @@
+{
+    "proposer":  "B",
+    "understanding":  "The Stage-1 scaffold (src/oko/memory/scene.py: SceneModel/SceneStore/BackgroundPlate/SpatialGrid/FurnitureRegistry) is done and green (tests/test_scene_memory.py). The job now is to wire it into the live pipeline and then build the rest of a safe, autonomous per-camera continual-learning loop that fine-tunes YOLO on the user\u0027s own static-camera scenes. The immediate in-scope work is Chapter 2: update each camera\u0027s SceneModel every frame via SceneStore.get_or_create+save (plate/grid/furniture), and after a 2-5 min warmup SUPPRESS detections that match promoted furniture AND show ~0 motion vs the background plate so they neither wake the VLM nor raise a Telegram alert — the principled fix for the known chair/furniture false-trigger that also lets the conf threshold stay low for better recall. The static-track signal this needs already exists in events/builder.py (_static_track_ids, ratio\u003c0.05 over 8 frames) and is currently thrown away per-event; SceneModel makes it durable, immediate, and cross-restart. Stages 2-5 (VLM/operator-validated label collection, held-out eval harness, YOLO dataset export, gated GPU fine-tune with auto-rollback + 1 Telegram confirm) are designed but each is a later, independently-shippable chapter. Everything is decomposed into 1-file atoms; verify == pytest in bridge-projects/oko; architect reviews each chapter\u0027s atoms.",
+    "summary":  "Build strictly chapter-by-chapter, Chapter 2 first, splitting each chapter so the LOGIC lives in pure, fully-unit-tested functions and the pipeline wiring stays thin. Chapter 2 = 5 atoms: (2.1) a pure scene-update function (downsample frame to the 16x12 grid, update plate only on non-moving cells, observe spatial grid + furniture), (2.2) a pure suppression predicate, (2.3) wire SceneStore observe-only into pipeline/live.py with throttled save, (2.4) wire warmup-gated suppression, (2.5) an opt-in config section default-off. Suppression requires BOTH a promoted-furniture class/IoU match AND ~0 plate-diff in the matched cells, is gated on a wall-clock warmup, and withholds BOTH the VLM call AND the alert through ONE explicit suppression decision point — the plate-diff is the safety backstop that lets any real person through because their pixels differ from the learned empty/furniture plate. Stages 2-5 follow as separate gated chapters, with the only model-changing stage (5) strictly last: training labels are YOLO\u0027s own VLM/operator-validated bboxes (not parsed VLM prose), GPU fine-tune runs out-of-band over runs/datasets, and promotion happens only on a held-out margin with no per-class recall regression, via atomic weight swap, retained previous weights for instant rollback, and a single Telegram confirm.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Build ONLY Chapter 2 (Stage-1 -\u003e live integration) now; keep Stages 2-5 as reviewed design, each its own future chapter, with no code until Chapter 2 is merged and architect-reviewed.",
+                               "reason":  "AUTOTRAIN_PLAN.md states every stage is shippable on its own and the operator already approved Stage-1-first; on a high-risk task this avoids a big-bang and delivers the false-alert reduction immediately.",
+                               "tradeoff":  "User sees the actual YOLO-retrain payoff later, not in this increment.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Decompose Chapter 2 into 5 atoms with logic-as-pure-functions first: (2.1) pure scene_update fn, (2.2) pure suppression predicate, (2.3) wire SceneStore observe-only into live.py, (2.4) wire warmup-gated suppression, (2.5) config section.",
+                               "reason":  "\u0027Passes its own tests\u0027 is only honest if the logic is testable without a camera/pipeline; pure functions get exhaustive deterministic unit tests, and the two live.py atoms only need thin integration tests.",
+                               "tradeoff":  "Two extra small modules (memory/scene_update.py, memory/scene_suppression.py) instead of inlining in live.py.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Suppression must withhold BOTH the VLM wake AND the alert (\u0027не будить VLM, не слать тревогу\u0027), implemented as ONE explicit suppression decision point in live.py that yields a suppressed PipelineEventResult (vlm_outcome should_query=False, reason=\u0027scene_normal_furniture\u0027, non-alerting bridge_output) — never scattered checks.",
+                               "reason":  "It is a literal task requirement, and a single auditable decision point is far easier to test and reason about than per-branch suppression.",
+                               "tradeoff":  "Requires touching the result/reporter contract so a suppressed event is not dispatched as an alarm.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Require BOTH conditions to suppress — promoted-furniture class+IoU match AND ~0 plate-diff in the matched cells — and gate on warmup; the plate-diff is the safety backstop that passes a real person (still or moving) because their pixels differ from the learned empty/furniture plate.",
+                               "reason":  "Furniture-match alone would suppress a person occupying a chair\u0027s spot; the plate-diff is exactly the static-camera trick that makes suppression safe, and is the whole reason the background plate exists.",
+                               "tradeoff":  "A person who stands dead-still over a promoted bbox for the full promotion window is a residual blind spot.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Activate warmup on WALL-CLOCK elapsed (\u003e= configured 120-300s from the first frame), not raw frame_count, while keeping frame_count for stats.",
+                               "reason":  "live.py explicitly notes the camera delivers uneven/bursty frames, so frame_count would cross the threshold too early or too late; \u00272-5 min\u0027 is a time spec.",
+                               "tradeoff":  "Diverges slightly from the scaffold\u0027s frame_count-based is_ready; needs a small added time gate alongside it.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "Source the furniture registry from the EXISTING static-track signal (events/builder _static_track_ids, which already targets static person/animal misdetections — the chair-as-person case); SceneModel only makes it durable, immediate, and cross-restart.",
+                               "reason":  "Plan note (c) says to persist exactly this signal that is currently thrown away per-event; it reuses proven logic and directly fixes the known chair false-trigger without inventing new detection code.",
+                               "tradeoff":  "Behaviour is bound to that signal\u0027s window/ratio parameters (8 frames, ratio\u003c0.05).",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Stage-2 training labels = YOLO\u0027s OWN agreed bbox+class (the detection the VLM/operator confirms is real), NOT the VLM Russian free-text parsed into classes; furniture + confirmed-normal become hard negatives.",
+                               "reason":  "YOLO fine-tuning needs reliable class+box; parsing VLM prose into trustworthy labels is infeasible and unsafe, whereas the detector already supplies class+box and the VLM/operator only needs to act as a binary real/not-real validator.",
+                               "tradeoff":  "Cannot learn brand-new classes from VLM text — only re-weight existing classes to these specific scenes.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Stage-5 GPU fine-tune runs OUT-OF-BAND (a separate CLI/scheduled job over runs/datasets), never in the live hot loop; promotion = atomic weights swap with a retained weights/prev copy + held-out gate + 1 Telegram confirm; rollback = restore prev.",
+                               "reason":  "Training is slow and GPU-heavy and must not stall live inference; an atomic swap plus retained previous weights gives instant, deterministic rollback.",
+                               "tradeoff":  "Adds orchestration (job scheduling, weight-dir layout) outside the pipeline.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Make the promotion gate concrete: promote new weights ONLY if held-out beats current by a clear margin AND no per-class recall regresses beyond an epsilon; otherwise discard and keep current.",
+                               "reason":  "The \u0027never silently degrade\u0027 guarantee can be defeated by a single aggregate metric (e.g., mAP up while a critical class\u0027s recall drops); a per-class guard closes that hole.",
+                               "tradeoff":  "A stricter gate may reject marginal-but-genuine improvements.",
+                               "confidence":  0.75
+                           },
+                           {
+                               "statement":  "verify == pytest in bridge-projects/oko for every atom, run green before the atom goes to architect review, and every chapter ships only after its full atom set is green.",
+                               "reason":  "It is an explicit task constraint and matches the success_tests; it keeps each 1-file change independently provable.",
+                               "tradeoff":  "None material beyond the discipline of writing tests per atom.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "A LivePipeline instance handles a single static camera (per _select_camera); multi-camera is handled by repeating get_or_create+save per camera_id on a shared SceneStore.",
+                        "captured.image is a decoded image array available each frame inside LivePipeline.run(), so the 16x12 plate downsample and plate-diff can be computed directly from it without new capture plumbing.",
+                        "Detections expose pixel-space bbox + class_name + confidence, normalizable by frame.width/height for furniture IoU and spatial-grid cell assignment.",
+                        "\u00272-5 min warmup\u0027 means ~120-300s wall-clock; default 180s, configurable.",
+                        "The Stage-1 scaffold (scene.py API + green test_scene_memory.py) is the agreed, stable surface and will not be reshaped under this work.",
+                        "The existing stack (Ultralytics YOLO + CUDA GPU + a VLM + Telegram outbound) is wired; Stage 5 reuses it, and Stage 2 additionally needs inbound Telegram (getUpdates/webhook) which does not yet exist.",
+                        "Suppressed events still update SceneModel statistics (they are evidence the furniture persists); only the VLM call and the alert are withheld."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Suppressing a real, motionless person who happens to occupy a promoted-furniture bbox.",
+                      "severity":  "high",
+                      "mitigation":  "Require ~0 plate-diff in the matched cells (a person\u0027s pixels differ from the learned plate), set a high furniture promotion threshold, never suppress when cell plate-diff exceeds the threshold, and log every suppression with crop/bbox/cell for audit and replay."
+                  },
+                  {
+                      "risk":  "Background-plate poisoning: EMA updates on frames that actually contain a slow or static person drift the \u0027empty\u0027 plate to include them.",
+                      "severity":  "medium",
+                      "mitigation":  "Only update plate cells with no overlapping active non-static track, keep EMA alpha small, and run warmup unattended; reuse the existing static-track guard to mask moving content."
+                  },
+                  {
+                      "risk":  "Over-suppression reduces recall exactly when the user wants MORE detection sensitivity.",
+                      "severity":  "medium",
+                      "mitigation":  "Opt-in config flag default off, ship the observe-only atom (2.3) before the suppression atom (2.4), provide a per-camera kill switch, and emit suppressed-count metrics/logs for monitoring."
+                  },
+                  {
+                      "risk":  "Scope creep / big-bang: attempting to land Stages 2-5 together on a high-risk task.",
+                      "severity":  "high",
+                      "mitigation":  "Strict chapter gating with architect review per chapter; the only model-changing stage (5) is built last and behind the held-out gate."
+                  },
+                  {
+                      "risk":  "Silent model degradation after a retrain.",
+                      "severity":  "high",
+                      "mitigation":  "Freeze a held-out slice never trained on; promote only on a margin with no per-class recall regression; retain previous weights; auto-rollback; require a single Telegram confirm."
+                  },
+                  {
+                      "risk":  "Per-frame scene update adds latency to the live loop at ~30 fps.",
+                      "severity":  "low",
+                      "mitigation":  "16x12 grid ops are O(192) per frame and outside the VLM path; persistence is throttled (save_interval 30s); measure before/after rather than assume."
+                  },
+                  {
+                      "risk":  "Persistence corruption if the process crashes mid-save.",
+                      "severity":  "low",
+                      "mitigation":  "Scaffold already writes to .tmp then atomic replace and load() falls back to fresh components on any read error; add a test asserting partial/corrupt files degrade to a fresh model rather than crashing."
+                  }
+              ],
+    "minimal_version":  "Ship Chapter 2 only, observe-then-suppress, opt-in. Land atoms 2.1 (pure scene_update function + exhaustive unit tests), 2.3 (SceneStore wired observe-only into pipeline/live.py via get_or_create + throttled save, updating plate/grid/furniture each frame), and 2.5 (config flag, default off). This already delivers a durable per-camera SceneModel updated every frame with green pytest — satisfying the \u0027SceneModel updated on each frame via SceneStore.get_or_create+save\u0027 success test — WITHOUT yet changing any alert/VLM behaviour. It is the lowest-risk first increment; the suppression atoms (2.2 pure predicate + 2.4 warmup-gated wiring) follow once observe-only is reviewed and proven stable.",
+    "advanced_version":  "Complete Chapter 2 (all 5 atoms, including wall-clock-warmup-gated dual suppression with the plate-diff backstop, a single suppression decision point, and a suppression audit log), then proceed as sequential, independently-shippable chapters: Stage 2 — a VLM/operator-validated label store (crop + class + conf + cell + plate-diff + verdict) under runs/labels/\u003ccamera_id\u003e/ plus the inbound Telegram 1-tap path; Stage 3 — a held-out eval harness that freezes a never-trained slice and reports precision/recall/confusion per camera and per class; Stage 4 — YOLO-format dataset export under runs/datasets/ with agreed detections as labels and furniture/confirmed-normal as hard negatives; Stage 5 — an out-of-band gated GPU fine-tune with an atomic weight swap, a margin + no-per-class-regression promotion gate against the Stage-3 held-out set, retained previous weights for instant auto-rollback, and a single Telegram \u0027keep the improvement?\u0027 confirm. Every chapter is its own pytest-gated atom set under architect review, and the only model-changing stage is strictly last."
+}

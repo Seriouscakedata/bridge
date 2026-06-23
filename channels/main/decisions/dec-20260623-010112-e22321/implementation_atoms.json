@@ -1,0 +1,513 @@
+{
+  "decision_id": "dec-20260623-010112-e22321",
+  "repo": "C:\\Users\\rafie\\bridge-projects\\oko",
+  "status": "planned_only_scope_guard",
+  "scope_guard": "Current autonomous task scope permits changes only under C:\\Users\\rafie\\OneDrive\\Documents\\bridge. These atoms are a bridge-side handoff artifact and do not modify OKO.",
+  "global_verify": "pytest",
+  "chapters": [
+    {
+      "chapter": "chapter-2-stage-1-live-integration",
+      "goal": "Wire SceneModel into the live pipeline and suppress promoted static furniture without waking VLM or alerting.",
+      "atoms": [
+        {
+          "slug": "oko-ch2-01-scene-memory-config",
+          "title": "Add live scene-memory config",
+          "task": "Add explicit config fields for scene memory root, wall-clock warmup seconds, furniture IoU threshold, near-zero plate-diff threshold, and save interval.",
+          "wave": 1,
+          "parallel_group": "ch2-config",
+          "files": [
+            "src/oko/config/schema.py",
+            "tests/test_config.py"
+          ],
+          "depends_on": [],
+          "acceptance": [
+            "Default warmup is inside the accepted 120-300 second band.",
+            "Warmup outside 120-300 seconds is rejected or normalized by config validation.",
+            "Save interval must be positive and is available to LivePipeline.from_config."
+          ],
+          "checks": [
+            "pytest tests/test_config.py"
+          ],
+          "risk": "medium",
+          "serial_reason": ""
+        },
+        {
+          "slug": "oko-ch2-02-wall-clock-scene-ready",
+          "title": "Replace frame-count readiness for suppression with wall-clock warmup",
+          "task": "Add per-camera wall-clock readiness to SceneModel without removing existing frame_count persistence compatibility.",
+          "wave": 1,
+          "parallel_group": "ch2-scene-model",
+          "files": [
+            "src/oko/memory/scene.py",
+            "tests/test_scene_memory.py"
+          ],
+          "depends_on": [],
+          "acceptance": [
+            "Suppression readiness is false before warmup_seconds have elapsed for that camera.",
+            "Suppression readiness is true after warmup_seconds have elapsed for that camera.",
+            "Existing serialized scene data without wall-clock fields still loads."
+          ],
+          "checks": [
+            "pytest tests/test_scene_memory.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Touches SceneModel persistence contract."
+        },
+        {
+          "slug": "oko-ch2-03-scene-update-functions",
+          "title": "Extract pure scene update functions",
+          "task": "Create pure helpers that update plate, spatial grid, and furniture observations from one frame plus detections, without disk I/O.",
+          "wave": 2,
+          "parallel_group": "ch2-pure-functions",
+          "files": [
+            "src/oko/pipeline/scene_gate.py",
+            "tests/test_scene_gate.py"
+          ],
+          "depends_on": [
+            "oko-ch2-01-scene-memory-config",
+            "oko-ch2-02-wall-clock-scene-ready"
+          ],
+          "acceptance": [
+            "Each processed frame increments SceneModel frame_count in memory.",
+            "SpatialGrid receives detection class/conf observations for matched cells.",
+            "BackgroundPlate receives per-cell observations and respects the moving flag.",
+            "Helper has no SceneStore.save call and performs no filesystem writes."
+          ],
+          "checks": [
+            "pytest tests/test_scene_gate.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Depends on final SceneModel warmup contract."
+        },
+        {
+          "slug": "oko-ch2-04-cell-motion-score",
+          "title": "Compute plate-diff motion score for detection cells",
+          "task": "Add a deterministic helper that maps a detection bbox to grid cells and returns its plate-diff motion score.",
+          "wave": 2,
+          "parallel_group": "ch2-pure-functions",
+          "files": [
+            "src/oko/pipeline/scene_gate.py",
+            "tests/test_scene_gate.py"
+          ],
+          "depends_on": [
+            "oko-ch2-03-scene-update-functions"
+          ],
+          "acceptance": [
+            "Empty or out-of-frame bboxes return a conservative moving score.",
+            "Known unchanged cells produce a near-zero score.",
+            "Changed cells above threshold are not classified as static."
+          ],
+          "checks": [
+            "pytest tests/test_scene_gate.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Same source/test file as the scene update helper."
+        },
+        {
+          "slug": "oko-ch2-05-furniture-match-predicate",
+          "title": "Add promoted furniture match predicate",
+          "task": "Implement a class plus IoU predicate that matches detections against promoted FurnitureRegistry entries.",
+          "wave": 3,
+          "parallel_group": "ch2-predicate",
+          "files": [
+            "src/oko/pipeline/scene_gate.py",
+            "tests/test_scene_gate.py"
+          ],
+          "depends_on": [
+            "oko-ch2-04-cell-motion-score"
+          ],
+          "acceptance": [
+            "A detection with matching class and IoU above threshold matches promoted furniture.",
+            "A detection with wrong class never matches, even with high IoU.",
+            "A non-promoted furniture entry never suppresses."
+          ],
+          "checks": [
+            "pytest tests/test_scene_gate.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Same predicate module as prior atoms."
+        },
+        {
+          "slug": "oko-ch2-06-suppression-decision",
+          "title": "Add conjunctive suppression decision",
+          "task": "Implement one explicit suppression predicate requiring warmup-ready scene, promoted furniture match, and near-zero plate-diff motion.",
+          "wave": 3,
+          "parallel_group": "ch2-predicate",
+          "files": [
+            "src/oko/pipeline/scene_gate.py",
+            "tests/test_scene_gate.py"
+          ],
+          "depends_on": [
+            "oko-ch2-05-furniture-match-predicate"
+          ],
+          "acceptance": [
+            "During warmup the predicate never suppresses.",
+            "Promoted furniture plus near-zero motion suppresses.",
+            "Promoted furniture plus moving plate-diff does not suppress.",
+            "Non-promoted detections do not suppress."
+          ],
+          "checks": [
+            "pytest tests/test_scene_gate.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Same predicate module as prior atoms."
+        },
+        {
+          "slug": "oko-ch2-07-live-scene-store-wiring",
+          "title": "Wire SceneStore into LivePipeline hot path",
+          "task": "Use SceneStore.get_or_create per camera, update SceneModel in memory every frame, and call SceneStore.save only on throttle/change cadence plus shutdown flush.",
+          "wave": 4,
+          "parallel_group": "ch2-live",
+          "files": [
+            "src/oko/pipeline/live.py",
+            "tests/test_live_pipeline.py"
+          ],
+          "depends_on": [
+            "oko-ch2-03-scene-update-functions"
+          ],
+          "acceptance": [
+            "Every LivePipeline.run frame updates the camera SceneModel in memory.",
+            "SceneStore.save is not called once per frame when frames arrive faster than the configured save interval.",
+            "Forced flush persists pending scene state when the pipeline is flushed or stopped."
+          ],
+          "checks": [
+            "pytest tests/test_live_pipeline.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Touches live pipeline behavior."
+        },
+        {
+          "slug": "oko-ch2-08-live-vlm-suppression-wiring",
+          "title": "Suppress VLM wake and alert in LivePipeline",
+          "task": "Call the suppression decision at the single VLM-gate decision point and emit a suppressed PipelineEventResult with no VLM query and no alert.",
+          "wave": 5,
+          "parallel_group": "ch2-live",
+          "files": [
+            "src/oko/pipeline/live.py",
+            "tests/test_live_pipeline.py",
+            "tests/test_vlm_gate.py"
+          ],
+          "depends_on": [
+            "oko-ch2-06-suppression-decision",
+            "oko-ch2-07-live-scene-store-wiring"
+          ],
+          "acceptance": [
+            "Suppressed promoted-static-furniture events do not call the VLM provider.",
+            "Suppressed promoted-static-furniture events do not send bridge alerts.",
+            "PipelineEventResult exposes a suppression reason distinct from existing static_object deferral."
+          ],
+          "checks": [
+            "pytest tests/test_live_pipeline.py tests/test_vlm_gate.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Must be integrated after pure predicate and SceneStore wiring."
+        },
+        {
+          "slug": "oko-ch2-09-static-track-furniture-source-review",
+          "title": "Make furniture promotion source explicit",
+          "task": "Review the existing EventBuilder static track signal and expose only the intended durable observation data needed by FurnitureRegistry, with tests documenting class filtering.",
+          "wave": 5,
+          "parallel_group": "ch2-events",
+          "files": [
+            "src/oko/events/builder.py",
+            "tests/test_event_builder.py"
+          ],
+          "depends_on": [
+            "oko-ch2-06-suppression-decision"
+          ],
+          "acceptance": [
+            "Tests document which classes can enter the static-track signal.",
+            "FurnitureRegistry population does not silently treat an unknown class source as suppressible promoted furniture.",
+            "Existing static person/animal VLM deferral behavior remains covered."
+          ],
+          "checks": [
+            "pytest tests/test_event_builder.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Architect must review because Decision Record DA-005 and red-team notes conflict on the meaning of _static_track_ids."
+        },
+        {
+          "slug": "oko-ch2-10-chapter-2-full-pytest",
+          "title": "Run Chapter 2 full regression",
+          "task": "Run the complete OKO pytest suite after Chapter 2 wiring and capture results for architect review.",
+          "wave": 6,
+          "parallel_group": "ch2-verify",
+          "files": [],
+          "depends_on": [
+            "oko-ch2-08-live-vlm-suppression-wiring",
+            "oko-ch2-09-static-track-furniture-source-review"
+          ],
+          "acceptance": [
+            "Full pytest in C:\\Users\\rafie\\bridge-projects\\oko exits 0.",
+            "Architect review receives the Chapter 2 atom list and pytest output."
+          ],
+          "checks": [
+            "pytest"
+          ],
+          "risk": "medium",
+          "serial_reason": "Chapter gate."
+        }
+      ]
+    },
+    {
+      "chapter": "chapter-3-labeled-crop-collection",
+      "goal": "Collect structured labels from real person/animal events without parsing VLM free text as class truth.",
+      "atoms": [
+        {
+          "slug": "oko-ch3-01-label-crop-store",
+          "title": "Add labeled crop store",
+          "task": "Create a crop writer that stores image crops and metadata JSON under runs/labels/<camera_id>/.",
+          "wave": 7,
+          "parallel_group": "ch3-labels",
+          "files": [
+            "src/oko/autotrain/labels.py",
+            "tests/test_autotrain_labels.py"
+          ],
+          "depends_on": [
+            "oko-ch2-10-chapter-2-full-pytest"
+          ],
+          "acceptance": [
+            "Crop metadata includes camera_id, timestamp, bbox, class_name, conf, cell, model_version, and raw vlm_description.",
+            "vlm_description is stored only as raw context and is not parsed into class_name.",
+            "Writes are atomic enough to avoid orphan metadata on crop write failure."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_labels.py"
+          ],
+          "risk": "medium",
+          "serial_reason": ""
+        },
+        {
+          "slug": "oko-ch3-02-live-label-hook",
+          "title": "Hook label crop collection into real events",
+          "task": "Call the crop writer only for confirmed real person/animal events after VLM/operator agreement.",
+          "wave": 8,
+          "parallel_group": "ch3-live",
+          "files": [
+            "src/oko/pipeline/live.py",
+            "tests/test_live_pipeline.py"
+          ],
+          "depends_on": [
+            "oko-ch3-01-label-crop-store"
+          ],
+          "acceptance": [
+            "Confirmed person/animal events create one crop record per agreed detection.",
+            "Suppressed furniture/normal events do not create positive labels.",
+            "VLM free text never overrides YOLO class_name in stored structured labels."
+          ],
+          "checks": [
+            "pytest tests/test_live_pipeline.py tests/test_autotrain_labels.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Depends on the crop store contract."
+        }
+      ]
+    },
+    {
+      "chapter": "chapter-4-held-out-eval",
+      "goal": "Freeze an immutable held-out split and report precision, recall, and confusion.",
+      "atoms": [
+        {
+          "slug": "oko-ch4-01-heldout-split",
+          "title": "Create immutable held-out split manifest",
+          "task": "Build a manifest generator that freezes held-out samples with camera/time/class stratification metadata.",
+          "wave": 9,
+          "parallel_group": "ch4-eval",
+          "files": [
+            "src/oko/autotrain/eval.py",
+            "tests/test_autotrain_eval.py"
+          ],
+          "depends_on": [
+            "oko-ch3-02-live-label-hook"
+          ],
+          "acceptance": [
+            "A held-out manifest is immutable after creation unless a new version is requested.",
+            "Manifest records source crop IDs, camera_id, timestamp, class_name, and split version.",
+            "Attempting to mutate an existing held-out version fails loudly."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_eval.py"
+          ],
+          "risk": "medium",
+          "serial_reason": ""
+        },
+        {
+          "slug": "oko-ch4-02-eval-metrics",
+          "title": "Compute held-out metrics",
+          "task": "Compute precision, recall, and confusion matrix for a detector output against the frozen held-out manifest.",
+          "wave": 10,
+          "parallel_group": "ch4-eval",
+          "files": [
+            "src/oko/autotrain/eval.py",
+            "tests/test_autotrain_eval.py"
+          ],
+          "depends_on": [
+            "oko-ch4-01-heldout-split"
+          ],
+          "acceptance": [
+            "Metrics include per-class precision and recall.",
+            "Confusion matrix includes missed and false-positive buckets.",
+            "Empty held-out sets fail with a clear error instead of passing."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_eval.py"
+          ],
+          "risk": "medium",
+          "serial_reason": "Same eval module as split manifest."
+        }
+      ]
+    },
+    {
+      "chapter": "chapter-5-yolo-dataset-export",
+      "goal": "Export a versioned YOLO-format dataset with hard negatives.",
+      "atoms": [
+        {
+          "slug": "oko-ch5-01-yolo-dataset-export",
+          "title": "Export versioned YOLO dataset",
+          "task": "Export images, labels, data.yaml, and manifest.json under runs/datasets/<version>/.",
+          "wave": 11,
+          "parallel_group": "ch5-dataset",
+          "files": [
+            "src/oko/autotrain/dataset.py",
+            "tests/test_autotrain_dataset.py"
+          ],
+          "depends_on": [
+            "oko-ch4-02-eval-metrics"
+          ],
+          "acceptance": [
+            "Agreed detections are exported as YOLO labels with normalized bbox coordinates.",
+            "Furniture and confirmed-normal examples are exported as hard negatives with empty label files.",
+            "data.yaml class mapping is deterministic and recorded in manifest.json."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_dataset.py"
+          ],
+          "risk": "medium",
+          "serial_reason": ""
+        }
+      ]
+    },
+    {
+      "chapter": "chapter-6-gated-finetune-promotion",
+      "goal": "Train out-of-band, promote only on held-out improvement, and support rollback plus one Telegram confirmation.",
+      "atoms": [
+        {
+          "slug": "oko-ch6-01-train-job-cli",
+          "title": "Add out-of-band fine-tune job CLI",
+          "task": "Create a GPU preflight and training job entry point accepting dataset_version, base_weights, and train_config.",
+          "wave": 12,
+          "parallel_group": "ch6-train",
+          "files": [
+            "src/oko/autotrain/train.py",
+            "tests/test_autotrain_train.py"
+          ],
+          "depends_on": [
+            "oko-ch5-01-yolo-dataset-export"
+          ],
+          "acceptance": [
+            "Training refuses to start without an existing dataset version and base weights.",
+            "GPU availability check is explicit and testable by dependency injection.",
+            "Training outputs a manifest with input versions and produced weights path."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_train.py"
+          ],
+          "risk": "high",
+          "serial_reason": ""
+        },
+        {
+          "slug": "oko-ch6-02-promotion-gate",
+          "title": "Add held-out promotion gate",
+          "task": "Stage candidate weights, evaluate them against current weights, and switch active weights only on margin plus per-class recall criteria.",
+          "wave": 13,
+          "parallel_group": "ch6-promotion",
+          "files": [
+            "src/oko/autotrain/promotion.py",
+            "tests/test_autotrain_promotion.py"
+          ],
+          "depends_on": [
+            "oko-ch6-01-train-job-cli"
+          ],
+          "acceptance": [
+            "Candidate weights are not promoted unless aggregate metrics exceed the configured margin.",
+            "Candidate weights are rejected if any safety-critical class recall regresses beyond epsilon.",
+            "Active weights switch is atomic and records old and new versions."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_promotion.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Promotion must be implemented after training output manifest."
+        },
+        {
+          "slug": "oko-ch6-03-rollback",
+          "title": "Add explicit and automatic rollback",
+          "task": "Implement rollback to retained prior weights and automatic rollback on post-promotion validation failure.",
+          "wave": 14,
+          "parallel_group": "ch6-promotion",
+          "files": [
+            "src/oko/autotrain/promotion.py",
+            "tests/test_autotrain_promotion.py"
+          ],
+          "depends_on": [
+            "oko-ch6-02-promotion-gate"
+          ],
+          "acceptance": [
+            "Rollback restores the previous active weights pointer.",
+            "Retention keeps the configured number of prior weight sets.",
+            "A failed post-promotion validation triggers rollback and records the reason."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_promotion.py"
+          ],
+          "risk": "high",
+          "serial_reason": "Same promotion module as the gate."
+        },
+        {
+          "slug": "oko-ch6-04-telegram-confirmation",
+          "title": "Send one Telegram promotion confirmation",
+          "task": "Send exactly one Telegram confirmation after a successful promotion and record it in the promotion manifest.",
+          "wave": 15,
+          "parallel_group": "ch6-notify",
+          "files": [
+            "src/oko/autotrain/notify.py",
+            "tests/test_autotrain_notify.py"
+          ],
+          "depends_on": [
+            "oko-ch6-03-rollback"
+          ],
+          "acceptance": [
+            "A successful promotion emits one confirmation message.",
+            "Rejected candidates and rollbacks do not emit a success confirmation.",
+            "Notification failures are recorded and do not corrupt the active weights pointer."
+          ],
+          "checks": [
+            "pytest tests/test_autotrain_notify.py"
+          ],
+          "risk": "medium",
+          "serial_reason": ""
+        },
+        {
+          "slug": "oko-ch6-05-full-autotrain-regression",
+          "title": "Run full OKO pytest for auto-training program",
+          "task": "Run the complete OKO pytest suite and capture final architect-review evidence.",
+          "wave": 16,
+          "parallel_group": "ch6-verify",
+          "files": [],
+          "depends_on": [
+            "oko-ch6-04-telegram-confirmation"
+          ],
+          "acceptance": [
+            "Full pytest in C:\\Users\\rafie\\bridge-projects\\oko exits 0.",
+            "Final report includes held-out eval, dataset export, promotion gate, rollback, and notification tests."
+          ],
+          "checks": [
+            "pytest"
+          ],
+          "risk": "medium",
+          "serial_reason": "Final chapter gate."
+        }
+      ]
+    }
+  ]
+}

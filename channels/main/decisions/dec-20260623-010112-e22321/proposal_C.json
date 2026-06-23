@@ -1,0 +1,93 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires implementing a multi-stage auto-training pipeline for YOLO in the OKO project. Stage 1 scaffold (SceneModel/SceneStore/BackgroundPlate/SpatialGrid/FurnitureRegistry) is complete with green tests. The pipeline must: (1) integrate scene model updates into pipeline/live.py on every frame, (2) suppress VLM-gate detections matching promoted furniture with near-zero motion vs background plate after 2-5 min warmup, (3) accumulate labeled crops from real person/animal events in runs/labels/\u003ccamera_id\u003e/, (4) implement held-out evaluation harness for precision/recall/confusion, (5) export YOLO-format dataset to runs/datasets/ with agreed-detections as labels and furniture/confirmed-normal as hard negatives, (6) implement gated fine-tuning on GPU with promotion only if beating current model on held-out set, auto-rollback storing old weights, and Telegram confirmation on success. Decomposition must follow chapter-by-chapter atoms (1 file/small change/passing tests) with architect review.",
+    "summary":  "Implement a 5-chapter auto-training pipeline for YOLO in the OKO project. Chapter 2 integrates Stage 1 scene model into live pipeline with frame-by-frame updates and VLM-gate suppression logic. Chapter 3 builds data collection infrastructure for labeled crops. Chapter 4 creates evaluation harness and dataset export. Chapter 5 implements gated fine-tuning with promotion criteria, rollback mechanism, and Telegram notification. Each chapter decomposed into atomic changes (1 file, small scope, passing pytest) with architect review gates.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Chapter 2 integration uses SceneStore.get_or_create+save pattern on every frame in pipeline/live.py",
+                               "reason":  "Existing scaffold provides this API; calling it per-frame ensures scene model stays current without reinventing persistence logic",
+                               "tradeoff":  "Adds per-frame overhead but enables accurate motion comparison for suppression; acceptable given 2-5 min warmup window",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "VLM-gate suppression compares detection bboxes against promoted-furniture registry and computes motion vs background plate",
+                               "reason":  "False positives from furniture are the primary problem; motion threshold + furniture matching is the precise remedy specified",
+                               "tradeoff":  "Requires tuning motion threshold parameter; too aggressive suppresses real events, too lenient allows false positives",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Data collection stores crops with VLM-description as provisional label, bbox, confidence, and spatial cell in runs/labels/\u003ccamera_id\u003e/",
+                               "reason":  "VLM provides initial labels for training; storing with spatial context enables cell-aware evaluation later",
+                               "tradeoff":  "VLM labels may be noisy; held-out evaluation and human review can filter before training",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Held-out evaluation harness computes precision, recall, confusion matrix on frozen slice of accumulated data",
+                               "reason":  "Must objectively measure model improvement; frozen held-out prevents data leakage and ensures fair comparison",
+                               "tradeoff":  "Requires sufficient accumulated data before meaningful evaluation; early promotion may be unreliable",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Dataset export converts agreed-detections to YOLO format labels and furniture/confirmed-normal to hard negatives",
+                               "reason":  "YOLO training requires specific format; hard negatives from furniture explicitly teach model to ignore false positive sources",
+                               "tradeoff":  "Hard negative mining may overfit to specific furniture if not diverse enough; balanced sampling needed",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Gated fine-tuning promotes new model only if it outperforms current on held-out set with automatic rollback",
+                               "reason":  "Prevents degradation in production; rollback with stored old weights ensures system can recover from bad training runs",
+                               "tradeoff":  "Requires GPU availability and training time; promotion gate may reject incremental improvements that are actually beneficial",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Telegram confirmation sent only on successful promotion",
+                               "reason":  "Human-in-the-loop for final approval aligns with risk management; single notification prevents alert fatigue",
+                               "tradeoff":  "Adds latency to deployment; user must respond but system can default to safe rollback on timeout",
+                               "confidence":  0.87
+                           }
+                       ],
+    "assumptions":  [
+                        "SceneStore.get_or_create and save methods are thread-safe and can be called from pipeline/live.py main loop",
+                        "Background plate provides reliable pixel-level reference for motion computation after 2-5 minute warmup",
+                        "VLM descriptions are sufficiently accurate as provisional labels for initial training data",
+                        "GPU is available and accessible from the OKO environment for YOLO fine-tuning",
+                        "Telegram bot integration exists or can be added with minimal effort for notifications",
+                        "Existing pipeline/live.py has clear hook points for injecting scene model updates and suppression logic",
+                        "Accumulated data volume reaches meaningful threshold before evaluation and training trigger",
+                        "YOLO model weights can be loaded/saved programmatically in the existing OKO codebase"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Per-frame scene model updates cause pipeline latency exceeding real-time requirements",
+                      "severity":  "high",
+                      "mitigation":  "Profile update cost; implement async update queue or downsampled update rate if needed; scene model operations are lightweight by design"
+                  },
+                  {
+                      "risk":  "Motion threshold tuning causes either excessive false positives or missed true detections",
+                      "severity":  "medium",
+                      "mitigation":  "Implement configurable threshold with runtime adjustment; log suppression decisions for offline analysis and tuning"
+                  },
+                  {
+                      "risk":  "VLM provisional labels introduce systematic bias into training data",
+                      "severity":  "medium",
+                      "mitigation":  "Held-out evaluation catches degradation; implement label confidence filtering; allow manual correction before dataset export"
+                  },
+                  {
+                      "risk":  "Insufficient accumulated data leads to unreliable held-out evaluation and premature promotion decisions",
+                      "severity":  "high",
+                      "mitigation":  "Enforce minimum sample count thresholds before triggering evaluation; log data volume metrics; prevent promotion below threshold"
+                  },
+                  {
+                      "risk":  "GPU fine-tuning fails or produces degraded model due to hyperparameter issues",
+                      "severity":  "high",
+                      "mitigation":  "Automatic rollback restores previous weights; implement training validation loss monitoring; keep multiple previous weight versions"
+                  },
+                  {
+                      "risk":  "Telegram notification delivery fails leaving promotion unconfirmed",
+                      "severity":  "low",
+                      "mitigation":  "Implement retry with exponential backoff; timeout defaults to safe state (no promotion); log failure for manual follow-up"
+                  }
+              ],
+    "minimal_version":  "Implement Chapter 2 only: integrate scene model updates in pipeline/live.py with VLM-gate suppression using furniture matching and motion threshold after warmup. Deploy and validate false positive reduction before proceeding to data collection. This delivers immediate value by reducing false alarms without full training pipeline.",
+    "advanced_version":  "Full 5-chapter implementation with continuous learning loop: automated data collection triggers evaluation when sufficient samples accumulate, evaluation triggers fine-tuning when held-out performance indicates potential improvement, promotion with rollback and notification completes the cycle. Add active learning component that queries VLM for uncertain detections to improve label quality. Implement A/B testing framework for promoted models in production."
+}
