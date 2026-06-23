@@ -1936,9 +1936,11 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
     try {
       $dgcState = Read-State
       if ([bool]$dgcState.task_did_actions) {
-        $dgcSha = ([string](& git -C $bridgeRoot rev-parse HEAD 2>$null | Out-String)).Trim()
+        $dgcRepoRoot = $bridgeRoot
+        try { if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) { $r = [string](Get-TaskRepoRoot); if (-not [string]::IsNullOrWhiteSpace($r)) { $dgcRepoRoot = $r } } } catch {}
+        $dgcSha = ([string](& git -C $dgcRepoRoot rev-parse HEAD 2>$null | Out-String)).Trim()
         $dgcDirty = 'unknown'
-        try { $dgcDirty = ([string](& git -C $bridgeRoot status --porcelain 2>$null | Out-String)).Trim() } catch {}
+        try { $dgcDirty = ([string](& git -C $dgcRepoRoot status --porcelain 2>$null | Out-String)).Trim() } catch {}
         $dgcTask = [string]$dgcState.current_backlog_id
         if ([string]::IsNullOrWhiteSpace($dgcTask)) { $dgcTask = [string]$dgcState.current_task_id }
         if ($dgcSha -and ($dgcDirty -eq '') -and ([string]$dgcState.done_gate_pass_sha -eq $dgcSha) -and ([string]$dgcState.done_gate_pass_task -eq $dgcTask)) {
@@ -1964,8 +1966,23 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
           if (-not [string]::IsNullOrWhiteSpace($dqpcSha)) {
             $dqpcValid = $false
             try {
-              $dqpcOut = ([string](& git -C $bridgeRoot rev-parse --verify ($dqpcSha + '^{commit}') 2>$null | Out-String)).Trim()
-              $dqpcValid = (-not [string]::IsNullOrWhiteSpace($dqpcOut))
+              $dqpcRepos = @($bridgeRoot)
+              try {
+                if (Get-Command Resolve-BacklogItemRepoRoots -ErrorAction SilentlyContinue) {
+                  $dqpcRepos = @(Resolve-BacklogItemRepoRoots -Item $dqpcItem -BridgeRoot $bridgeRoot)
+                } elseif (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) {
+                  $dqpcTr = [string](Get-TaskRepoRoot)
+                  if (-not [string]::IsNullOrWhiteSpace($dqpcTr) -and $dqpcTr -ne $bridgeRoot) {
+                    $dqpcRepos = @($dqpcTr, $bridgeRoot)
+                  }
+                }
+              } catch {}
+              foreach ($dqpcRepo in $dqpcRepos) {
+                try {
+                  $dqpcOut = ([string](& git -C $dqpcRepo rev-parse --verify ($dqpcSha + '^{commit}') 2>$null | Out-String)).Trim()
+                  if (-not [string]::IsNullOrWhiteSpace($dqpcOut)) { $dqpcValid = $true; break }
+                } catch {}
+              }
             } catch {}
             if ($dqpcValid) {
               $doneGateCachedPass = $true
@@ -2243,7 +2260,9 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
     try {
       $dgpState = Read-State
       if ([bool]$dgpState.task_did_actions) {
-        $dgpSha = ([string](& git -C $bridgeRoot rev-parse HEAD 2>$null | Out-String)).Trim()
+        $dgpRepoRoot = $bridgeRoot
+        try { if (Get-Command Get-TaskRepoRoot -ErrorAction SilentlyContinue) { $r = [string](Get-TaskRepoRoot); if (-not [string]::IsNullOrWhiteSpace($r)) { $dgpRepoRoot = $r } } } catch {}
+        $dgpSha = ([string](& git -C $dgpRepoRoot rev-parse HEAD 2>$null | Out-String)).Trim()
         $dgpTask = [string]$dgpState.current_backlog_id
         if ([string]::IsNullOrWhiteSpace($dgpTask)) { $dgpTask = [string]$dgpState.current_task_id }
         if ($dgpSha) {
@@ -2267,6 +2286,12 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
                     $bkItem.PSObject.Properties['done_qa_pass_commit'].Value = $dqpStampSha
                   } else {
                     $bkItem | Add-Member -NotePropertyName done_qa_pass_commit -NotePropertyValue $dqpStampSha -Force
+                  }
+                  $dqpStampRepo = $dgpRepoRoot
+                  if ($bkItem.PSObject.Properties.Name -contains 'done_qa_pass_repo') {
+                    $bkItem.PSObject.Properties['done_qa_pass_repo'].Value = $dqpStampRepo
+                  } else {
+                    $bkItem | Add-Member -NotePropertyName done_qa_pass_repo -NotePropertyValue $dqpStampRepo -Force
                   }
                   $bkDirty = $true
                   try {

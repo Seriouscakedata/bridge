@@ -269,9 +269,49 @@ function Get-TaskActionEvidence {
   }
 }
 
+function Resolve-BacklogItemRepoRoots {
+  # Returns ordered list of git repo paths to try when verifying a SHA for a backlog item.
+  # Priority: done_qa_pass_repo -> declared_repo -> infer from abs files paths -> $BridgeRoot.
+  param(
+    [object]$Item,
+    [string]$BridgeRoot
+  )
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $candidates = [System.Collections.Generic.List[string]]::new()
+  $addRepo = {
+    param([string]$p)
+    if ([string]::IsNullOrWhiteSpace($p)) { return }
+    try { $p = [System.IO.Path]::GetFullPath($p) } catch { return }
+    if (-not $seen.Add($p)) { return }
+    if (Test-Path -LiteralPath (Join-Path $p '.git')) { [void]$candidates.Add($p) }
+  }
+  try {
+    foreach ($field in @('done_qa_pass_repo', 'declared_repo')) {
+      if ($Item -and ($Item.PSObject.Properties.Name -contains $field)) {
+        & $addRepo ([string]($Item.PSObject.Properties[$field].Value)).Trim()
+      }
+    }
+    if ($Item -and ($Item.PSObject.Properties.Name -contains 'files')) {
+      foreach ($f in @($Item.files)) {
+        $fs = ([string]$f).Trim()
+        if ([string]::IsNullOrWhiteSpace($fs) -or -not [System.IO.Path]::IsPathRooted($fs)) { continue }
+        $dir = [System.IO.Path]::GetDirectoryName($fs)
+        while (-not [string]::IsNullOrWhiteSpace($dir)) {
+          if (Test-Path -LiteralPath (Join-Path $dir '.git')) { & $addRepo $dir; break }
+          $parent = [System.IO.Path]::GetDirectoryName($dir)
+          if ($parent -eq $dir) { break }
+          $dir = $parent
+        }
+      }
+    }
+  } catch {}
+  & $addRepo $BridgeRoot
+  return @($candidates)
+}
+
 function Test-TaskDoneQaPassCommitEvidence {
   # Read-only. Returns $true when the backlog item identified by $BacklogId carries a
-  # done_qa_pass_commit SHA that resolves to a real commit in the bridge repo.
+  # done_qa_pass_commit SHA that resolves to a real commit in one of the item's repo roots.
   # Mirrors the post-restart fast-path in driver/86-loop-completion-checks.ps1 so the
   # mode-transition DONE evidence gate (driver/85) does not raise a false
   # missing_action_evidence when task_base_commit was reset to HEAD after a restart
@@ -289,8 +329,14 @@ function Test-TaskDoneQaPassCommitEvidence {
     if (-not ($item.PSObject.Properties.Name -contains 'done_qa_pass_commit')) { return $false }
     $sha = ([string]$item.done_qa_pass_commit).Trim()
     if ([string]::IsNullOrWhiteSpace($sha)) { return $false }
-    $out = ([string](& git -C $BridgeRoot rev-parse --verify ($sha + '^{commit}') 2>$null | Out-String)).Trim()
-    return (-not [string]::IsNullOrWhiteSpace($out))
+    $repos = Resolve-BacklogItemRepoRoots -Item $item -BridgeRoot $BridgeRoot
+    foreach ($repo in $repos) {
+      try {
+        $out = ([string](& git -C $repo rev-parse --verify ($sha + '^{commit}') 2>$null | Out-String)).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($out)) { return $true }
+      } catch {}
+    }
+    return $false
   } catch {
     return $false
   }
