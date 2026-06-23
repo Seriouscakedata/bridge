@@ -22,7 +22,7 @@
 Task Scheduler (ClaudeCodexBridge, elevated)
         └─ supervisor.ps1   — следит, перезапускает упавшее, держит watchdog
               ├─ server.ps1   — веб-пульт + API (порт из config.json .port, обычно 8787)
-              ├─ driver.ps1 -Channel aipartners   — рабочий цикл канала проекта
+              ├─ driver.ps1 -Channel oko           — рабочий цикл канала проекта
               ├─ driver.ps1 -Channel main          — рабочий цикл канала самого моста
               └─ watchdog.ps1 — аварийный откат (git) при поломке
         (по одному driver на КАЖДЫЙ активный канал; новый проект → новый канал)
@@ -71,7 +71,7 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 - **Кнопки управления** (control actions): ⏸ Пауза · ▶ Продолжить · ⏹ Стоп · 🛑 Стоп-кран (kill) · ♻ Перезапуск.
 - **Бэклог / решения** — очередь задач, журнал решений.
 
-Канал переключается через пин (?channel=aipartners) — по умолчанию активный.
+Канал переключается через пин (?channel=main или ?channel=oko) — по умолчанию активный.
 
 ---
 
@@ -98,6 +98,8 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\a
 > . "$bridge\lib\common.ps1"; . "$bridge\lib\backlog.ps1"
 > Set-ProjectPlanApproved -Channel '<slug>'        # снять разрешение: -Approved:$false
 > ```
+> (`Set-ProjectPlanApproved` определена в `lib\backlog-autopilot.ps1`; `backlog.ps1` подгружает её
+> транзитивно — grep по `backlog.ps1` ничего не найдёт.)
 > Пока план не утверждён, driver один раз пишет в канал «⏸ Project Autopilot ждёт утверждения PROJECT_PLAN».
 
 > **Staged planning gate (2026-06-02):** approval now requires a staged plan, not one big
@@ -152,6 +154,13 @@ $st2=[IO.File]::ReadAllText($sf,[Text.Encoding]::UTF8)|ConvertFrom-Json; $st2.pa
 workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<путь>']), workpack_status('planned')`.
 Чтобы задачи шли **параллельно** — у каждой свой `workpack_conflict_group` = свой целевой файл.
 
+> **⚠️ Control-plane claim-gate.** Если задача трогает control-plane моста (`driver*.ps1`,
+> `server/supervisor/watchdog/canary.ps1`, `lib\backlog*.ps1`, `lib\parallel|circuit-breaker|policy.ps1`,
+> `control\`), она НЕ возьмётся автономией, пока не несёт тег `operator` (в `tags`) или валидный
+> блок `bridge_self_admission`. Иначе `Test-BacklogApprovedItemClaimable` вернёт `control-plane-blocked`
+> и задача застрянет в `approved` навсегда. Для операторских control-plane задач всегда добавляй
+> `tags: ["operator"]`.
+
 ---
 
 ## 4. Как мост работает командой (параллель)
@@ -188,7 +197,7 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 | codex-alt ×2 | codex gpt-5.4/high | 3 | 2 | 3 | дешевле, запас |
 | codex-specialist ×2 | codex gpt-5.3-codex/high | 3 | 3 | 2 | код-специфика |
 | claude-sonnet ×3 | claude sonnet | 3 | 3 | 3 | frontend/docs/config |
-| **claude-fable ×2** | claude fable-5 | **5** | **5** | 1 | **только важное architectural/deep-think** |
+| **claude-fable ×2** | claude-opus-4-8 (id claude-fable) | **5** | **5** | 1 | **только важное architectural/deep-think** |
 | deepseek-pro ×2 | deepseek v4-pro | 4 | **2** | 3 | сильный и дешёвый |
 | gemini-flash ×2 | gemini 2.5-flash | 3 | **1** | 4 | дешёвый, быстрый, простое |
 
@@ -224,7 +233,7 @@ workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<�
 - ⛔ **НИКОГДА `gemini-2.5-pro`** — слишком дорогой. Удалять из конфига, если случайно вернётся.
 - ⚠️ `gemini-3-flash` — **только резерв** (дорогой), когда основной агент недоступен/вернул пусто.
 - Рутина (curator, intent-classifier, smoke) → `gemini-2.5-flash-lite` / `gemini-2.5-flash` (дёшево).
-- `claude-fable-5` — верхний архитектурный уровень: держать на deep-think/study/architectural, не на мелочь (premium-guard это и обеспечивает).
+- `claude-opus-4-8` (id воркера `claude-fable`) — верхний архитектурный уровень: держать на deep-think/study/architectural, не на мелочь (premium-guard это и обеспечивает). Маркеры `[[FABLE]]`/`[[OPUS]]`/`[[DEEP-THINK]]` всё ещё триггерят premium-tier, но резолвятся в `claude-opus-4-8`; старая строка `claude-fable-5` мертва (404 на подписке, убрана 2026-06-13).
 - Основная масса — codex (по подписке, prepaid) + дешёвый deepseek/gemini.
 
 ### Контроль стоимости
@@ -264,10 +273,12 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
 
 | Канал | Что это |
 |---|---|
-| `aipartners` | проект — платформа видео-рецептов (`C:\Users\rafie\aipartners`) |
-| `private-community` | проект — закрытое комьюнити с чатом и фотогалереей (`C:\Users\rafie\bridge-projects\private-community`) |
 | `main` | развитие самого моста (его инфраструктура) |
-| `_archive` | архив старых/тестовых каналов (напр. бывший `travel` — учебный прогон, к мосту не относится) |
+| `claude` | операторский канал (текущий активный) |
+| `telegram-bridge-bot` | личный TG-бот |
+| `computer-control` | руки/лапа (управление ПК) |
+| `oko` | vision-сервис (глаза моста) |
+| `_archive` | архив старых/тестовых каналов (напр. `aipartners`, `private-community`, `travel` — к живому мосту не относятся) |
 
 Каждый канал — свой driver, своё состояние, свой бэклог, своя история. Codex общий на все каналы
 (поэтому иногда «⏳ Codex занят другим каналом — жду»).
@@ -292,6 +303,15 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
 
 **Зачем:** прежняя «накидать беклог кусками» дала несвязный продукт (франкенштейн: страницы есть,
 навигации нет). Обсуждение до беклога вскрывает такое заранее.
+
+### Decision Synthesis (`synthesisMode`) — как обрабатываются Deep/High-Stakes/discuss
+Переключатель `synthesisMode.enabled` (config.json, сейчас `true`) включает **Multi-Model Decision
+Synthesis** — режим `task_mode='synthesis'`, который заменил старый двух-модельный role-based discuss
+для задач уровня Deep/High-Stakes + явный discuss. Вместо диалога двух моделей гоняется stateless
+artifact-пайплайн (TaskContract → 3 «слепых» предложения → ConflictMatrix → CrossReview → Judge →
+MicroDebate → FinalV2+RedTeam → Decision Record), чекпойнты под `channels\<slug>\decisions\<id>\`.
+**Операторски важно:** High-Stakes-решения и high-severity red-team-находки ВСЕГДА дают
+`needs_operator` `final_decision_record.json` и НЕ авто-внедряются — их надо утвердить до реализации.
 
 ### Декомпозиция до АТОМОВ (между Ф2 и Ф6)
 Крупная задача дробится как книга — и в беклог идут только атомы, а не «главы»:
@@ -332,6 +352,10 @@ Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'
    проекта. Если агент пишет только план и пытается `STATUS: DONE`, guard должен отклонить закрытие.
 6. **Quality bypass guard.** Driver блокирует опасные обходы качества в project diff: `ignoreBuildErrors`,
    `ignoreDuringBuilds`, `@ts-nocheck`, verify-команды с `|| true` / принудительным `exit 0`.
+7. **Elevated sandbox (`danger-full-access`).** По умолчанию coder работает в `workspace-write`. Сейчас
+   на `danger-full-access` подняты ДВА канала: `literary-slop-video` и `oko`. Карта задаётся в
+   `coder.sandboxModeByChannel`; `oko` добавлен через overlay `settings.json` (gitignored, переживает
+   rollback) — поэтому config-only доки занижают объём elevated-доступа.
 
 ---
 

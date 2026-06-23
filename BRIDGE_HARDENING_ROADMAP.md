@@ -28,7 +28,8 @@ vs «harden существующего» (безопасно, предпочти
 - [~] E. Gate Discipline — IN PROGRESS (2026-06-08): runner + hang-fix + governor re-sync; dogfooding
   A1–A8 → 6 реальных багов автономии моста; 5 ПОЧИНЕНЫ durable (collection .git-alt, gate-cascade
   admission ×2, dirty-guard, orphan-reaper ddd10b8); A1(регресс)+A8(enforcement) done автономно;
-  открыт ТОЛЬКО #3 frontier-serial (отложен: высокий blast-radius, на сфокусированную сессию)
+  по #3 frontier часть (б) serial-single-fallback ПОЧИНЕНА (2026-06-14), открыта только часть (а)
+  узкий touch_set planner'а
 
 ## A. Deterministic Plan/Scope/Release (Codex #1,2,11,27)
 КОРЕНЬ: потеря CHAPTER 8 — coordinator выбирал next-chapter суждением LLM, остановился после 6/10.
@@ -115,11 +116,14 @@ Discuss-First после стабилизации.
    running/working без live-PID/heartbeat/runtime → held, lease освобождается); (в)
    `driver/81-loop-idle-claim.ps1` вызывает его в idle-блоке. Reaper консервативен (сохраняет всё живое).
    Доказано LIVE: восстановил реальную сироту f531c6fb (running→held). test 11/11, smoke OK (226 ps1).
-3. **Frontier overbroad-touch_set + нет serial-fallback [#4, открыто]:** planner объявил
+3. **Frontier overbroad-touch_set + нет serial-fallback [частично починено]:** planner объявил
    `workpack_touch_set`, включающий verify-зависимости (`tools/run-tests.ps1`) как «тронутые» → 5 атомов
    ложно пересеклись по run-tests.ps1 → frontier не смог собрать непересекающийся batch → wedge
    (`open-unpacked`, `lease-conflict`). Нужно: (а) planner объявляет УЗКИЙ touch_set = edit-таргет, не
-   verify-deps; (б) frontier fallback на serial-single когда batch wedged (давно в беклоге кандидатом).
+   verify-deps; (б) frontier fallback на serial-single когда batch wedged [ПОЧИНЕНО, 2026-06-14
+   serial-single-fallback: `lib/backlog-workpack.ps1:2327-2346` — когда за волну selected=0 и атомы
+   заблокированы исключительно взаимным touch-overlap, frontier берёт первый заблокированный атом solo
+   и гонит serial-путь (`$serialReason='serial-single-fallback'`)].
 4. **Gate-cascade на control-plane-планах [ПОЧИНЕНО, bf6c39d + 419ead2]:** КОРЕНЬ — ДВЕ несогласованные
    control-plane детекции: claim-gate `Test-IdeaTouchesControlPlane` (широкая, блокирует A6
    `lib/verify-selftest.ps1`) vs autopilot `Test-ProjectAutopilotControlPlanePath` (узкая, не ловит →
@@ -136,8 +140,8 @@ Discuss-First после стабилизации.
 orphan-reaper + E-runner/hang/governor), а НЕ добивал хвост руками. После каждого фикса мост проходил
 дальше — это доказывает, что чинились реальные wedge-причины, не симптомы. **Из 6 найденных багов 5
 ПОЧИНЕНЫ durable** (collection 4fbac65, gate-cascade bf6c39d/419ead2, dirty-guard 12a86f4, orphan-reaper
-ddd10b8); остаётся открытым ТОЛЬКО **#3 frontier serial-fallback** (нет fallback на single когда parallel
-batch wedged по touch-overlap) — сознательно отложен (высокий blast-radius: claiming для ВСЕХ каналов),
-заслуживает свежей сфокусированной сессии, не марафон-хака. Доказано: мост МОЖЕТ Discuss-First + canary +
+ddd10b8); по **#3 frontier** часть (б) serial-fallback ПОЧИНЕНА (2026-06-14, serial-single-fallback в
+`lib/backlog-workpack.ps1:2327-2346` — single когда parallel batch wedged по touch-overlap), остаётся
+открытой только часть (а) узкий touch_set planner'а. Доказано: мост МОЖЕТ Discuss-First + canary +
 реальный регресс-фикс (A1) + control-plane enforcement (A6/A8) автономно; харденинг сессии радикально
 снизил wedge-причины многоатомной финализации (5 из 6 устранены).

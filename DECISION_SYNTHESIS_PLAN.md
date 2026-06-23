@@ -70,6 +70,7 @@ auto-implement. After Ch13: legacy role-based prompts/ping-pong/convergence-gate
   - Ch2 `lib/decision-artifacts.ps1` (7 schemas+validators + Get-ChannelDecisionsDir) — 14/14.
   - Ch3-10 `lib/decision-synthesis.ps1` (full pipeline engine + Invoke-SynthesisPipeline) — 42/42 mock+driver-wrapper test (Standard+Deep). Engine is now wired through `task_mode='synthesis'` when `synthesisMode.enabled=true`.
   - config.json `synthesisMode` block (enabled=true).
+- LIVE: the Ch12 synthesis route is in production; the legacy role-based discuss path still co-exists (Ch13 cutover not fully done) — driver/40-agent-invoke.ps1 handles both `discuss` and `synthesis`.
 - REMAINING (post-live hardening):
   - Ch11 follow-up: Add-Idea harvest for accepted decision atoms.
   - Ch12 follow-up: run a real-LLM smoke from the bridge runtime, monitor first live synthesis tasks, and add focused regression coverage for driver route/close behavior.

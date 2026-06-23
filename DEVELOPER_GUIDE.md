@@ -9,7 +9,7 @@
 
 **Что это.** Автономный, само-развивающийся «мост» между двумя ИИ-агентами: **Claude** (планировщик/ревьюер) и **Codex** (кодер). Мост принимает задачи из чата (или сам берёт их из бэклога), планирует, пишет код, ревьюит, коммитит и умеет улучшать **сам себя**.
 
-**Платформа.** Windows + **PowerShell 5.1** (не PowerShell 7!). ~200 `.ps1`-файлов, веб-UI на одном `web/index.html` (245 KB), HTTP-сервер на `:8787`. 587+ коммитов.
+**Платформа.** Windows + **PowerShell 5.1** (не PowerShell 7!). ~200 `.ps1`-файлов, веб-UI на одном `web/index.html` (≈282 KB), HTTP-сервер на `:8787`. 587+ коммитов.
 
 **Топология процессов:**
 ```
@@ -50,18 +50,18 @@ Task Scheduler (autostart, elevated)
 - применять **circuit-breaker** (защита от рестарт-штормов, см. §5);
 - соблюдать rate-limit (не чаще 1 recycle / 60 c).
 
-### 2.2 server.ps1 (≈81 KB)
+### 2.2 server.ps1 (≈98 KB)
 HTTP-сервер на `http://+:8787/`:
 - отдаёт веб-UI (`web/index.html`);
 - REST API: `/api/status`, `/api/messages`, `/api/settings`, `/api/channels/*`, `/api/backlog`, `/api/brainstorm`, и т.д.;
 - принимает сообщения пользователя в чат, пишет их в `channels/<slug>/conversation.jsonl`;
-- **аутентификация по токену** — без токена `/api/status` отдаёт `401` (это «жив», а не «сломан»).
+- **аутентификация по токену (Bearer / `?token=`) ИЛИ HTTP-Basic (user/password) из `auth.json`** — без креденшелов `/api/status` отдаёт `401` (это «жив», а не «сломан»). `auth.json`/`secrets.json` резолвятся из приватного стора ВНЕ корня моста (`Get-AuthPath` → `Get-PrivateFilePath`); путь внутри моста — лишь legacy-fallback.
 
 ### 2.3 driver.ps1 + driver/*.ps1 (entrypoint + модули)
 Сердце моста. Один процесс на канал (`-Channel main` / `-Channel <project-slug>`). `driver.ps1` оставлен как тонкий entrypoint: загружает библиотеки, dot-source'ит `driver/*.ps1`, выполняет self-test и вызывает startup/main loop из модулей:
 1. читает состояние канала (`state.json`) и новые сообщения;
-2. классифицирует намерение (intent), выбирает режим (`code` / `discuss` / `study` / …);
-3. выбирает модель планировщика (Sonnet/Fable — см. §4.2);
+2. классифицирует намерение (intent), выбирает режим (`code` / `discuss` / `study` / `synthesis` / …);
+3. выбирает модель планировщика (Sonnet/Opus — см. §4.2);
 4. гоняет цикл **planner (Claude) ↔ coder (Codex)** с критиком и верификацией;
 5. коммитит результат (driver делает git-commit за Codex — см. §4.4);
 6. в простое — берёт автономную задачу из бэклога (см. §4.3);
@@ -108,11 +108,11 @@ bridge/
 ├── reflect.ps1 / librarian.ps1 / techradar.ps1 / canary.ps1   # фоновые задачи
 ├── *-elevated.ps1 / install-*.ps1 / start.ps1 / stop.ps1      # обвязка/установка
 ├── config.json           # ОСНОВНОЙ конфиг (в git!) — модели, лимиты, autonomy, audit
-├── lib/  (31 модуль)     # вся логика-библиотека (dot-source из common.ps1)
+├── lib/  (~68 модулей)   # вся логика-библиотека (dot-source из common.ps1)
 │   ├── common.ps1        # ядро: state, сообщения, LLM-вызовы, локи (97 KB)
 │   ├── parallel.ps1      # параллельные worktree-потоки (64 KB)
-│   ├── backlog.ps1       # очередь задач/идей (57 KB)
-│   ├── auditor.ps1       # планировщик аудита (42 KB)
+│   ├── backlog.ps1       # фасад-загрузчик (28 KB); очередь в backlog-core.ps1 (~143 KB) + crud/dedup/governor/io/workpack/autopilot/state-reaper
+│   ├── auditor.ps1       # health/anomaly сенсор (read-only, делегирует Doctor) (53 KB); ночной аудит планирует Start-AuditIfDue в driver/10-maintenance.ps1
 │   ├── memory.ps1        # семантическая память (embeddings) (42 KB)
 │   ├── architect.ps1     # брейншторм/deep-think (40 KB)
 │   ├── foundry.ps1       # синтез новых проектов (36 KB)
@@ -121,12 +121,12 @@ bridge/
 │   │   intent.ps1 / postmortem.ps1 / codemem.ps1 / toolforge.ps1 /
 │   │   settings.ps1 / replay.ps1 / worktrees.ps1 / radar.ps1 / usage.ps1 /
 │   │   llm.ps1 / notify.ps1 / canary.ps1 ...
-├── tools/  (37 скриптов) # аудит и утилиты
-│   ├── audit.ps1         # статический аудит-пайплайн (66 KB)
-│   ├── deep-audit.ps1    # многоагентный deep-audit оркестратор (52 KB)
+├── tools/  (~191 скрипт) # аудит и утилиты
+│   ├── audit.ps1         # оркестратор аудита: статика + deep-фаза, findings-ledger (96 KB)
+│   ├── deep-audit.ps1    # многоагентный deep-audit оркестратор (61 KB)
 │   ├── deep-audit-agent.ps1  # один агент-срез аудита
 │   ├── audit-signals.ps1 / audit-functional.ps1 / audit-security.ps1 ...
-├── web/index.html        # весь UI в одном файле (245 KB)
+├── web/index.html        # весь UI в одном файле (≈282 KB)
 ├── docs/                 # проектная документация (ARCHITECTURE_V2.md и пр.)
 │
 │  --- RUNTIME (всё в .gitignore, НЕ коммитить) ---
@@ -138,8 +138,8 @@ bridge/
 ├── decisions/            # журнал решений, deep-think саммари, post-mortems
 ├── memory/               # векторная память, thinking-journal
 ├── replay/ / tmp/ / reports/ / logs/ / radar/
-├── secrets.json          # API-ключи (НЕ в git, ACL-защита)
-├── auth.json             # HTTP-креды (НЕ в git)
+├── secrets.json          # API-ключи (НЕ в git, ACL-защита) — основной путь в приватном сторе ВНЕ корня моста (Get-PrivateFilePath); здесь legacy-fallback
+├── auth.json             # HTTP-креды (НЕ в git) — основной путь в приватном сторе (Get-AuthPath); здесь legacy-fallback
 └── settings.json         # пользовательские настройки runtime (НЕ в git)
 ```
 
@@ -153,14 +153,17 @@ bridge/
 - **Planner = Claude** (`config.planner = claude`). Думает, планирует, ревьюит, ведёт обсуждения.
 - **Coder = Codex** (`config.coder.agent = codex`, `sandboxMode = workspace-write`). Пишет код в песочнице.
 - **Критик** (`deepseek-v4-flash`/`-pro`) независимо проверяет правки (до `criticMaxRetries` попыток).
-- Режимы: обычный `code`, `discuss` (диалог двух моделей), `study` (глубокое изучение).
+- Режимы: обычный `code`, `discuss` (диалог двух моделей), `study` (глубокое изучение), `synthesis` (Multi-Model Decision Synthesis — см. §4.1-bis).
+
+### 4.1-bis Decision Synthesis (`synthesis` mode)
+При `synthesisMode.enabled = true` (сейчас включено) роутер глубины (`lib/decision-depth.ps1`, без LLM: Simple/Standard/Deep/High-Stakes) направляет Deep/High-Stakes-задачи и явный `discuss` в `task_mode = 'synthesis'` вместо старого диалога двух моделей. Движок — stateless artifact pipeline (`lib/decision-synthesis.ps1`, `Invoke-SynthesisPipeline`): TaskContract → 3 «слепых» предложения → ConflictMatrix → CrossReview → Judge → MicroDebate → FinalV2+RedTeam → Decision Record, с чекпойнтами в `channels/<slug>/decisions/<id>/`. High-Stakes и high-severity red-team всегда выставляют `needs_operator` (без авто-реализации).
 
 ### 4.2 Tiering моделей планировщика (экономия)
-`Get-PlannerModel` (driver.ps1) выбирает Sonnet или premium Claude (`deepModel`, сейчас `claude-fable-5`):
+`Get-PlannerModel` (driver/00-task-session.ps1) выбирает Sonnet или premium Claude (`deepModel`, сейчас `claude-opus-4-8`):
 - **Sonnet** (`triageModel`) — по умолчанию, для рутины (дёшево/быстро);
-- **Fable 5** (`deepModel`) — premium-уровень для важных архитектурных решений: архитектурные ключевые слова (`архитектур`, `рефактор`, `redesign`, `мигр`, `спроектируй`…), режим `study`, `[[DEEP-THINK]]`, явный маркер `[[FABLE]]` / `[[OPUS]]`.
+- **Opus 4.8** (`deepModel`) — premium-уровень для важных архитектурных решений: архитектурные ключевые слова (`архитектур`, `рефактор`, `redesign`, `мигр`, `спроектируй`…), режим `study`, `[[DEEP-THINK]]`, явный маркер `[[FABLE]]` / `[[OPUS]]`.
 
-> Хочешь premium Claude на конкретную задачу — добавь `[[FABLE]]`, `[[OPUS]]` или архитектурное слово.
+> Хочешь premium Claude на конкретную задачу — добавь `[[FABLE]]`, `[[OPUS]]` или архитектурное слово. Маркеры `[[FABLE]]` / `[[OPUS]]` / `[[DEEP-THINK]]` остаются валидными триггерами, но резолвятся в `claude-opus-4-8` (старый `claude-fable-5` мёртв — 404 на подписке, убран 2026-06-13).
 
 **Политика моделей (важно для затрат):**
 - ❌ **Никогда** `gemini-2.5-pro` (слишком дорого).
@@ -176,7 +179,7 @@ bridge/
 - `maxAutonomousTasksPerDay` — лимит (0 = безлимит);
 - `autonomyDisabledChannels` — каналы без автономии, если надо временно убрать конкуренцию за Codex; UI: 🤖/🚫 в меню каналов.
 
-Гейт — `Test-AutonomyReady` (driver.ps1). Бэклог: `lib/backlog.ps1`, статусы `new/approved/green/yellow/done/rejected/auto-dropped`.
+Гейт — `Test-AutonomyReady` (driver.ps1). Бэклог: `lib/backlog.ps1` (загрузчик). Статусы идеи: `new → approved → running/working → done | rejected | held | auto-dropped | failed | superseded | cancelled` (`deduped` на входе). `green/yellow/red` — risk-TIERS (`Get-IdeaRiskTier`), не статусы.
 
 ### 4.3-bis Project Autopilot (project backlog generation)
 Для каналов, привязанных к внешнему проекту, добавлен отдельный слой автопилота, чтобы проект не
@@ -186,13 +189,16 @@ bridge/
 - канал имеет project binding (`channels/<slug>/channel.json`);
 - канал не `main`;
 - project repo clean;
-- backlog pressure низкий: нет running-задачи и нет достаточного числа approved project tasks;
+- backlog pressure низкий: нет ни одной runnable (`approved`/`running`) задачи И нет открытых autopilot-атомов;
 - cooldown истёк.
 
 **Настройки по умолчанию** (`lib/settings.ps1`, могут перекрываться `settings.json`):
 - `projectAutopilotEnabled = true`;
 - `projectAutopilotCooldownMinutes = 5`;
-- `projectAutopilotMaxTasksPerBatch = 12`.
+- `projectAutopilotMaxTasksPerBatch = 12`;
+- `projectAutopilotEmptyCoordinatorLimit = 3`.
+
+**Само-пауза при пустом координаторе:** если 3 координатора подряд не вернули ни одного `[[PROJECT_BACKLOG]]`-атома, автопилот сам встаёт на паузу (`project-autopilot.last.json` `paused=true` + сообщение в чат) до повторного утверждения плана (`Set-ProjectPlanApproved` ре-армит).
 
 **Контракт planner-а:**
 Driver добавляет в prompt инструкцию PROJECT AUTOPILOT. Coordinator/planner должен вернуть строго
@@ -214,8 +220,12 @@ Planner также может/должен перед `[[PROJECT_BACKLOG]]` со
 project memory (`channels/<slug>/memory/memory.jsonl`) через существующий embedding-store.
 
 **Project plan contract gate (2026-06-02):**
-Project Autopilot is not allowed to decompose a shallow plan. Before `Set-ProjectPlanApproved`
-can approve a project channel, the project must contain:
+Project Autopilot is not allowed to decompose a shallow plan. The full seven-doc `DISCUSS_*` set +
+`planning_flow` below applies only to the `standard`/`full`/`legacy` profiles (see Bridge Spec Layer);
+for `spec_profile = lite` the required stage docs collapse to `PROJECT_BRIEF.md` +
+`.bridge/constitution.md` + `.bridge/specs/acceptance.md` + `PROJECT_MAP.md`/`PROJECT_PLAN.md`/contract, and
+`require_planning_flow = false`. Before `Set-ProjectPlanApproved`
+can approve a `standard`/`full`/`legacy` project channel, the project must contain:
 
 - `PROJECT_BRIEF.md` with the project core: purpose, users, scope, constraints, non-goals;
 - `DISCUSS_PRODUCT.md` with product decisions and user/business constraints;
@@ -257,7 +267,8 @@ and is stored on approval as `plan_spec_profile`; signatures use `bridge-spec-v1
 - `full` (`large`, `complex`, `strict`, `production` aliases): for large/high-risk projects. Requires deeper
   staged docs plus `.bridge/specs/product.md`, `.bridge/specs/ux.md`, `.bridge/specs/architecture.md`, and
   `.bridge/specs/acceptance.md`.
-- `legacy`: used only when no profile is declared, preserving existing staged-v1 projects.
+- `legacy`: used only when no profile field is present at all (absent → `legacy`, not `standard`),
+  preserving existing staged-v1 projects. An unknown non-empty value resolves to `standard`.
 
 For `full`/large work, coordinator prompts require change packages under
 `.bridge/changes/<change-id>/proposal.md`, `design.md`, `tasks.md`, and `acceptance.md` before implementation
@@ -323,12 +334,12 @@ too shallow, and it adds deterministic web checks from contract surfaces (`path`
 `must_contain`) in addition to project scripts/smokes from `.bridge/acceptance.json`.
 
 **Реализация:**
-- `lib/backlog.ps1`: `Get-ProjectAutopilotConfig`, `Get-ProjectAutopilotBinding`,
+- `lib/backlog-autopilot.ps1` (подгружается через `lib/backlog.ps1`): `Get-ProjectAutopilotConfig`, `Get-ProjectAutopilotBinding`,
   `Get-ProjectAutopilotBacklogPressure`, `Test-ProjectAutopilotProjectClean`,
   `Start-ProjectAutopilotIfNeeded`, `Get-ProjectAutopilotTaskArrayFromMarker`,
   `Add-ProjectBacklogFromMarker`.
-- `driver.ps1`: idle trigger перед claim (`Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'`);
-  парсинг `[[PROJECT_BACKLOG]]`; добавление approved project tasks; очистка маркера из видимого ответа.
+- `driver/81-loop-idle-claim.ps1`: idle trigger перед claim (`Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'`).
+- `driver/84-loop-reply-markers.ps1`: парсинг `[[PROJECT_BACKLOG]]`; добавление approved project tasks; очистка маркера из видимого ответа.
 
 **Операторский инвариант:** ручной append в `backlog.jsonl` теперь fallback. Штатно проект сам
 пополняет очередь атомами через `[[PROJECT_BACKLOG]]`, а затем обычная автономия исполняет approved tasks.
@@ -369,14 +380,14 @@ Codex работает в **изолированной песочнице** (`wo
 и `driver.ps1 -Channel <project-channel> -SelfTest`; detector quality bypass должен оставаться в SelfTest.
 
 ### 4.5 Аудит (статический + deep-audit)
-Ночью (окно `config.audit` 01:00–06:00, `floorHours=20`) или вручную:
+Ночью (окно `config.audit` 01:00–06:00; запуск раз за ОКНО — привязка к `winStart`, не sliding `floorHours`; `floorHours=20` — вторичный same-window guard) или вручную:
 1. **Статика**: `tools/audit.ps1` — security/functional грепы + DeepSeek.
 2. **findings-ledger** (`audit/findings-ledger.jsonl`) — машинный учёт находок (new→fixed→regressed, dedup).
 3. **usefulness-score** (`audit/usefulness.jsonl`) — насколько полезен аудит (action_rate + resolved_signal_delta + incident_capture).
 4. **deep-audit** (`tools/deep-audit.ps1`): многоагентный — N срезов параллельно (security/functional/reliability/architecture/dependency-model), каждый со своей моделью из `config.audit.deepAgents`, результаты сливаются.
 
 Backlog intake gate: audit/deep-audit findings больше не пишутся напрямую в `approved`.
-Даже при `Add-Idea -SkipCurator` проходит deterministic gate в `lib/backlog.ps1`:
+Даже при `Add-Idea -SkipCurator` проходит deterministic gate (`Invoke-BacklogIntakeGate` в `lib/backlog.ps1` / `lib/backlog-workpack.ps1`):
 root-cause дубли логируются как `intake-dedup`, очевидные false-positive security уходят в
 `auto-dropped`, findings без читаемого code evidence уходят в `held`, а валидные findings получают
 `intake_gate` metadata. `SkipCurator` означает только "не запускать дешёвый LLM-curator"; он не
@@ -460,7 +471,7 @@ Codex). Для снижения конкуренции временно выкл
 `autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
 ### 6.6 Размер крупных файлов
-`driver.ps1` больше не является одиночным 366 KB монолитом: entrypoint около 150 строк, функции/startup/runtime loop вынесены в `driver/*.ps1`, а main loop дополнительно разложен на фазовые scriptblock-модули. Крупными остаются `web/index.html` 245 KB, `lib/backlog.ps1`, `common.ps1` 97 KB, `server.ps1` и отдельные driver-модули до ~1k строк. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
+`driver.ps1` больше не является одиночным 366 KB монолитом: entrypoint около 150 строк, функции/startup/runtime loop вынесены в `driver/*.ps1`, а main loop дополнительно разложен на фазовые scriptblock-модули. Крупными остаются `web/index.html` ≈282 KB, `lib/backlog-core.ps1` ≈143 KB, `common.ps1` 97 KB, `server.ps1` ≈98 KB и отдельные driver-модули до ~1k строк. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
 
 ---
 
@@ -505,12 +516,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 ## 8. Конфигурация
 
 ### 8.1 config.json (в git — общий дефолт)
-Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
+Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `autonomy.*`, `audit.{windowStartHour,floorHours,deepAgents}`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`, `synthesisMode.{enabled,defaultDepth,proposerModels.C,judgeByTaskType,cheapModel,rubricWeights,maxDebate*}` (живой execution-путь Decision Synthesis).
 
 ### 8.2 settings.json (runtime, НЕ в git)
-Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated).
+Накладывается поверх `config.autonomy`. Переживает git-rollback (поэтому отдельно). Ключевое: `selfExecuteTier`, `idleQuietMinutes`, `maxAutonomousTasksPerDay`, `autonomyDisabledChannels`, advanced-настройки (`Set-AdvancedSetting`, whitelisted + range-validated: `workpackExec.*`, `channelMaintenance.*`, `memory.verifyOnRecall`, `backlogPack.*`; `coder.sandboxModeByChannel` правится прямым редактированием — вне allowlist).
 
-Эффективные настройки: дефолты в `lib/settings.ps1` ← `config.json` ← `settings.json`.
+Эффективные настройки: дефолты в `lib/settings.ps1` ← `config.json` ← `settings.json` (последний имеет высший приоритет). Дневной лимит автономии резолвится `Get-AutonomySettings`, где `settings.json` применяется ПОСЛЕДНИМ: `config.json autonomy.maxAutonomousTasksPerDay=150` переопределяется flat-ключом `settings.json = 0` (безлимит) — не считай 150 авторитетным.
 
 ---
 

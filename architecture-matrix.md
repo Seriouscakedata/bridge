@@ -1,6 +1,6 @@
 # Capability matrix моста — что реально работает
 
-_Обновлено: 2026-05-26. Поддерживается Архитектором (`lib/architect.ps1`) +
+_Обновлено: 2026-06-23. Поддерживается Архитектором (`lib/architect.ps1`) +
 ручная правка при необходимости. Сравнивается с `ARCHITECTURE_V2.md` (план)._
 
 **Статусы:** ✅ работает · 🔄 в разработке · ⚠ частично · ❌ отсутствует · 🚫 отложено
@@ -8,11 +8,11 @@ _Обновлено: 2026-05-26. Поддерживается Архитекто
 ## Ядро движка
 | Capability | Status | Module | Notes |
 |---|---|---|---|
-| планировщик-кодер пайплайн | ✅ | driver.ps1 | Claude (Sonnet/Fable) ↔ Codex |
-| модель-роутер по сложности | ✅ | lib/router.ps1 | Sonnet для триажа, Fable для архитектурного |
+| планировщик-кодер пайплайн | ✅ | driver/00-task-session.ps1 | Claude (Sonnet/Opus 4.8) ↔ Codex |
+| модель-роутер по сложности | ✅ | lib/router.ps1 | Sonnet для триажа, Opus 4.8 для архитектурного (`Get-PlannerModel` в driver/00-task-session.ps1; router добавляет эскалацию) |
 | usage tracking (расход) | ✅ | lib/usage.ps1, usage.jsonl | per-model, burn-rate UI |
 | Codex `xhigh` reasoning | ✅ | driver.ps1 | `model_reasoning_effort="xhigh"` |
-| Premium Claude ultrathink | ✅ | driver.ps1 | Fable/Opus/Mythos через 'ultrathink' + xhigh |
+| Premium Claude ultrathink | ✅ | driver/00-task-session.ps1 | Opus 4.8 (deepModel=claude-opus-4-8; маркеры [[FABLE]]/[[OPUS]]/[[DEEP-THINK]] резолвятся в opus-4-8, claude-fable-5 мёртв/404) через 'ultrathink' + xhigh |
 
 ## Надёжность + откат
 | Capability | Status | Module | Notes |
@@ -43,7 +43,7 @@ _Обновлено: 2026-05-26. Поддерживается Архитекто
 | Codex (кодер) | ✅ | driver.ps1 | через xhigh, RUNJOB, FILE, VERIFIED |
 | независимый критик | ✅ | driver.ps1 | DeepSeek-Pro ревью diff |
 | coder-bypass гейт | ✅ | driver.ps1 | file-edits только через Codex |
-| discuss-mode | ✅ | driver.ps1 | DISCUSS-ONLY маркер при закрытии без кода |
+| discuss-mode | ✅ | driver.ps1 | DISCUSS-ONLY маркер при закрытии без кода; для Deep/High-Stakes вытеснен task_mode='synthesis' (Decision Synthesis, lib/decision-synthesis.ps1) |
 | study-mode (с bug-markers) | ✅ | lib/study.ps1 | не триггерится на жалобы |
 | план-доска (EPIC/TASK/STEP) | ✅ | lib/plan.ps1 | `/api/plan`, парсинг `[[PLAN]]` |
 | параллельные воркеры (worktree) | ✅ | lib/parallel.ps1 | `[[PARALLEL]]` маркер |

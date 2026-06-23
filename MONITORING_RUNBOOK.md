@@ -81,7 +81,7 @@ $recent = @($all | ForEach-Object { try { $o=$_|ConvertFrom-Json; if (([datetime
 Write-Output ("  restarts(30min): " + $recent.Count + "/5  " + $(if($recent.Count -ge 5){'⚠ STORM/cooldown риск'}elseif($recent.Count -ge 3){'(повышено)'}else{'OK'}))
 
 # 4. Каналы: статус + свежесть драйвера
-foreach ($ch in @('main','travel')) {
+foreach ($ch in @('main','oko')) {
   $sf = Join-Path $src ("channels\" + $ch + "\state.json")
   if (Test-Path $sf) {
     $age = [int]((Get-Date) - (Get-Item $sf).LastWriteTime).TotalSeconds
@@ -159,7 +159,7 @@ if($bad){ "BROKEN: " + ($bad -join ', ') } else { "all core .ps1 parse OK" }
 ```powershell
 $src='C:\Users\rafie\OneDrive\Documents\bridge'
 $s=[IO.File]::ReadAllText("$src\channels\main\state.json")|ConvertFrom-Json
-"status=$($s.status) claimed_at=$($s.claimed_at) task=$([string]$s.task) active_jobs=$(@($s.active_jobs).Count)"
+"status=$($s.status) claimed_at=$($s.claimed_at) task=$([string]$s.current_task) active_jobs=$(@($s.active_jobs).Count)"
 ```
 Если `claimed_at` давний, `status=working`, но прогресса нет — задача застряла. Сбрось состояние (§5, шаг reset state).
 
@@ -174,7 +174,7 @@ if(Test-Path $lock){ $c=(Get-Content $lock -Raw).Trim(); $lpid=($c -split '\|')[
 ```
 - Lock с **живым** PID < 920с → реально работает другой канал. Норма (сериализация).
 - Lock с **мёртвым** PID → stale, мост сам заберёт; если нет — удали `runtime\codex.lock`.
-- Часто появляется → оба канала автономны. Выключи автономию travel: в UI 🚫 у канала, или в `settings.json` добавь `"autonomyDisabledChannels": ["travel"]`.
+- Часто появляется → оба канала автономны. Выключи автономию лишнего канала: в UI 🚫 у канала, или в `settings.json` добавь `"autonomyDisabledChannels": ["<slug>"]` (например `["oko"]`).
 
 ### 4.7 Zombie-процессы / лишние supervisor
 Два supervisor = конфликт. Проверь дерево:
@@ -207,7 +207,7 @@ $ext="$env:USERPROFILE\.bridge-runtime\cb-cooldown-extensions"; if(Test-Path $ex
 
 # 4. (если state повреждён) сбрось застрявшее состояние каналов
 $u8=New-Object System.Text.UTF8Encoding($false)
-foreach($ch in @('main','travel')){ $sf=Join-Path $src "channels\$ch\state.json"; if(Test-Path $sf){ try{ $s=[IO.File]::ReadAllText($sf)|ConvertFrom-Json; $s.status='idle'; foreach($k in @('claimed_at','task','abort','phase')){ if($s.PSObject.Properties.Name -contains $k){ $s.$k=$null } }; [IO.File]::WriteAllText($sf,($s|ConvertTo-Json -Depth 10),$u8); "reset $ch" }catch{} } }
+foreach($ch in @('main','oko')){ $sf=Join-Path $src "channels\$ch\state.json"; if(Test-Path $sf){ try{ $s=[IO.File]::ReadAllText($sf)|ConvertFrom-Json; $s.status='idle'; foreach($k in @('claimed_at','current_task','current_task_id','task_turn','task_mode','abort','current_backlog_id')){ if($s.PSObject.Properties.Name -contains $k){ $s.$k=$null } }; [IO.File]::WriteAllText($sf,($s|ConvertTo-Json -Depth 10),$u8); "reset $ch" }catch{} } }
 
 # 5. подними мост через autostart-задачу (НЕ через скрытый powershell — Defender!)
 schtasks /end /tn "ClaudeCodexBridge" 2>$null

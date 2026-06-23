@@ -2,7 +2,7 @@
 
 Decided: 2026-05-24 via bridge/discussion.md (both AGREED: yes).
 
-## Planner: Claude (Opus 4.7, Claude Code)
+## Planner: Claude (Opus 4.8, Claude Code)
 - Breaks the project into non-overlapping tasks (disjoint file `scope`).
 - Defines shared contracts/interfaces before coding starts.
 - Reviews Codex's output and integrates/merges it.

@@ -2,7 +2,7 @@
 
 > **[PROTECTED SERVICE] ЛАПА (computer-control)** — GUI-руки оператора для задач на ПК. Вызов: `[[ЛАПА: skill | key=val]]`. Навыки: `open-app`, `type`, `telegram-send`, `telegram-send-sticker`. Точка входа: `tools/computer-use.ps1` → `channels/computer-control/cc.py`. Архитектура: Planner(Flash Lite)→Executor(UIAutomation→Vision)→Reporter(Telegram). Гейты: verifier ≥0.40 (confidence), act (опасные шаги). Быстро+дёшево. Используй для GUI/ПК задач, НЕ для файлов/git.
 
-_Обновлено: 2026-06-02. Опорный коммит актуализации: `4633fa8 fix(driver): audit project diffs and block quality bypasses`._
+_Обновлено: 2026-06-23 (инвентарь модулей/аудита/backlog/сервера сверен с кодом). Предыдущая актуализация: 2026-06-02, опорный коммит `4633fa8 fix(driver): audit project diffs and block quality bypasses`._
 
 Это каноническая карта проекта для канала `main`. Её читают человек, агенты и `Project Context Pack`. Сгенерированные карты в `memory/` полезны, но библиотекарь может их перезаписать, поэтому устойчивый источник правды для структуры проекта - этот файл.
 
@@ -73,7 +73,7 @@ Task Scheduler: ClaudeCodexBridge
 - `driver.ps1`: главный цикл, сбор промпта, planner/coder loop, автономия, коммиты, memory hooks.
 - `server.ps1`: HTTP API, авторизация, UI backend, endpoints каналов, настроек, памяти, backlog.
 - `supervisor.ps1`: запуск и надзор за server/drivers, recycle, circuit-breaker.
-- `watchdog.ps1`: независимая защитная петля, health, rollback, stable promotion.
+- `watchdog.ps1`: независимая защитная петля, health, System Sentinel. На stale-heartbeat restart-FIRST; rollback только после неудачного рестарта, smoke-gated и через prerollback-ветку; rollback HELD при сработавшем circuit-breaker или параллельном merge.
 - `lib/`: основная библиотека PowerShell-модулей.
 - `tools/`: тесты, аудит, диагностика, индексация, сценарии.
 - `web/`: браузерный UI (`index.html`, `memory.html`).
@@ -114,10 +114,10 @@ Runtime и сгенерированные данные, обычно не ком
 
 ### Автономия и backlog
 
-- `lib/backlog.ps1`: очередь идей, deterministic intake gate для audit/deep-audit findings, root-cause dedup, risk tier, stale sweep, LLM-prioritizer, self-exec, safety reflex, Project Autopilot.
+- `lib/backlog.ps1`: compatibility-загрузчик, dot-source'ит split-модули. Реальный код: `backlog-crud` (Add/Set/Get-Idea), `backlog-core` (claim-gate, risk-tier, LLM-prioritizer, self-exec, safety reflex), `backlog-workpack` (deterministic intake gate, packer, ready-frontier), `backlog-governor` (queue-governor), `backlog-dedup` (embedding root-cause dedup), `backlog-autopilot` (Project Autopilot), `backlog-state-reaper` (stale sweep).
 - `docs/self-development.md`: политика `selfExecuteTier`.
 - `config.json -> autonomy`: idle timing, дневной лимит автономных задач, reflect cadence, stable promotion.
-- `settings.json -> selfExecuteTier`: runtime-диск. На момент карты наблюдалось значение `yellow`.
+- `settings.json -> selfExecuteTier`: runtime-диск. На момент карты наблюдалось значение `shadow` (логирует выбранный tier/риск, но ничего не исполняет).
 
 Risk tier:
 
@@ -177,7 +177,7 @@ Readiness проекта считается по мягкому гейту:
 - `lib/auditor.ps1`: периодический аудитор задач и здоровья, triggers, verdict memory, suppression/escalation.
 - `tools/audit.ps1`: статический audit pipeline; critical findings подаются в backlog через `Add-Idea`, а не прямым append.
 - `tools/deep-audit.ps1`, `tools/deep-audit-agent.ps1`: multi-agent audit по доменам.
-- `lib/findings-ledger.ps1`: lifecycle находок, dedup, visible findings.
+- `tools/audit.ps1` (`Read-/Update-FindingsLedger`): lifecycle находок (new→fixed→regressed), dedup; артефакт `audit/findings-ledger.jsonl`. Отдельного `lib/findings-ledger.ps1` нет.
 - `lib/metrics.ps1`: turns/latency/doctor metrics, hypotheses, verdict actuation, failures.
 - `lib/postmortem.ps1`: разбор провалов задач/коммитов.
 - `reflect.ps1`: entrypoint рефлексии.
@@ -215,6 +215,10 @@ Readiness проекта считается по мягкому гейту:
 - `GET /api/messages`
 - `POST /api/say`
 - `POST /api/control`
+- `POST /api/stop` (stop-рычаг Live Task Card из TG-бота)
+- `POST /api/archive` (архивация чата канала)
+- `GET /api/state`
+- `GET /api/live-stream` (SSE)
 - `GET/POST /api/memory/*`
 - `GET/POST /api/backlog/*`
 - `GET /api/plan`
@@ -234,7 +238,7 @@ UI:
 - `web/index.html`: основной dashboard и chat UI.
 - `web/memory.html`: просмотр и редактирование памяти.
 
-Без токена `/api/status` может возвращать `401`. Это значит "сервер жив и требует auth", а не "сервер сломан".
+Без креденшелов `/api/status` может возвращать `401`. Это значит "сервер жив и требует auth", а не "сервер сломан". Auth принимает Bearer-токен (`Authorization` / `?token=`) ИЛИ HTTP-Basic (user/password).
 
 ## 7. Жизненный цикл задачи
 
@@ -363,7 +367,7 @@ Health check из runbook:
 - Vector memory может вернуть устаревший факт, если не проверять evidence freshness.
 - Один `codex.lock` сериализует Codex между каналами.
 - Project root внешнего проекта должен быть изолирован от bridge root.
-- `selfExecuteTier=yellow` разрешает реальные изменения кода; red-tier защита должна оставаться консервативной.
+- `selfExecuteTier=yellow` разрешал бы реальные изменения кода (сейчас живое значение `shadow` — только логирует, ничего не исполняет); red-tier защита должна оставаться консервативной.
 - Платные LLM/API вызовы должны быть бюджетно ограничены.
 - Watchdog/supervisor имеют высокий blast radius.
 
