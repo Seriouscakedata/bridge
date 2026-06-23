@@ -29,6 +29,16 @@
   $effPrompt = if ($heavyClaudeModel) { $Prompt + "`n`nultrathink" } else { $Prompt }
   [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   $plannerCwd = Get-ActiveProjectRoot
+  $plannerExtraDirs = @()
+  try {
+    $pcfg = Get-BridgeConfig
+    if ($pcfg -and $pcfg.PSObject.Properties.Name -contains 'planner' -and $pcfg.planner -and
+        $pcfg.planner.PSObject.Properties.Name -contains 'extraDirs' -and $pcfg.planner.extraDirs) {
+      foreach ($d in @($pcfg.planner.extraDirs)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$d)) { $plannerExtraDirs += [string]$d }
+      }
+    }
+  } catch {}
   if ([string]::IsNullOrWhiteSpace($plannerCwd)) { $plannerCwd = $bridgeRoot }
   $allowedTools = if ($Mode -eq 'advisory') { @('Read','Grep','Glob') }
                   elseif ($Mode -eq 'coder-fallback') { @('Read','Grep','Glob','Bash','Edit','MultiEdit','Write') }
@@ -41,7 +51,9 @@
   # sonnet zero-byte fallbacks were false kills). stream-json emits the init event in <1s and
   # ticks thinking_tokens/tool events throughout — byte growth now means real liveness.
   # Measured locally (CLI 2.1.170): first bytes at 839ms, thinking streams, result line last.
-  $claudeArgs = @('-p','--output-format','stream-json','--verbose','--permission-mode','acceptEdits','--add-dir',$plannerCwd,'--allowedTools') + $allowedTools
+  $claudeArgs = @('-p','--output-format','stream-json','--verbose','--permission-mode','acceptEdits','--add-dir',$plannerCwd)
+  foreach ($ed in $plannerExtraDirs) { $claudeArgs += @('--add-dir', $ed) }
+  $claudeArgs += @('--allowedTools') + $allowedTools
   if ($Model) {
     $claudeArgs += @('--model', $Model)
     # 2026-06-09: xhigh on premium architecture models. Fable 5 was verified locally to accept this
