@@ -3,6 +3,10 @@ state.json
 state.json.bak
 state.json.sha256
 state.json.bak.sha256
+# Runtime state backups — never track
+channels/*/state.json.bak*
+channels/*/state.json.away
+channels/*/state.json.tmp*
 features/state.json
 radar/scholar-seen.jsonl
 radar/scholar-knowledge.jsonl
