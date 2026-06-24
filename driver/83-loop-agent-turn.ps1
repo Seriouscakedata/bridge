@@ -381,6 +381,38 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
         $retryBacklogId = ''
         try { $retryBacklogId = [string]$stAction.current_backlog_id } catch {}
         $replyHasSafetyGateMarker = ($speaker -eq 'codex' -and $replySafetyGateMatch.Success)
+        # 2026-06-24 wedge-fix #1 (defense-in-depth backstop to the claim-gate path-block): coder-scope
+        # HARD-FAIL. When the coder produced NO evidence specifically because it could not write the atom's
+        # target repo (target files outside this channel's sandbox), retrying is futile — the scope mismatch
+        # is structural, not transient. Route the atom to HELD (attempts++) with an operator-visible reason
+        # instead of force_planner -> infinite re-claim (the 3h wedge of 2026-06-24). Narrow refusal
+        # signature; planner/discuss turns never reach this block (gated codex + normal at line 370).
+        $scopeRefusalSignature = '(?i)(writing outside of the project|outside of the project|active scope allows only|apply_patch (?:was )?rejected|Unable to create [^\r\n]*index\.lock[^\r\n]*Permission denied|index\.lock[^\r\n]*Permission denied)'
+        if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $replyHasSafetyGateMarker -and ([string]$reply -match $scopeRefusalSignature)) {
+          $scopeRepoLabel = if ([string]::IsNullOrWhiteSpace([string]$actionEvidenceContext.repo_root)) { '<unknown>' } else { [string]$actionEvidenceContext.repo_root }
+          $scopeReason = "coder-scope-mismatch: atom target lies outside this channel's sandbox (repo=$scopeRepoLabel). Coder could not write/commit (scope/permission refusal). Re-file on the owning project channel or set scope to that project; will not auto-retry."
+          try { Set-TaskLastFailure -Kind coder_scope_mismatch -Text $scopeReason } catch {}
+          try { Set-Idea -Id $retryBacklogId -Status 'held' -IncrementAttempts $true -Reason ('operator: ' + $scopeReason) | Out-Null } catch {}
+          Add-Message -From system -Text ("🛑 Coder-scope-mismatch: атом " + $retryBacklogId + " не может писать target-репозиторий из песочницы этого канала (repo=" + $scopeRepoLabel + "). Перевожу в HELD (attempts++), НЕ повторяю — переадресуй на канал владельца проекта.") -Kind event | Out-Null
+          Update-State {
+            param($s)
+            try { Complete-TaskAgentDuration $s } catch {}
+            try { Close-ReplayForStateTask -State $s -Status 'aborted' } catch {}
+            $s | Add-Member -NotePropertyName codex_evidence_retry_count -NotePropertyValue 0 -Force
+            $s.task_did_actions = $false
+            $s | Add-Member -NotePropertyName force_coder -NotePropertyValue $false -Force
+            $s.force_planner = $false
+            $s.current_task = $null
+            $s | Add-Member -NotePropertyName current_task_id -NotePropertyValue $null -Force
+            $s | Add-Member -NotePropertyName current_backlog_id -NotePropertyValue '' -Force
+            $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @() -Force
+            $s | Add-Member -NotePropertyName workpack_batch_active -NotePropertyValue $false -Force
+            $s | Add-Member -NotePropertyName workpack_batch_dispatched -NotePropertyValue $false -Force
+            $s.active_jobs=@(); $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null; $s.status='idle'; $s.heartbeat=(Get-Date).ToString('o')
+          } | Out-Null
+          # Safe: driver/90-main-loop.ps1 dot-sources this block under :mainDriverLoop.
+          continue mainDriverLoop
+        }
         if (-not [string]::IsNullOrWhiteSpace($retryBacklogId) -and -not $replyHasSafetyGateMarker) {
           $curEvidenceRetries = 0
           try {

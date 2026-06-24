@@ -1539,6 +1539,29 @@ function Test-BacklogApprovedItemClaimable {
     return [pscustomobject]@{ claimable=$false; reason='project-scope-blocked'; admission=$null }
   }
 
+  # FAIL-SAFE (2026-06-24 wedge-fix KEYSTONE): never claim an approved atom on the MAIN channel when its
+  # declared target files live in an EXTERNAL project repo. main's coder sandbox can only write the bridge
+  # repo; dispatching such an atom causes an unbreakable wedge (coder refuses 'writing outside of the
+  # project' -> 0 commits -> no terminal status -> sticky re-claim, both slots pinned ~3h on 2026-06-24).
+  # Signal = a files/touch_set path containing the literal 'bridge-projects/' segment (unambiguous external-
+  # project marker; NO bridge-repo path contains it). Runs BEFORE the tag block so a bridge-self/operator
+  # tag cannot bypass it. main-channel only (writable root = bridge repo); project channels are exempt.
+  # Reads ONLY structured files/touch_set arrays (never free text) to avoid the historical gate-cascade class.
+  $isMainChannel = $true
+  try { $isMainChannel = ([string](Get-EffectiveChannel) -eq 'main') } catch { $isMainChannel = $true }
+  if ($isMainChannel) {
+    $atomPaths = @()
+    foreach ($name in @('files','workpack_touch_set','touch_set')) {
+      try { $atomPaths += @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Item -Name $name -Default @())) } catch {}
+    }
+    foreach ($p in @($atomPaths)) {
+      if ([string]::IsNullOrWhiteSpace($p)) { continue }
+      if (($p -replace '\\','/') -match '(^|/)bridge-projects/') {
+        return [pscustomobject]@{ claimable=$false; reason='out-of-scope-repo'; admission=$null }
+      }
+    }
+  }
+
   $tags = @()
   try { $tags = @(ConvertTo-BacklogClaimStringArray (Get-BacklogPackObjectValue -Obj $Item -Name 'tags' -Default @()) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) } catch { $tags = @() }
   $isOperator = (@($tags) -contains 'operator')

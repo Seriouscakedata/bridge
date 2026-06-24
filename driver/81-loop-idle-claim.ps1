@@ -1315,7 +1315,10 @@ $script:DriverLoopIdleClaimBlock = {
             # Bridge-only: filter out the perennial autosaved files that aren't real edits
             $dirty = @($dirty | Where-Object {
               $line = ([string]$_).Substring(3).Trim()
-              $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
+              # 2026-06-24 wedge-fix #2: also ignore the conversation write-sidecar (lib/common.ps1 writes
+              # conversation.jsonl.unflushed when the OneDrive-locked append fails — it sits across ticks) and
+              # stray pytest temp dirs, so they don't count as "dirty" and falsely dirty-defer/strike a real task.
+              $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|channels/[^/]+/conversation\.jsonl\.unflushed|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*|\.tmp_[^/]*pytest[^/]*/.*)$'
             })
             $metricCleanup = Invoke-DriverRuntimeMetricDirtyCleanup -RepoRoot $guardRoot -DirtyLines $dirty
             if ([bool]$metricCleanup.attempted) {
@@ -1329,7 +1332,7 @@ $script:DriverLoopIdleClaimBlock = {
               $dirty = @(& git -C $guardRoot status --porcelain 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
               $dirty = @($dirty | Where-Object {
                 $line = ([string]$_).Substring(3).Trim()
-                $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*)$'
+                $line -notmatch '^(decisions/session-ledger\.jsonl|turns\.jsonl|channels/[^/]+/state\.json|channels/[^/]+/conversation\.jsonl|channels/[^/]+/conversation\.jsonl\.unflushed|features/state\.json|control/.*\.log|audit/.*\.md|audit/.*\.json|logs/.*|\.tmp_[^/]*pytest[^/]*/.*)$'
               })
             }
           }
