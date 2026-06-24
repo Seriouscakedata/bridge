@@ -31,10 +31,11 @@
   with status 'error' and a human-readable .error field. A caller can branch on
   $r.ok / $r.status without a try/catch.
 
-  SAFETY: лапа enforces the chat-identity gate and the declared-risk ladder on its
-  side. A real send to a human is a MEDIUM-risk action -- лапа refuses it
-  fail-closed unless its own safety policy authorises it. This wrapper does not
-  weaken any лапа gate; it only marshals arguments and parses the report.
+  SAFETY: лапа enforces its gates on its side. `operator-task` adds an outer
+  planner/risk perimeter and refuses medium/high actions unless the CLI invocation
+  explicitly wires confirmation. This wrapper does not pass that confirmation flag,
+  so autonomous bridge calls cannot silently approve purchases, bookings, sends,
+  deletes, payment, passwords, or 2FA.
 #>
 
 # NOTE: do NOT `Set-StrictMode` at module scope here. This file is dot-sourced INTO
@@ -336,7 +337,8 @@ function Invoke-LapaSkill {
         non-zero exit / non-JSON output all return a status='error' object.
 
       .PARAMETER Skill
-        The skill name: 'telegram-send', 'telegram-send-sticker', 'open-app', or 'type'.
+        The skill name: 'telegram-send', 'telegram-send-sticker', 'open-app', 'type',
+        or 'operator-task'.
 
       .PARAMETER Params
         A hashtable of skill params. Keys map to CLI flags per the skill:
@@ -344,6 +346,8 @@ function Invoke-LapaSkill {
           telegram-send-sticker: contact, description, [title_contains], [min_confidence], [timeout], [stop_flag], [proof]
           open-app:              name, [timeout], [stop_flag], [proof]
           type:                  app, field, text, [timeout], [stop_flag], [proof]
+          operator-task:          goal, [success], [allowed_apps], [allowed_skills],
+                                  [forbidden_actions], [max_steps], [stop_flag], [proof]
 
         NOTE: telegram-send-sticker is CANVAS MODE (vision + coordinate click). The
         sticker send is MEDIUM-risk; the CLI has no confirm hook, so an unattended
