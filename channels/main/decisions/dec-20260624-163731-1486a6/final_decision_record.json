@@ -1,0 +1,319 @@
+{
+    "final_answer":  "Approved: replace the broken single-pass deep-audit (deep:deep_failed) with a milestone-triggered, multi-agent ADVERSARIAL audit built on the bridge\u0027s own orchestration (driver agent-invoke + lib/parallel.ps1), following the operator-proven three-phase pattern — FIND (N parallel dimension-specialist finders, structured JSON output) → VERIFY (false-by-default skeptics that must cite file:line to refute; majority-refute discards) → SYNTHESIZE (dedup, severity-rank, idempotent auto-task creation in the backlog). The cheap nightly static-grep audit stays as the daily guard; the new adversarial audit is a separate, rare, on-demand/milestone-only mode. Agents are Claude CLI + Codex CLI ONLY (no raw API, no Gemini), mixing models and reasoning tiers for perspective diversity, using thin prompts + fat tools (codex -s read-only, claude -p --allowedTools Read,Grep,Glob --add-dir) so the CLI reads real code rather than receiving stdin-stuffed snippets. The single resource-allocation conflict (CONCURRENCY_FLOOR_20PLUS vs COST_CONTROL_BUDGET_DEPTH) is resolved per the user\u0027s hard requirement: the \u003e=20 concurrent floor is honored as the default for milestone deep runs whenever \u003e=20 units of work exist, and is NOT lowered to satisfy rate limits (429s are absorbed by refill-queue + cross-provider rebalancing + backoff). The budget profile does not throttle instantaneous width below 20 — it bounds the RUN\u0027s total size (total-agent cap, token ceiling, configurable depth = #dimensions / verifiers-per-finding / rounds) and the early-exit when FIND yields zero findings. Thus budget bounds how much total work and spend a run may incur; the floor governs how wide the live fan-out runs while work remains. Real parallelism is proven by live PID sampling recording peak_concurrency and a timeline in the report (assert peak\u003e=20 when work is sufficient). Per-agent fault isolation ensures one timeout/crash/empty-reply never aborts a phase. Nothing gets built until the PROJECT_MAP+PLAN is written, architect-reviewed, and user-approved.",
+    "decisions":  [
+                      {
+                          "decision":  "ARCH_3PHASE_REPLACE_DEEPLLM — Adopt FIND → VERIFY → SYNTHESIZE adversarial architecture and retire the broken deep:deep_failed deep-LLM path.",
+                          "rationale":  "Multi-proposal (A,C), judge total 0.83. The current deep-LLM pass is demonstrably broken (deep:deep_failed) and does a single un-verified pass; the proven operator pattern found 17 verified bugs. Swapping a known-broken component for a proven structure is the highest-impact, foundational bet and de-risks the entire system.",
+                          "alternatives_considered":  [
+                                                          "Patch/repair the existing deep:deep_failed subprocess/job layer in place",
+                                                          "Keep single-pass finder dump and bolt on light scoring without an adversarial verify stage"
+                                                      ],
+                          "risk":  "Low reversibility and high build cost; touches the core audit path. Mitigated by keeping the nightly static guard untouched and gating all build on the approved plan.",
+                          "test":  "Confirm deep:deep_failed code path is removed/disabled and a run exhibits three distinct execution phases (FIND, VERIFY, SYNTHESIZE) with phase boundaries observable in logs/artifacts."
+                      },
+                      {
+                          "decision":  "AUDIT_MODES_SEPARATION — Two modes: existing cheap nightly static guard (unchanged) and a new milestone/on-demand adversarial deep audit, never triggered by the nightly cron.",
+                          "rationale":  "Unanimous (A,B,C), judge 0.825. Correct operational split: keeps a cheap daily watchdog while ensuring the expensive 20+-agent run only fires on milestones (pre-training, post-major-pipeline-change, operator on-demand). Prevents the cron from accidentally launching costly deep runs.",
+                          "alternatives_considered":  [
+                                                          "Run the adversarial deep audit nightly",
+                                                          "Replace the nightly static audit entirely with the deep audit"
+                                                      ],
+                          "risk":  "Trigger wiring could accidentally bind deep mode to cron. Mitigated by an explicit trigger contract and a test asserting the nightly job invokes only the static path.",
+                          "test":  "Verify the nightly static audit runs independently and the deep adversarial audit is reachable only via operator command or named milestone hooks — never by the nightly schedule."
+                      },
+                      {
+                          "decision":  "CONCURRENCY_FLOOR_20PLUS (MODIFIED — conflict resolution) — Maintain a hard floor of \u003e=20 concurrent active agents during FIND and VERIFY whenever \u003e=20 units of work exist, via a refill-queue worker pool that replaces the static maxParallelAgents cap. The floor is NOT lowered to satisfy rate limits; it relaxes only when fewer than 20 jobs remain outstanding. The budget profile bounds the RUN\u0027s total size (total-agent cap, token ceiling, depth), not its instantaneous width.",
+                          "rationale":  "Unanimous mechanism (A,B,C); judge verdict \u0027modify\u0027 (0.68) flagged tension with budget/429 reality. The user\u0027s contract (msg 53853633) makes 20-concurrent a HARD, non-negotiable floor that overrides min(cores-2,N) and explicitly forbids dropping below 20 — cost is acceptable because runs are rare. Resolution reconciles judge + user: width is governed by the floor while work remains; total spend is governed by budget. Budget exhaustion stops launching NEW agents (run winds down) rather than throttling live concurrency below 20. This satisfies COST_CONTROL_BUDGET_DEPTH (bounds totals) without violating the user\u0027s floor (bounds width).",
+                          "alternatives_considered":  [
+                                                          "Unconditional floor of 20 with no budget bound at all (rejected: runaway cost, no governor)",
+                                                          "Let budget/rate-limits dynamically lower the live floor below 20 (rejected: violates explicit user hard requirement)",
+                                                          "Static min(cores-2,N) cap (rejected: user override)"
+                                                      ],
+                          "risk":  "Subscription concurrency on Claude CLI may not sustain ~10 simultaneous claude processes; 20 parallel LLM CLIs may hit OOM/rate limits. Mitigated by Claude/Codex 50/50 balancing, refill-queue, 429 backoff/rebalance, and an empirical pre-flight concurrency probe.",
+                          "test":  "Stress run with \u003e20 jobs: live PID sampling shows 20+ active agent processes simultaneously (not merely queued), and the run still terminates within the configured total-agent/token budget."
+                      },
+                      {
+                          "decision":  "PROVE_REAL_PARALLELISM — Sample live audit-agent PIDs, record peak_concurrency and a concurrency timeline in the audit report, asserting peak\u003e=20 when sufficient work exists.",
+                          "rationale":  "A,B; judge 0.79, highest specificity. Silent sequential execution is a known failure mode here; PID-level telemetry is the only credible proof the fan-out is genuinely concurrent rather than serialized. Strong regression protection.",
+                          "alternatives_considered":  [
+                                                          "Trust dispatch logs / start-timestamps as proof of concurrency",
+                                                          "No explicit parallelism telemetry"
+                                                      ],
+                          "risk":  "PID sampling cadence could miss short-lived peaks. Mitigated by sampling at sub-second/second granularity and reporting max observed plus timeline.",
+                          "test":  "An audit report from a sufficiently-loaded test run contains a concurrency timeline and a peak_concurrency \u003e= 20 metric."
+                      },
+                      {
+                          "decision":  "LLM_CLI_ONLY — All audit agents invoke ONLY Claude CLI and Codex CLI; no raw API, no Gemini. Mix models and reasoning/effort tiers for finder/verifier diversity.",
+                          "rationale":  "A,C; judge 0.80; user constraint (msg 53853634) overrides earlier gemini note. Reuses the bridge\u0027s existing driver agent-invoke infra, avoids raw-API key management, and the two-provider split enables rate-limit failover. Diversity of models/effort improves perspective coverage.",
+                          "alternatives_considered":  [
+                                                          "Include Gemini-2.5-pro or other providers",
+                                                          "Raw Anthropic/OpenAI API calls bypassing the CLIs"
+                                                      ],
+                          "risk":  "Single-provider concurrency/usage limits if balance skews. Mitigated by RATE_LIMIT_HANDLING and provider balancing.",
+                          "test":  "Audit invocation trace shows exclusively claude-code CLI and codex CLI process spawns; no raw-API or Gemini calls present."
+                      },
+                      {
+                          "decision":  "RATE_LIMIT_HANDLING — Provider-aware 429/usage-limit handling: detect from CLI output, exponential backoff + retry, ~50/50 Claude/Codex balancing, and re-distribute queued jobs to the less-throttled provider to keep the concurrency floor.",
+                          "rationale":  "Unanimous (A,B,C), judge 0.78. With 20+ concurrent CLI agents this is the load-bearing resilience piece for the concurrency goal; without it the floor is unachievable. Detecting limits from CLI stderr/exit codes and rebalancing is non-trivial but the failure mode (cascading 429s collapsing the fan-out) is severe.",
+                          "alternatives_considered":  [
+                                                          "No rate-limit handling (fail the agent on 429)",
+                                                          "Lower concurrency on 429 instead of rebalancing (rejected: violates floor)"
+                                                      ],
+                          "risk":  "Mis-detection of 429 vs other CLI errors could mis-route. Mitigated by explicit provider-specific error signature matching and capped retry counts.",
+                          "test":  "Inject simulated 429s from one provider; verify backoff+retry, job rebalancing to the other provider, and that the 20+ floor is sustained."
+                      },
+                      {
+                          "decision":  "ORCHESTRATION_PARALLELPS1_FIX — Fan out via driver agent-invoke + lib/parallel.ps1 using a NEW read-only subprocess harness (not the worktree/merge code path), fixing parallel-pipe instability, untracked-cleanup pathspec bug, and codex hang.",
+                          "rationale":  "Unanimous (A,B,C), judge 0.77, high specificity. The audit is read-only, so the worktree/merge machinery (source of past instability) is unnecessary and risky — a read-only subprocess harness avoids the untracked-cleanup pathspec issue entirely. Naming the exact defects to fix and testing with wide-fanout dummy jobs is the right scope.",
+                          "alternatives_considered":  [
+                                                          "Reuse lib/parallel.ps1\u0027s worktree/merge functions as-is",
+                                                          "Write a brand-new orchestrator outside lib/parallel.ps1",
+                                                          "Use the operator\u0027s Workflow tool (not available in the bridge)"
+                                                      ],
+                          "risk":  "Touching known-unstable code may surface new edge cases. Mitigated by isolating the new harness, regression tests, and dummy-job stress fixtures before live agent use.",
+                          "test":  "Wide-fanout stress test (20–30 dummy CLI jobs) through the read-only harness: stable, correct per-job stdout/stderr capture, timeout handling, and no hangs."
+                      },
+                      {
+                          "decision":  "AGENT_FAULT_ISOLATION — Strict per-agent isolation: one agent\u0027s timeout/crash/empty-reply never aborts the phase; status, stderr, and artifacts are preserved; the orchestrator decides retry vs degraded quorum.",
+                          "rationale":  "A,B; judge 0.84 (highest correctness/risk-reduction). Mandatory for any 20+-agent fan-out — partial failure must be the norm, not a fatal event. Preserving artifacts and allowing degraded quorum keeps the audit useful even with casualties.",
+                          "alternatives_considered":  [
+                                                          "Fail the whole phase on any agent error",
+                                                          "Silently drop failed agents without recording artifacts"
+                                                      ],
+                          "risk":  "Degraded quorum could weaken verify confidence if too many skeptics die. Mitigated by recording quorum size per finding and flagging low-confidence verifications in the report.",
+                          "test":  "Inject controlled per-agent failures (timeout, crash, malformed output) in a multi-agent run; the overall audit completes, failures are logged, artifacts preserved, and quorum decisions are recorded."
+                      },
+                      {
+                          "decision":  "COST_CONTROL_BUDGET_DEPTH — Budget profile enforcing total-agent caps, token budgets, configurable depth (#dimensions, verifiers-per-finding, finder rounds), a pre-flight cost estimate, and VERIFY early-exit when FIND returns zero findings.",
+                          "rationale":  "Unanimous (A,B,C), judge 0.82. The principled governor against runaway cost on a deliberately-expensive run. Per the conflict resolution, these bounds cap the RUN\u0027s total size and spend (not its live width) — budget exhaustion winds the run down by ceasing new launches. The zero-findings early-exit avoids paying for an empty VERIFY phase.",
+                          "alternatives_considered":  [
+                                                          "No budget governor (rely on rarity of runs)",
+                                                          "Use budget to throttle live concurrency below the 20 floor (rejected: violates user hard requirement)"
+                                                      ],
+                          "risk":  "Aggressive caps could truncate a legitimately large finding set. Mitigated by milestone-tier budget profiles and explicit logging of any truncation/skipped work (no silent caps).",
+                          "test":  "Configure a budget profile with agent cap, token ceiling, and depth knobs; verify the run respects them, logs any truncation, and early-exits VERIFY when FIND yields zero findings."
+                      },
+                      {
+                          "decision":  "PROJECT_MAP_PLAN_FIRST — Produce a PROJECT_MAP+PLAN (entrypoints, deep-audit/deep-LLM layer, driver agent-invoke, lib/parallel.ps1, backlog writer, scheduler hooks, concurrency model, cost control, two modes, parallelism proof) for architect review and user approval BEFORE any code.",
+                          "rationale":  "A,C; judge 0.855 (highest total). Cheap, high-reversibility insurance against building the wrong thing given the high-cost/low-reversibility architecture atoms downstream. The task contract is DISCUSS-first and explicitly forbids building before approval.",
+                          "alternatives_considered":  [
+                                                          "Start implementation incrementally and document as we go",
+                                                          "Skip the formal plan since the architecture is \u0027proven\u0027"
+                                                      ],
+                          "risk":  "Plan could under-specify the concurrency/rate-limit mechanics. Mitigated by requiring the plan to explicitly answer: how 20+ is held on Claude+Codex CLIs, OOM/rate-limit handling, and how parallelism is proven.",
+                          "test":  "A comprehensive PROJECT_MAP+PLAN exists, is architect-reviewed, and is formally user-approved before any implementation commit."
+                      },
+                      {
+                          "decision":  "FIND_CONFIGURABLE_DIMENSIONS — FIND accepts a configurable dimension list (default for code: correctness, security, concurrency, error-handling, resources, contracts) and launches all finder jobs simultaneously.",
+                          "rationale":  "A,C; judge 0.81. The dimension list is the unit of parallelism that justifies the concurrency floor and is target-tunable. Simultaneous launch (not round-robin) is the user\u0027s explicit concurrency requirement for the FIND phase.",
+                          "alternatives_considered":  [
+                                                          "Hardcoded fixed dimension set",
+                                                          "Sequential per-dimension finder launches"
+                                                      ],
+                          "risk":  "Too many dimensions could blow the budget. Mitigated by depth config in COST_CONTROL_BUDGET_DEPTH bounding dimension count.",
+                          "test":  "Configure a custom dimension list; verify a finder agent is spawned per dimension and all run concurrently (visible in the concurrency timeline)."
+                      },
+                      {
+                          "decision":  "FIND_STRUCTURED_JSON_OUTPUT — Each finder returns ONLY structured JSON conforming to a schema (root_cause, file, line, evidence_snippet, severity, why, fix_sketch, confidence); malformed output is rejected or repaired.",
+                          "rationale":  "A,C; judge 0.82, very high specificity. An enumerated schema is required for downstream dedup/verify/synthesize to be machine-driven rather than prose-parsed. Confidence + evidence_snippet feed the adversarial verify stage.",
+                          "alternatives_considered":  [
+                                                          "Free-form prose findings parsed heuristically",
+                                                          "Loosely-typed output without a strict schema"
+                                                      ],
+                          "risk":  "CLIs may emit non-JSON or wrapped JSON. Mitigated by a parse/repair step and rejecting unrepairable output (logged, not silently dropped).",
+                          "test":  "Run a finder; validate output against the schema; confirm malformed output is rejected or repaired and the event is logged."
+                      },
+                      {
+                          "decision":  "VERIFY_ADVERSARIAL_MAJORITY_REFUTE — VERIFY is adversarial: each finding is false-by-default; all skeptics for all findings spawn simultaneously; each skeptic must cite current file:line evidence to refute; majority-refute discards the finding; refuted findings are retained in the report.",
+                          "rationale":  "A,B; judge 0.79. This is the adversarial core that turns a finder dump into a trustworthy report and is the main defense against false positives — it is the source of \u0027power\u0027. Simultaneous skeptic launch satisfies the user\u0027s verify-phase concurrency requirement. Retaining refuted findings provides transparency/auditability.",
+                          "alternatives_considered":  [
+                                                          "Single-verifier-per-finding (no quorum)",
+                                                          "Confirm-by-default verification",
+                                                          "Sequential skeptic launch",
+                                                          "Drop refuted findings entirely from the report"
+                                                      ],
+                          "risk":  "High agent count and voting cost; degraded quorum from agent failures could weaken verdicts. Mitigated by AGENT_FAULT_ISOLATION quorum tracking and recording skeptic vote counts per finding.",
+                          "test":  "Feed a mix of true and false findings; verify skeptics spawn concurrently, refute/confirm by majority with mandatory file:line citation, and refuted findings appear (marked) in the report."
+                      },
+                      {
+                          "decision":  "SYNTHESIZE_DEDUP_RANK_AUTOTASK — Dedup confirmed findings, rank by severity, and auto-create structured backlog fix-tasks (critical/high) with an idempotency key preventing duplicate tasks across runs.",
+                          "rationale":  "A,B; judge 0.82. Closes the audit loop into the existing backlog writer — directly addressing the recently-fixed \u0027findings never transition\u0027 gap (see commit 0204426). The idempotency key is the critical detail preventing duplicate-task spam across repeated milestone runs.",
+                          "alternatives_considered":  [
+                                                          "Emit a report only, no auto-tasking",
+                                                          "Auto-task without an idempotency key (rejected: duplicate spam across runs)",
+                                                          "Auto-task every severity including low/info"
+                                                      ],
+                          "risk":  "Idempotency key collisions or drift (e.g., line numbers shift) could mis-dedup. Mitigated by a content/root-cause-based key rather than raw line numbers, plus dedup-on-write in the backlog writer.",
+                          "test":  "Run SYNTHESIZE with confirmed findings; verify backlog tasks are created with correct severity ranking and metadata, and a re-run with the same findings creates no duplicates."
+                      },
+                      {
+                          "decision":  "THIN_PROMPTS_FAT_TOOLS — Finder/verifier agents get thin prompts (dimension + location) and fat tools; the CLI reads code itself (codex -s read-only; claude -p --allowedTools Read,Grep,Glob --add-dir) instead of stdin-stuffing large context.",
+                          "rationale":  "Single-proposal (B) but judge 0.83 and well-aligned with LLM_CLI_ONLY. Letting the CLI read live files avoids token-heavy stdin context-stuffing, cuts cost, prevents stale-snapshot risk, and simplifies the orchestrator\u0027s plumbing. Concrete flags provided.",
+                          "alternatives_considered":  [
+                                                          "Pre-stuff full file/code context into agent stdin",
+                                                          "Provide a curated context bundle per agent"
+                                                      ],
+                          "risk":  "Agents could wander beyond intended scope or read too broadly, inflating tokens. Mitigated by scoping --add-dir / read-only roots and passing a precise location hint per dimension.",
+                          "test":  "Verify agent prompts are concise and invocation uses read-only CLI flags enabling direct filesystem reads, with no large code snippets passed via stdin."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Use Gemini (e.g. gemini-2.5-pro) or raw provider APIs for audit agents.",
+                         "why":  "User constraint (msg 53853634) overrides the earlier gemini note: ONLY Claude CLI + Codex CLI, never raw API, never Gemini. Reuses bridge driver agent-invoke infra and avoids API-key management. (See LLM_CLI_ONLY.)"
+                     },
+                     {
+                         "decision":  "An unconditional hard floor of 20 concurrent agents with no budget bound, OR letting budget/rate-limits dynamically lower live concurrency below 20.",
+                         "why":  "Both extremes rejected by the conflict resolution. Unbounded floor risks runaway cost (judge penalty on CONCURRENCY_FLOOR_20PLUS); lowering below 20 violates the user\u0027s explicit hard requirement. Resolution: floor governs live width while work remains; budget bounds total run size/spend and winds the run down by ceasing new launches, not by throttling width."
+                     },
+                     {
+                         "decision":  "Trigger the adversarial deep audit on the nightly cron.",
+                         "why":  "Effectiveness\u003ecost only holds because runs are RARE. Nightly deep runs would be prohibitively expensive and the user requires milestone/on-demand triggering with the cheap static audit retained as the nightly guard. (See AUDIT_MODES_SEPARATION.)"
+                     },
+                     {
+                         "decision":  "Use lib/parallel.ps1\u0027s worktree/merge code path for audit fan-out.",
+                         "why":  "The audit is read-only — worktree creation/merge is unnecessary and is the source of past instability (untracked-cleanup pathspec). A read-only subprocess harness is simpler and avoids that failure mode. (See ORCHESTRATION_PARALLELPS1_FIX.)"
+                     },
+                     {
+                         "decision":  "Keep the single-pass finder dump without an adversarial VERIFY stage.",
+                         "why":  "That is essentially the current weak design (one pass, no re-check). The adversarial majority-refute verify is the core source of \u0027power\u0027 — it filters false positives and confirms real bugs. (See VERIFY_ADVERSARIAL_MAJORITY_REFUTE.)"
+                     },
+                     {
+                         "decision":  "Pre-stuff full code context into agent stdin.",
+                         "why":  "Inflates tokens, risks stale snapshots, and complicates plumbing. Thin prompts + fat tools (CLI reads live files read-only) is cheaper and fresher. (See THIN_PROMPTS_FAT_TOOLS.)"
+                     },
+                     {
+                         "decision":  "Repair the existing deep:deep_failed subprocess/job layer in place rather than replacing it.",
+                         "why":  "It is historically broken and architecturally a single un-verified pass. Replacing it with the proven three-phase orchestrator is higher-impact than patching. (See ARCH_3PHASE_REPLACE_DEEPLLM.)"
+                     }
+                 ],
+    "open_questions":  [
+                           "Exact default dimension list per target type (code vs pipeline vs control-plane) and how operators override it per run.",
+                           "Concrete budget numbers per milestone profile: token ceiling, total-agent cap, default depth (dimensions, verifiers-per-finding, finder rounds).",
+                           "Empirical: can the Claude CLI subscription sustain ~10 simultaneous claude processes, and what is the safe Claude:Codex split to hold \u003e=20 without tripping single-provider usage limits? Requires a measured pre-flight concurrency probe.",
+                           "Skeptic quorum size per finding and the exact majority threshold (e.g., 3 skeptics, refute if \u003e=2), and how degraded quorum from agent failures is scored/flagged.",
+                           "How milestone triggers are wired concretely: operator on-demand command surface + which pipeline events (pre-training, post-major-pipeline-change) fire the hook.",
+                           "Storage location and retention for audit reports, structured findings, and concurrency/PID telemetry artifacts.",
+                           "Idempotency-key construction for auto-tasks (content/root-cause hash vs file:line) robust to line-number drift across runs.",
+                           "PID-sampling implementation on Windows/PowerShell that reliably attributes child claude/codex processes to the audit run for peak_concurrency measurement."
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "0. PLAN (gate — no code)",
+                                    "actions":  [
+                                                    "Write PROJECT_MAP: entrypoints, current deep-audit/deep-LLM layer, driver agent-invoke, lib/parallel.ps1 internals (worktree/merge vs subprocess), backlog writer, scheduler/cron hooks.",
+                                                    "Write PLAN covering: three-phase flow, configurable dimensions, structured schema, adversarial verify quorum, synthesize/auto-task, two modes, concurrency model + how \u003e=20 is held on Claude+Codex CLIs, rate-limit/OOM handling, budget/depth governor and how it reconciles with the floor, and how parallelism is proven (PID/peak_concurrency).",
+                                                    "Architect review → user approval. Do not proceed to build until approved."
+                                                ]
+                                },
+                                {
+                                    "phase":  "1. Orchestration substrate (ORCHESTRATION_PARALLELPS1_FIX, CONCURRENCY_FLOOR_20PLUS, AGENT_FAULT_ISOLATION, PROVE_REAL_PARALLELISM)",
+                                    "actions":  [
+                                                    "Add a read-only subprocess harness in lib/parallel.ps1 (no worktree/merge); fix parallel-pipe instability, untracked-cleanup pathspec bug, codex hang.",
+                                                    "Implement refill-queue worker pool replacing static maxParallelAgents; set parallel.maxStreams\u003e=20 and sufficient parallel.workers; floor=20 conditional on outstanding work.",
+                                                    "Implement per-agent isolation: capture status/stdout/stderr/artifacts; one agent failure never aborts the phase.",
+                                                    "Implement live PID sampling → peak_concurrency + concurrency timeline.",
+                                                    "Stress-test with 20–30 dummy CLI jobs: assert stable, no hangs, peak\u003e=20."
+                                                ]
+                                },
+                                {
+                                    "phase":  "2. Provider layer (LLM_CLI_ONLY, RATE_LIMIT_HANDLING, THIN_PROMPTS_FAT_TOOLS)",
+                                    "actions":  [
+                                                    "Wire Claude CLI + Codex CLI invocation through driver agent-invoke with model/effort tier registry; ~50/50 provider balance.",
+                                                    "Implement 429/usage-limit detection from CLI output, exponential backoff + retry, cross-provider rebalancing that preserves the floor.",
+                                                    "Standardize thin-prompt + fat-tool invocation (codex -s read-only; claude -p --allowedTools Read,Grep,Glob --add-dir) with scoped read roots."
+                                                ]
+                                },
+                                {
+                                    "phase":  "3. FIND phase (FIND_CONFIGURABLE_DIMENSIONS, FIND_STRUCTURED_JSON_OUTPUT)",
+                                    "actions":  [
+                                                    "Implement configurable dimension list; launch all finders simultaneously through the pool.",
+                                                    "Define and enforce the findings JSON schema (root_cause/file/line/evidence_snippet/severity/why/fix_sketch/confidence) with parse/repair + reject-on-unrepairable (logged)."
+                                                ]
+                                },
+                                {
+                                    "phase":  "4. VERIFY phase (VERIFY_ADVERSARIAL_MAJORITY_REFUTE)",
+                                    "actions":  [
+                                                    "Spawn all skeptics for all findings simultaneously; false-by-default; require file:line citation to refute; majority-refute discards; retain refuted findings (marked) in report.",
+                                                    "Record per-finding vote counts and quorum health (degraded-quorum flagging)."
+                                                ]
+                                },
+                                {
+                                    "phase":  "5. SYNTHESIZE phase (SYNTHESIZE_DEDUP_RANK_AUTOTASK)",
+                                    "actions":  [
+                                                    "Dedup confirmed findings; rank by severity; render report including concurrency timeline + peak_concurrency.",
+                                                    "Auto-create structured backlog fix-tasks for critical/high with content-based idempotency key; verify no duplicates on re-run."
+                                                ]
+                                },
+                                {
+                                    "phase":  "6. Modes, budget, triggers (AUDIT_MODES_SEPARATION, COST_CONTROL_BUDGET_DEPTH, ARCH_3PHASE_REPLACE_DEEPLLM)",
+                                    "actions":  [
+                                                    "Keep nightly static guard untouched; expose deep audit only via operator command + milestone hooks (never nightly cron).",
+                                                    "Implement budget profile: total-agent cap, token ceiling, depth knobs, pre-flight cost estimate, VERIFY early-exit on zero findings; budget bounds run size, not the 20-floor width.",
+                                                    "Remove/disable deep:deep_failed path and route deep audit to the new orchestrator."
+                                                ]
+                                },
+                                {
+                                    "phase":  "7. End-to-end validation",
+                                    "actions":  [
+                                                    "Run against a real target; confirm it surfaces and verifies real bugs (effectiveness comparable to the operator\u0027s proven run).",
+                                                    "Confirm all success_tests: \u003e=20 concurrent in FIND and VERIFY (PID-proven), CLI-only/no-Gemini, rate-limit resilience, fault isolation, idempotent auto-tasks, nightly static guard unaffected, budget controls functional."
+                                                ]
+                                }
+                            ],
+    "next_step":  "Author the PROJECT_MAP+PLAN document (Phase 0) — explicitly specifying the concurrency model and how \u003e=20 simultaneous Claude+Codex CLI agents are held under the budget-bounds-total / floor-bounds-width resolution, the rate-limit/OOM strategy, and the PID-based parallelism proof — then submit it for architect review and user approval before writing any code.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "The decision reinterprets the user\u0027s HARD ≥20 concurrency floor as a \u0027conditional target bounded by the budget ceiling,\u0027 explicitly allowing concurrency to drop below 20 when \u0027budget is genuinely insufficient.\u0027 The user pre-adjudicated exactly this conflict: \u0027НЕ опускать одновременность ниже 20\u0027 / \u0027не меньше\u0027 (msg 53853633) and \u0027Стоимость/нагрузка высокая — ОК т.к. редкий milestone-запуск\u0027 — i.e. provision budget high enough and never drop below 20; handle limits via refill-queue-to-floor + retries, not by lowering concurrency.",
+                                  "why":  "The work-conditional relaxation (\u0027при достаточном объёме\u0027) IS user-sanctioned, but the budget-conditional relaxation below 20 directly contradicts an explicit, repeated, emphatic hard requirement. The user\u0027s resolution was \u0027set agent-cap ≥20\u0027, not \u0027let budget win and go below 20\u0027. Worse, a DISCUSS-first task requires user approval to weaken a stated requirement; the record bakes in the weakening as a settled \u0027modify (0.695)\u0027 decision instead of surfacing it as an open question for the user to re-confirm."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "No code snapshot / git-SHA pin for the audit. 20+ finder and skeptic agents read the LIVE working tree of a repo that auto-commits during normal operation (git log shows \u0027[task:...] auto-commit (driver...)\u0027 commits). The decision rejects worktrees on the grounds that \u0027a read-only audit performs no file mutations or merges\u0027 — conflating \u0027no merge needed\u0027 with \u0027no snapshot needed.\u0027",
+                                  "why":  "Over a long (~1.5M-token) multi-agent run, the tree can change under the agents: finders read one state, skeptics read another → VERIFY\u0027s mandatory \u0027current file:line\u0027 check wrongly refutes real findings or confirms stale ones, and SYNTHESIZE line-drift/idempotency problems compound. The core adversarial value-add depends on all agents seeing identical code. A read-only worktree pinned to a fixed SHA would solve consistency (and write-isolation) — the blanket worktree rejection threw out snapshot isolation along with merge machinery. The \u0027bounded by the milestone (frozen) trigger\u0027 assumption has no actual freeze/pin mechanism behind it."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The FIND phase cannot meet the ≥20 concurrency floor as designed. The FIND decision states \u0027an agent is spawned per dimension\u0027 with its test \u0027verify an agent is spawned per dimension,\u0027 and the default dimension list is ~6 (correctness/security/concurrency/error-handling/resources/contracts). 6 dimensions → ~6 concurrent finders, not 20.",
+                                  "why":  "The user requires ≥20 concurrent in BOTH phases (success_test: \u0027During both the FIND and VERIFY phases ... minimum of 20 concurrent agents\u0027). FIND volume is the small, configured dimension count — not unbounded work — so the \u0027sufficient volume\u0027 escape hatch hides a structural shortfall. The decision never reconciles 1-agent-per-dimension with ≥20: it would need multiple model/reasoning profiles per dimension (e.g. ~3-4 finders/angle) or ~20 dimensions, neither of which is specified. As written, the FIND-phase floor success_test fails."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "\u0027Replace deep:deep_failed removes the root failure surface\u0027 is asserted, not established. In the code, deep_failed is not one bug — it is a catch-all status set at numerous independent points (audit.ps1:1296,1323,1355,1362,1372; aggregated 1957-1962) covering subprocess launch, JSON parse, and job-layer failures. The new system rebuilds on the same subprocess/CLI/JSON-parse layer (and the same codex-restricted-user sandbox, parallel.ps1:95,375-389, where the codex-hang/pathspec issues actually live).",
+                                  "why":  "Without diagnosing WHICH failure point actually fires in production, \u0027replace\u0027 may re-inherit the identical subprocess/parse fragility under a new name. The codex hang and untracked-cleanup pathspec issues are tied to codex\u0027s restricted-user sandbox and git-metadata writes, not solely to worktree/merge — so the \u0027read-only harness avoids the instability\u0027 claim is not proven. The implementation plan fixes three NAMED instabilities but contains no \u0027root-cause deep_failed\u0027 step, so success_test (\u0027deep-LLM part successfully fixed\u0027) is at risk."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The existing deep path ALREADY auto-files unverified codex/claude findings directly to the backlog (Add-Idea at audit.ps1:1489,1522) with no adversarial verification. The decision adds VERIFY-before-file but relies on \u0027replace the old path\u0027; it does not call out removing this existing direct-file code.",
+                                  "why":  "If replacement is partial (a real risk given deep_failed touches many sites), the OLD unverified Add-Idea path keeps firing — so the system either double-files (old unverified + new verified) or the unverified false-positive spam the VERIFY gate exists to stop continues to reach the backlog, silently defeating the core value-add. The removal must be explicit and tested, not implied."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The VERIFY quorum rule is logically inconsistent. It states findings are \u0027false-by-default until proven by current file:line\u0027 (a CONFIRM-threshold rule) AND \u0027discarded on majority-refute\u0027 (a KEEP-unless-majority-refutes rule). These are different decision functions with opposite defaults.",
+                                  "why":  "For a split skeptic vote (e.g. 1 refute / 1 confirm / 1 abstain, or all skeptics silent), the survival condition is undefined. \u0027False by default\u0027 implies the finding dies unless a majority affirmatively confirms the file:line holds; \u0027discard on majority-refute\u0027 implies it survives unless a majority refutes. Combined with the degraded-quorum \u0027minimum valid skeptic count\u0027 (still open), a true bug can be silently dropped or a false positive silently kept depending on which rule the implementer codes. Needs a single crisp confirm/refute threshold."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Behavior when FIND yields many findings and VERIFY (findings × skeptics) exceeds the budget cap is undefined. With, say, 100 findings × 3 skeptics = 300 agents, the hard budget ceiling truncates VERIFY, but the decision never says what happens to the unverified remainder.",
+                                  "why":  "Two bad outcomes, both unaddressed: (a) drop unverified findings → real critical bugs are silently lost (false negatives — the opposite of the audit\u0027s purpose), or (b) file them unverified → they bypass the adversarial gate that is the system\u0027s entire reason to exist. The FIND-zero early-exit is handled; the FIND-flood case (more dangerous) is not. A deterministic policy (severity-prioritized verification within budget, plus explicit logging of unverified findings) is required."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The backlog idempotency key is composed from \u0027root_cause + file + normalized line,\u0027 where root_cause is free-text generated by an LLM.",
+                                  "why":  "LLM-generated root_cause phrasing is non-deterministic across runs (same bug, different wording) and the code itself drifts between milestone runs. This makes the key unstable in both directions: the same real bug described differently → duplicate backlog tasks (the exact spam the key is meant to prevent), while a genuinely new bug with similar wording near the same line → wrongly suppressed. Keying on volatile LLM prose cannot reliably deduplicate; a stable structural key (e.g. file + symbol/normalized-snippet hash, not prose) is needed."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "\u0027Pragmatic reuse of lib/parallel.ps1\u0027 materially understates effort and risk. The module is wholly built around git worktrees + sequential merge and a fire-ALL-workers-at-once dispatch with no concurrency cap, no refill queue, and no read-only path (parallel.ps1:1,18). Reusable surface is essentially just the worker-registry config (parallel.workers); the read-only subprocess harness, the refill-queue worker pool, maxStreams capping, and PID telemetry are all net-new.",
+                                  "why":  "The decision\u0027s risk framing (\u0027reuse existing dispatch, less surface\u0027) is inverted — almost none of the dispatch core is reusable for a read-only, pooled, capped fan-out. \u0027maxStreams\u0027 does not even appear in parallel.ps1 today, and the current \u0027launch every worker in parallel\u0027 with no cap is itself a likely cause of the \u0027parallel-pipe instability\u0027 under wide fan-out. Building a managed pool is a from-scratch orchestrator alongside (not on top of) the existing one, raising the build cost the plan budgets for and the chance the named-instability fixes miss the real blocker."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The parallelism proof (sampling live agent PIDs for peak_concurrency ≥ 20) does not define WHAT counts as an agent process. Claude CLI and Codex CLI each spawn child processes (node, sandbox helpers), and the bridge driver may itself be a CLI process.",
+                                  "why":  "Naive PID counting over-counts (each agent\u0027s child node/helper processes inflate the number, so 8 real agents can read as 20+) or under-counts (sampling the wrong process layer). The decision flags sampling cadence/skew but not process-identity, so the headline \u0027peak ≥ 20\u0027 assertion — the very evidence meant to defeat fake/sequential parallelism — can be satisfied without 20 real concurrent agents. The sampler needs an explicit agent-process identity rule (tagged PIDs / process-group roots), not just a cadence."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

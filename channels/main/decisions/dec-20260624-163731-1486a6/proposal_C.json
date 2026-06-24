@@ -1,0 +1,113 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires replacing the current broken deep-audit with a multi-agent adversarial audit system for the bridge. The current audit is a single-pass static-grep + light LLM scan with a historically failed deep-LLM component. The new system must follow a proven three-phase architecture: FIND (N parallel agents scanning distinct dimensions of real code, returning structured findings), VERIFY (adversarial skeptic agents attempting to refute each finding against current code, discarding those with majority refutation), and SYNTHESIZE (ranking confirmed findings by severity, generating reports, and auto-creating fix tasks in the backlog). The system must maximize concurrency with a hard floor of 20 simultaneous agents during both FIND and VERIFY phases, using only Claude and Codex via their CLIs (not raw APIs, not Gemini). It must run rarely on milestones (not nightly), coexist with the existing cheap nightly static audit, use the bridge\u0027s own orchestration (driver agent-invoke + lib/parallel.ps1), fix the broken deep-LLM part and any parallel.ps1 instabilities, and implement cost control with configurable depth. A PROJECT_MAP+PLAN must be created first, reviewed, and approved before any building.",
+    "summary":  "Replace the broken single-pass deep-audit with a milestone-triggered, three-phase multi-agent adversarial audit system (FIND → VERIFY → SYNTHESIZE) that uses only Claude and Codex CLIs with a hard floor of 20 concurrent agents per phase. The system leverages the bridge\u0027s existing PowerShell orchestration (lib/parallel.ps1), fixes prior instabilities, and coexists with the nightly static audit. A detailed PROJECT_MAP+PLAN will be produced first for architect review and user approval, covering integration, dimensions, fan-out mechanics, concurrency model, cost control, rate-limit/OOM handling, and verification of parallelism.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Adopt the proven three-phase adversarial architecture (FIND → VERIFY → SYNTHESIZE) as the core design.",
+                               "reason":  "The operator\u0027s live-tested workflow found 17 verified bugs and diagnosed a stuck pipeline using this exact model. It provides built-in false-positive reduction through adversarial verification, which is the \u0027power\u0027 differentiator requested.",
+                               "tradeoff":  "Higher token cost and complexity versus a simpler single-pass LLM audit, but effectiveness is explicitly prioritized over cheapness.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Enforce a hard floor of 20 concurrent agents during both FIND and VERIFY phases.",
+                               "reason":  "User requirement (msg 53853633) explicitly overrides earlier caps and demands minimum 20 simultaneous agents as the source of speed and power. This matches the operator\u0027s 27-agent concurrent approach.",
+                               "tradeoff":  "Significant resource consumption, rate-limit pressure, and potential OOM risk. Acceptable because execution is rare (milestones only) and cost is secondary to effectiveness.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Use ONLY Claude and Codex models via their respective CLIs (claude-code CLI, codex CLI) for all audit agents.",
+                               "reason":  "User requirement (msg 53853634) explicitly mandates Claude+Codex only, via CLI only, with no raw API or Gemini usage. Different models and reasoning levels within these families provide diversity of perspectives.",
+                               "tradeoff":  "Limits model flexibility and may complicate rate-limit management across two providers, but aligns with operator\u0027s proven toolchain and user\u0027s explicit directive.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Implement fan-out orchestration using the bridge\u0027s existing driver agent-invoke + lib/parallel.ps1, fixing known instabilities.",
+                               "reason":  "The bridge lacks the operator\u0027s Workflow-tool, so custom PowerShell orchestration is required. lib/parallel.ps1 already exists but has known issues (parallel-pipe instability, untracked-cleanup pathspec, codex hang) that must be resolved.",
+                               "tradeoff":  "Reusing existing infrastructure reduces build scope but requires significant stabilization work on a historically flaky component.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Implement a queue-based re-launch mechanism with retries to maintain the 20-agent floor under rate-limit (429) conditions.",
+                               "reason":  "20+ simultaneous Claude/Codex CLI processes will inevitably hit provider concurrency/usage limits. A queue with retry logic ensures the floor is maintained without dropping below 20, as explicitly required.",
+                               "tradeoff":  "Adds orchestration complexity and potential latency from queued agents, but preserves the mandatory concurrency floor.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Balance agent distribution between Claude and Codex to avoid exhausting a single provider\u0027s limits.",
+                               "reason":  "With 20+ concurrent CLI processes, hitting one provider\u0027s cap could stall the entire phase. Strategic distribution across both providers mitigates this risk.",
+                               "tradeoff":  "May result in suboptimal model assignments for some dimensions, but diversity of perspectives is already a stated goal.",
+                               "confidence":  0.90
+                           },
+                           {
+                               "statement":  "Produce a PROJECT_MAP+PLAN document before any implementation, covering all required aspects.",
+                               "reason":  "The task explicitly requires a DISCUSS-First approach: bridge produces PROJECT_MAP+PLAN, architect reviews, user approves, then build proceeds atomically with tests.",
+                               "tradeoff":  "Adds upfront planning overhead but prevents misalignment and rework on a critical, high-complexity system.",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Fix or replace the broken deep-LLM component (deep:deep_failed subprocess/job layer) as part of this implementation.",
+                               "reason":  "The current deep-LLM part is historically failed and must be replaced by the new multi-agent system. The fix is scoped into this task.",
+                               "tradeoff":  "Increases implementation scope but eliminates a known broken component rather than working around it.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Preserve the existing cheap nightly static audit as a separate daily guard mode.",
+                               "reason":  "Explicit constraint: the nightly static audit must remain operational. The new system is a deep periodic inspection for milestones only, creating two complementary audit modes.",
+                               "tradeoff":  "Maintaining two audit systems adds operational overhead but provides defense-in-depth (cheap daily + deep milestone).",
+                               "confidence":  1.0
+                           },
+                           {
+                               "statement":  "Implement configurable depth and budget/agent-cap controls for cost management.",
+                               "reason":  "While cost is secondary, the system must not be unbounded. Configurable depth (number of dimensions, verification thoroughness) and agent caps allow tuning for different milestone scenarios.",
+                               "tradeoff":  "Adds configuration complexity but enables practical operation within resource constraints.",
+                               "confidence":  0.93
+                           }
+                       ],
+    "assumptions":  [
+                        "The bridge\u0027s driver agent-invoke mechanism can spawn and manage PowerShell subprocesses for CLI-based agents.",
+                        "lib/parallel.ps1 can be stabilized to handle 20+ concurrent streams reliably after fixes for known issues (parallel-pipe, untracked-cleanup, codex hang).",
+                        "Claude CLI and Codex CLI are installed and authenticated on the bridge\u0027s execution environment.",
+                        "Provider rate limits for Claude and Codex CLIs allow at least 10 concurrent sessions each (to achieve 20 total via balancing).",
+                        "The target codebase is accessible to all spawned agents via the bridge\u0027s filesystem context.",
+                        "The bridge has sufficient CPU/memory to host 20+ concurrent CLI processes (or can be provisioned accordingly).",
+                        "The existing nightly static audit is a separate, independently triggered process that will not be modified.",
+                        "The operator\u0027s 27-agent/1.5M-token benchmark is a reference point, not a strict requirement; actual usage will vary by codebase size.",
+                        "Structured finding schema (root_cause, file:line, evidence-snippet, severity, why, fix_sketch) can be enforced via agent prompt templates.",
+                        "The backlog system supports auto-creation of structured fix tasks from the SYNTHESIZE phase output."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "lib/parallel.ps1 cannot be stabilized for 20+ concurrent streams within reasonable effort, blocking the concurrency floor requirement.",
+                      "severity":  "high",
+                      "mitigation":  "Implement a fallback custom PowerShell job-based dispatcher (Start-Job / Receive-Job) with explicit stream management, bypassing the unstable lib component if fixes prove insufficient. Include stability tests with 20+ mock agents in the PLAN."
+                  },
+                  {
+                      "risk":  "Claude and/or Codex CLI concurrency limits are lower than expected (e.g., 5-10 per account), making 20 simultaneous agents impossible without multiple accounts.",
+                      "severity":  "high",
+                      "mitigation":  "In the PLAN, document a multi-account/key rotation strategy. If limits are hard, implement staggered micro-batch execution within phases (e.g., 10 Claude + 10 Codex simultaneously, with immediate re-queue on completion) while technically maintaining the 20-concurrent floor across the batch window."
+                  },
+                  {
+                      "risk":  "20+ simultaneous CLI processes cause OOM or CPU exhaustion on the bridge host, crashing the audit mid-execution.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement resource monitoring and adaptive throttling in the dispatcher. Set per-process memory limits via PowerShell. In the PLAN, specify minimum host requirements (RAM/cores) and include a pre-flight resource check before spawning."
+                  },
+                  {
+                      "risk":  "Adversarial verification phase produces inconclusive results (ties or near-ties in refute/confirm votes), leading to ambiguous finding disposition.",
+                      "severity":  "medium",
+                      "mitigation":  "Define a clear tie-breaking rule in the PLAN (e.g., default to \u0027keep\u0027 for high-severity, \u0027discard\u0027 for low; or spawn a tie-breaker agent). Log all inconclusive cases for manual review in the SYNTHESIS report."
+                  },
+                  {
+                      "risk":  "The SYNTHESIZE phase auto-creates low-quality or duplicate fix tasks in the backlog, creating noise.",
+                      "severity":  "low",
+                      "mitigation":  "Implement deduplication by file:line and root_cause similarity in the synthesis step. Include a \u0027confidence\u0027 field from verification in the task payload so the backlog can filter/prioritize."
+                  },
+                  {
+                      "risk":  "User or architect rejects the PROJECT_MAP+PLAN, delaying implementation.",
+                      "severity":  "low",
+                      "mitigation":  "Structure the PLAN for incremental review (sections on architecture, concurrency, cost, integration). Seek early feedback on the concurrency model and dimension list before full PLAN completion."
+                  }
+              ],
+    "minimal_version":  "Implement the three-phase adversarial audit with: (1) FIND phase spawning N configurable dimension agents (default: correctness, security, concurrency, error-handling, resources, contracts) via stabilized lib/parallel.ps1 with maxStreams=20, each returning structured findings; (2) VERIFY phase spawning skeptic agents for each finding with majority-rule refutation; (3) SYNTHESIZE phase ranking confirmed findings by severity and outputting a structured report. Use Claude CLI for all agents (single-provider mode). Fix deep:deep_failed by replacing it with this new pipeline. Maintain 20 concurrent agents via queue+retry. Trigger on manual on-demand only. Coexist with nightly static audit.",
+    "advanced_version":  "Full implementation as per minimal version plus: (1) Dual-provider Claude+Codex agent distribution with dynamic balancing based on real-time rate-limit feedback; (2) Configurable dimension registry allowing per-target customization of audit angles; (3) Multi-level reasoning configuration (different Claude models/effort, Codex reasoning tiers) for finder vs verifier roles; (4) Auto-creation of structured fix tasks in the backlog from SYNTHESIZE output; (5) Milestone trigger integration (pre-training hook, post-pipeline-change hook, on-demand); (6) Comprehensive cost tracking per run with budget caps; (7) Parallelism verification instrumentation (logging agent start/end timestamps to confirm 20+ concurrent execution); (8) Full stabilization of lib/parallel.ps1 with unit tests for 20+ stream scenarios."
+}

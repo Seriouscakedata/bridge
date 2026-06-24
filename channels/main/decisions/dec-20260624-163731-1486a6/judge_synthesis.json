@@ -1,0 +1,265 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ARCH_3PHASE_REPLACE_DEEPLLM",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.95,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Foundational, multi-proposal (A,C) decision: swapping the demonstrably-broken deep:deep_failed path for a proven FIND→VERIFY→SYNTHESIZE adversarial pattern is sound and high-impact. Low reversibility and high build cost dock simplicity, but the test is concrete and the bet de-risks the whole system.",
+                      "total":  0.8275
+                  },
+                  {
+                      "atom_id":  "AUDIT_MODES_SEPARATION",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Unanimous (A,B,C). Keeping the cheap nightly static guard separate from the expensive on-demand adversarial audit is the correct operational split and prevents the cron from accidentally triggering costly deep runs. Clean separation of concerns with a verifiable trigger contract.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "CONCURRENCY_FLOOR_20PLUS",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.7,
+                                     "feasibility":  0.6,
+                                     "impact":  0.85,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.55,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "A fixed hard floor of 20 stated as absolute conflicts with COST_CONTROL_BUDGET_DEPTH (agent caps/token budgets) and with provider rate limits; floor should be a budget-and-rate-limit-bounded target, not unconditional.",
+                                            "amount":  0.05
+                                        }
+                                    ],
+                      "reason":  "Refill-queue worker pool replacing a static maxParallelAgents cap is the right mechanism, but a non-negotiable floor of 20 fights both the budget profile and 429 reality. Modify: keep the pool and PID-verified target, but make the floor configurable and capped by budget/rate-limit headroom.",
+                      "total":  0.68
+                  },
+                  {
+                      "atom_id":  "PROVE_REAL_PARALLELISM",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.8,
+                                     "impact":  0.7,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Live PID sampling with a peak_concurrency metric and timeline is the only credible way to prove the system isn\u0027t silently sequential — a known failure mode here. Highly specific and strong regression protection; impact is verification-layer rather than core function.",
+                      "total":  0.7925
+                  },
+                  {
+                      "atom_id":  "LLM_CLI_ONLY",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.85,
+                                     "impact":  0.7,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Restricting to Claude CLI + Codex CLI reuses the bridge\u0027s existing driver agent-invoke infra, avoids raw-API key management, and a two-provider split aids rate-limit failover. A constraint rather than a value-add, but a coherent and simplifying one.",
+                      "total":  0.7975
+                  },
+                  {
+                      "atom_id":  "RATE_LIMIT_HANDLING",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.7,
+                                     "impact":  0.85,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Unanimous and essential: with 20+ concurrent CLI agents, 429/usage-limit handling with backoff and cross-provider rebalancing is the load-bearing resilience piece for the concurrency goal. Detecting limits from CLI output and rebalancing is non-trivial (lower feasibility/simplicity), but the failure mode is severe.",
+                      "total":  0.78
+                  },
+                  {
+                      "atom_id":  "ORCHESTRATION_PARALLELPS1_FIX",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.65,
+                                     "impact":  0.85,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.8,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Reusing driver agent-invoke + lib/parallel.ps1 while explicitly choosing a read-only subprocess harness over the worktree/merge path is exactly right for a read-only audit. Strong specificity on what to fix (parallel-pipe, untracked-cleanup, codex hang) and how to test; feasibility/simplicity suffer because it touches known-unstable code.",
+                      "total":  0.7725
+                  },
+                  {
+                      "atom_id":  "AGENT_FAULT_ISOLATION",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.92,
+                                     "feasibility":  0.82,
+                                     "impact":  0.85,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.92,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Per-agent isolation so one timeout/crash/empty-reply can\u0027t abort a whole phase is mandatory for any 20+ agent fan-out; preserving stderr/artifacts and letting the orchestrator choose retry vs degraded quorum is the correct contract. High correctness and risk reduction at moderate cost.",
+                      "total":  0.8385
+                  },
+                  {
+                      "atom_id":  "COST_CONTROL_BUDGET_DEPTH",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.8,
+                                     "impact":  0.82,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+                                        {
+                                            "reason":  "Tension with CONCURRENCY_FLOOR_20PLUS left unresolved at atom level — budget caps and a hard concurrency floor must be explicitly reconciled (budget bounds the floor).",
+                                            "amount":  0.03
+                                        }
+                                    ],
+                      "reason":  "Unanimous governance: agent caps, token budgets, configurable depth, pre-flight estimate, and especially the VERIFY early-exit when FIND yields zero findings are the principled guardrails against runaway cost. This is the side of the resource-allocation conflict that should bound the concurrency floor.",
+                      "total":  0.8215
+                  },
+                  {
+                      "atom_id":  "PROJECT_MAP_PLAN_FIRST",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.95,
+                                     "impact":  0.7,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Low-cost, high-reversibility process step that maps entrypoints, the deep-audit/deep-LLM layer, agent-invoke, lib/parallel.ps1, backlog writer, and scheduler hooks before coding. Cheap insurance against building the wrong thing given the high-cost/low-reversibility architecture atoms downstream.",
+                      "total":  0.855
+                  },
+                  {
+                      "atom_id":  "FIND_CONFIGURABLE_DIMENSIONS",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.85,
+                                     "impact":  0.78,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.7,
+                                     "specificity":  0.82
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A configurable dimension list with simultaneous finder launch is the natural shape of the FIND phase and the unit of parallelism that justifies the concurrency floor. Straightforward and testable; modest risk-reduction weight since it\u0027s a structural choice rather than a safety control.",
+                      "total":  0.8105
+                  },
+                  {
+                      "atom_id":  "FIND_STRUCTURED_JSON_OUTPUT",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.78,
+                                     "impact":  0.8,
+                                     "simplicity":  0.72,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "An enumerated schema (root_cause, file, line, evidence_snippet, severity, why, fix_sketch, confidence) is required for downstream dedup/verify/synthesize to be machine-driven. Malformed-output handling (reject/repair) is the only feasibility wrinkle; very high specificity.",
+                      "total":  0.817
+                  },
+                  {
+                      "atom_id":  "VERIFY_ADVERSARIAL_MAJORITY_REFUTE",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.68,
+                                     "impact":  0.9,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.88
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The adversarial core: false-by-default, simultaneous skeptics, majority-refute with mandatory file:line evidence, and retaining refuted findings for transparency. This is what turns a finder dump into a trustworthy report and is the main defense against false positives. High cost and complexity (many agents, voting) are inherent to the value it delivers.",
+                      "total":  0.794
+                  },
+                  {
+                      "atom_id":  "SYNTHESIZE_DEDUP_RANK_AUTOTASK",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.82,
+                                     "impact":  0.82,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.78,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Dedup, severity ranking, and idempotency-keyed auto-task creation close the audit loop into the existing backlog writer — directly addressing the recently-fixed \u0027findings never transition\u0027 gap. The idempotency key is the critical detail preventing duplicate-task spam across runs.",
+                      "total":  0.816
+                  },
+                  {
+                      "atom_id":  "THIN_PROMPTS_FAT_TOOLS",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.85,
+                                     "impact":  0.78,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.72,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-proposal (B) but excellent and well-aligned with LLM_CLI_ONLY: passing dimension+location and letting the CLI read code (codex -s read-only, claude -p --allowedTools Read,Grep,Glob --add-dir) avoids stdin context-stuffing, cuts tokens, and prevents stale-snapshot risk. Concrete flags given; it actually simplifies the orchestrator\u0027s plumbing.",
+                      "total":  0.83
+                  }
+              ]
+}

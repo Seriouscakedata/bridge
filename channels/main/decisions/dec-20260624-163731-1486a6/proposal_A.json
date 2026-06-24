@@ -1,0 +1,144 @@
+{
+    "proposer":  "A",
+    "understanding":  "Задача DISCUSS-first: сначала нужен PROJECT_MAP+PLAN, а не сборка. Нужно спроектировать замену текущего слабого deep-audit на редкий milestone-only мульти-агентный adversarial audit: FIND параллельно, VERIFY параллельно скептиками, SYNTHESIZE в отчёт и backlog-задачи. Нельзя использовать Gemini или raw API; только Claude CLI и Codex CLI через bridge driver agent-invoke и lib/parallel.ps1. Ночной дешёвый static-audit должен остаться отдельным сторожем.",
+    "summary":  "Предлагаю ввести второй режим аудита: daily-static остаётся как есть, а новый milestone-deep-adversarial становится дорогой ручной/веховой инспекцией. Ядро плана: новая control-plane обвязка orchestrator -\u003e parallel-dispatch -\u003e agent-invoke, строгий JSON-контракт findings, adversarial verification с default is_real=false, majority-refute фильтром, синтезом подтверждённых findings и автосозданием fix-задач. Главный инженерный акцент: доказуемая 20+ concurrency для FIND и VERIFY, баланс Claude/Codex CLI, ретраи на лимиты, изоляция падений отдельных агентов и телеметрия фактического параллелизма.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Разделить аудит на два режима: nightly static guard и milestone adversarial deep audit.",
+                               "reason":  "Требование прямо запрещает делать новый дорогой аудит ночным, но требует сохранить дешёвый сторож.",
+                               "tradeoff":  "Появится два пути запуска и две конфигурации, зато не будет смешения дешёвой ежедневной проверки с редкой глубокой инспекцией.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Сначала создать PROJECT_MAP+PLAN с картой текущих entrypoints, deep-audit/deep-LLM слоя, driver agent-invoke, lib/parallel.ps1, backlog writer и scheduler hooks.",
+                               "reason":  "DISCUSS-first является жёстким процессным требованием; сборка до утверждения архитектором и пользователем запрещена.",
+                               "tradeoff":  "Реализация сдвигается на следующий атом работы, но снижается риск встроить мощный механизм не в тот слой control-plane.",
+                               "confidence":  0.99
+                           },
+                           {
+                               "statement":  "Заменить сломанную deep-LLM часть на новый multi-agent orchestrator, а не пытаться сохранить исторический one-pass deep:deep_failed путь как основной.",
+                               "reason":  "Исторический deep-LLM subprocess/job слой ненадёжен и архитектурно не соответствует FIND/VERIFY/SYNTHESIZE.",
+                               "tradeoff":  "Потребуется миграционный слой совместимости для старых команд/логов, но ядро станет проще и проверяемее.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "FIND-фаза должна принимать настраиваемый список dimensions и запускать все finder jobs одновременно через lib/parallel.ps1.",
+                               "reason":  "Источник эффективности — широкий независимый охват разными углами: correctness, security, concurrency, error handling, resources, contracts и target-specific dimensions.",
+                               "tradeoff":  "Больше шума и расхода токенов, но downstream VERIFY отсеет ложные находки.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Каждый finder обязан возвращать только structured JSON по схеме root_cause, file, line, evidence_snippet, severity, why, fix_sketch, confidence.",
+                               "reason":  "VERIFY и SYNTHESIZE должны работать машинно, без ручного разбора свободного текста.",
+                               "tradeoff":  "Нужно валидировать и чинить malformed JSON, зато findings станут пригодны для дедупликации и backlog-задач.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "VERIFY-фаза должна считать каждую находку false by default и запускать skeptic agents по всем findings одновременно.",
+                               "reason":  "Adversarial verification — основное отличие от обычного LLM-аудита и главный фильтр ложных positives.",
+                               "tradeoff":  "Стоимость примерно кратно растёт от числа findings, но качество отчёта резко выше.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Для VERIFY использовать majority-refute rule: если большинство скептиков опровергают finding против текущего file:line evidence, finding выбрасывается.",
+                               "reason":  "Это формализует проверку и не даёт одному слабому verifier валить или подтверждать finding.",
+                               "tradeoff":  "При малом числе verifier возможны ничьи; для tie нужно правило escalate/manual-review или дополнительный verifier.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "SYNTHESIZE должен дедуплицировать подтверждённые findings, ранжировать по severity и создавать actionable backlog tasks со ссылкой на evidence и verifier votes.",
+                               "reason":  "Цель аудита не отчёт ради отчёта, а исправляемые задачи в control-plane backlog.",
+                               "tradeoff":  "Нужна аккуратная нормализация severity и task metadata, зато дальнейшая работа становится атомарной.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "Concurrency model: parallel.maxStreams и parallel.workers должны поддерживать минимум 20 live agent processes; целевой default — 24 или 27, configurable hard cap выше.",
+                               "reason":  "Пользователь явно переопределил ранние caps и требует минимум 20 одновременных агентов при достаточном объёме.",
+                               "tradeoff":  "Повышается риск rate-limit, OOM и CLI-зависаний, поэтому нужны queue, retry, heartbeat и kill-timeout.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Если jobs меньше 20, concurrency floor считается неприменимым; если jobs достаточно, dispatcher обязан держать 20+ active/running, а не просто 20 queued.",
+                               "reason":  "Нужно доказать реальный параллелизм, а не последовательный запуск с большим batch size.",
+                               "tradeoff":  "Потребуется явная телеметрия active_count over time и тест wide-fanout.",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Использовать только Claude CLI и Codex CLI, балансируя provider/model/reasoning profiles между finder/verifier slots.",
+                               "reason":  "Требование запрещает raw API и Gemini, но разрешает разнообразие моделей и reasoning уровней внутри Claude/Codex.",
+                               "tradeoff":  "CLI менее контролируемы, чем API, зато соответствует ограничениям и использует доступную bridge orchestration.",
+                               "confidence":  0.99
+                           },
+                           {
+                               "statement":  "Rate-limit handling должен быть provider-aware: backoff/retry для 429/usage limits, перераспределение новых jobs на другой provider, но без снижения целевого concurrent floor при наличии runnable jobs.",
+                               "reason":  "20 одновременных Claude CLI могут упереться в лимиты, поэтому нельзя зависеть от одного провайдера.",
+                               "tradeoff":  "Логика dispatch сложнее, но wide fan-out становится устойчивее.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Падение одного finder/verifier не должно валить фазу; job получает failed status, stderr/artifacts сохраняются, а orchestrator решает retry или degraded quorum.",
+                               "reason":  "Широкий fan-out статистически будет иметь частичные сбои.",
+                               "tradeoff":  "Отчёт должен явно показывать incomplete coverage, зато весь аудит не пропадает из-за одного CLI процесса.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "lib/parallel.ps1 нужно проверить и при необходимости укрепить wide-fanout тестом: 20-30 dummy CLI jobs, stdout/stderr capture, timeout, cleanup untracked/pathspec edge cases, no codex hang.",
+                               "reason":  "Контракт прямо указывает прошлую instability в parallel-dispatch.",
+                               "tradeoff":  "До полноценного аудита придётся потратить атом на инфраструктуру, но иначе главный механизм ненадёжен.",
+                               "confidence":  0.97
+                           },
+                           {
+                               "statement":  "Cost control реализовать как budget profile: dimensions, verifiers_per_finding, max_findings_to_verify, max_agents, timeout, model mix, token/log size limits.",
+                               "reason":  "Стоимость допустимо высокая, но должна быть управляемой и осознанной.",
+                               "tradeoff":  "Жёсткие лимиты могут пропустить часть issues, но без них milestone audit может стать неуправляемым.",
+                               "confidence":  0.92
+                           }
+                       ],
+    "assumptions":  [
+                        "В репозитории уже есть driver agent-invoke и lib/parallel.ps1, которые можно использовать или доработать в control-plane scope.",
+                        "Backlog имеет машинно-записываемый формат или существующий writer, который можно вызвать из SYNTHESIZE.",
+                        "Claude CLI и Codex CLI доступны в среде запуска bridge и могут запускаться как subprocess jobs.",
+                        "Формальное утверждение пользователя требуется после PROJECT_MAP+PLAN и до реализации.",
+                        "Минимум 20 concurrent agents применим только когда число runnable jobs в фазе не меньше 20.",
+                        "Ночной static-audit уже имеет отдельный scheduler path, который можно оставить без изменений."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Claude/Codex CLI лимиты или подписочные ограничения не позволят физически держать 20+ одновременных real LLM jobs.",
+                      "severity":  "high",
+                      "mitigation":  "Балансировать provider mix, использовать разные model/reasoning profiles, retry/backoff на 429, держать runnable queue, фиксировать active_count telemetry и явно fail-fast с диагностикой, если внешний лимит делает контракт невыполнимым."
+                  },
+                  {
+                      "risk":  "lib/parallel.ps1 снова проявит pipe/capture/hang instability при широком fan-out.",
+                      "severity":  "high",
+                      "mitigation":  "Сначала отдельный infrastructure atom: dummy wide-fanout stress test 20-30 jobs, per-job artifact dirs, timeout/heartbeat, robust cleanup через PowerShell-native paths, no shared stdout races."
+                  },
+                  {
+                      "risk":  "LLM agents вернут malformed JSON или непроверяемые findings без точного file:line.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавить JSON schema validation, repair pass только для формата, reject findings без file:line/evidence, и считать unverifiable findings false by default."
+                  },
+                  {
+                      "risk":  "VERIFY стоимость взорвётся при большом числе raw findings.",
+                      "severity":  "medium",
+                      "mitigation":  "Ввести max_findings_to_verify по severity/confidence, дедуп перед VERIFY, configurable verifiers_per_finding и explicit budget profile для milestone runs."
+                  },
+                  {
+                      "risk":  "Majority-refute может выбросить редкий реальный баг из-за слабых verifier prompts.",
+                      "severity":  "medium",
+                      "mitigation":  "Для critical/high findings использовать больше verifier quorum, tie -\u003e escalate/manual-review, а verifier prompt требовать доказательства против текущего кода, а не общего мнения."
+                  },
+                  {
+                      "risk":  "Автосоздание backlog tasks может засорить backlog дублями или низкокачественными задачами.",
+                      "severity":  "medium",
+                      "mitigation":  "Дедуплицировать по root_cause/file/line, создавать задачи только для confirmed findings, включать evidence и verifier votes, маркировать source=deep-adversarial-audit."
+                  },
+                  {
+                      "risk":  "Новый milestone audit случайно попадёт в nightly schedule.",
+                      "severity":  "high",
+                      "mitigation":  "Разнести commands/config keys, добавить тест/проверку scheduler config, где nightly вызывает только static guard, а adversarial audit доступен только explicit milestone/on-demand trigger."
+                  }
+              ],
+    "minimal_version":  "После утверждения PROJECT_MAP+PLAN: оставить nightly static-audit без изменений; добавить milestone command для adversarial audit; реализовать FIND с configurable dimensions и 20+ parallel CLI jobs; реализовать structured JSON validation; реализовать VERIFY с 3 skeptics per finding, all spawned concurrently, majority-refute; реализовать SYNTHESIZE report plus backlog task creation; заменить deep:deep_failed path на новый orchestrator; добавить wide-fanout dummy test и telemetry active_count proving 20+ running jobs.",
+    "advanced_version":  "Поверх minimal: adaptive provider/model balancing между Claude/Codex, dynamic verifier quorum по severity, cross-agent dedup до VERIFY, budget profiles small/standard/operator-grade, resume/retry of interrupted audit runs, richer evidence index, dashboard/report artifacts with vote traces, historical effectiveness metrics, and stress tests for 27+ concurrent agents matching the operator-grade pattern."
+}

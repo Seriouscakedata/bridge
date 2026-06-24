@@ -1,0 +1,188 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "ARCH_3PHASE_REPLACE_DEEPLLM",
+                      "statement":  "Adopt the proven three-phase adversarial architecture (FIND → VERIFY → SYNTHESIZE) and replace the broken deep-LLM component (deep:deep_failed) with this new multi-agent orchestrator.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Architecture",
+                      "test":  "Verify that the old `deep:deep_failed` path is removed/disabled and the new system follows a distinct FIND, VERIFY, SYNTHESIZE execution flow.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "AUDIT_MODES_SEPARATION",
+                      "statement":  "Separate the audit into two distinct modes: the existing nightly static guard and a new milestone-triggered adversarial deep audit, which is invoked on-demand.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Operational Model",
+                      "test":  "Confirm that the nightly static audit runs independently and the adversarial deep audit can only be triggered manually or via specific milestone hooks, never by the nightly cron.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "CONCURRENCY_FLOOR_20PLUS",
+                      "statement":  "Enforce a hard floor of at least 20 concurrent active agents during FIND and VERIFY phases, maintaining this floor via a refill-queue worker pool that replaces the current maxParallelAgents cap.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Concurrency",
+                      "test":  "Run a stress test with \u003e20 jobs and verify that the system consistently maintains 20+ active agent processes, not just queued, as measured by live PID sampling.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "PROVE_REAL_PARALLELISM",
+                      "statement":  "Prove real parallelism (not sequential) by sampling live audit-agent PIDs, recording peak_concurrency and a concurrency timeline in the audit report, asserting peak \u003e= 20 when sufficient work exists.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Telemetry \u0026 Verification",
+                      "test":  "Generate an audit report that includes a concurrency timeline and peak_concurrency metric, demonstrating that \u003e= 20 agents were active simultaneously during a test run with sufficient work.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "LLM_CLI_ONLY",
+                      "statement":  "Use ONLY Claude CLI and Codex CLI for all audit agents, balancing provider/model/reasoning profiles between finder/verifier slots.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Technology Stack",
+                      "test":  "Verify that no raw API calls or other LLM providers (e.g., Gemini) are used, and that agent invocation exclusively uses Claude CLI and Codex CLI.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "RATE_LIMIT_HANDLING",
+                      "statement":  "Implement provider-aware rate-limit handling with backoff/retry for 429/usage limits, balancing agent distribution (e.g., ~50/50) and re-distributing jobs across Claude and Codex providers to maintain the concurrency floor.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Resilience \u0026 Cost Control",
+                      "test":  "Simulate 429 errors from one provider and verify that the system retries with backoff, rebalances jobs to the other provider, and maintains the concurrency floor.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "ORCHESTRATION_PARALLELPS1_FIX",
+                      "statement":  "Implement fan-out orchestration using the bridge\u0027s existing `driver agent-invoke` and `lib/parallel.ps1`, fixing known instabilities (e.g., parallel-pipe, untracked-cleanup, codex hang). The audit fan-out should use a read-only subprocess harness, not `lib/parallel.ps1`\u0027s worktree/merge functions, and be tested with wide-fanout dummy jobs.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Infrastructure \u0026 Stability",
+                      "test":  "Run a wide-fanout stress test (20-30 dummy CLI jobs) using the new read-only harness within `lib/parallel.ps1`, verifying stability, correct stdout/stderr capture, timeout handling, and absence of hangs.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "AGENT_FAULT_ISOLATION",
+                      "statement":  "Implement strict per-agent isolation so that the failure (timeout, crash, empty reply) of a single finder/verifier agent does not abort the entire phase; job status, stderr/artifacts are preserved, and the orchestrator decides on retry or degraded quorum.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "Resilience",
+                      "test":  "Introduce controlled failures (e.g., timeout, crash, malformed output) in individual agents during a multi-agent run and verify that the overall audit continues, failures are logged, and artifacts are preserved.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "COST_CONTROL_BUDGET_DEPTH",
+                      "statement":  "Implement comprehensive cost control via a budget profile, enforcing total-agent-caps, token budgets, configurable depth (dimensions, verifiers-per-finding, finder rounds), and including an early-exit for VERIFY if FIND returns zero findings, potentially with a pre-flight cost estimate.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Cost Control",
+                      "test":  "Configure a budget profile with agent caps, token limits, and depth settings; verify that the audit respects these limits, and that an early-exit occurs if FIND yields no findings.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "PROJECT_MAP_PLAN_FIRST",
+                      "statement":  "Create a PROJECT_MAP+PLAN document covering all required aspects (entrypoints, deep-audit/deep-LLM layer, driver agent-invoke, lib/parallel.ps1, backlog writer, scheduler hooks) before any implementation begins.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "Process",
+                      "test":  "Verify that a comprehensive PROJECT_MAP+PLAN document is produced and approved by stakeholders before any code implementation starts.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "FIND_CONFIGURABLE_DIMENSIONS",
+                      "statement":  "The FIND phase must accept a configurable list of dimensions and launch all finder jobs for these dimensions simultaneously.",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "FIND Phase",
+                      "test":  "Configure the FIND phase with a custom list of dimensions and verify that agents are spawned for each dimension and run in parallel.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "FIND_STRUCTURED_JSON_OUTPUT",
+                      "statement":  "Each finder agent must return only structured JSON findings conforming to a predefined schema (e.g., root_cause, file, line, evidence_snippet, severity, why, fix_sketch, confidence).",
+                      "source_proposals":  [
+                                               "A",
+                                               "C"
+                                           ],
+                      "category":  "FIND Phase",
+                      "test":  "Run a finder agent and validate its output against the specified JSON schema; verify that malformed output is handled (e.g., rejected or repaired).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "VERIFY_ADVERSARIAL_MAJORITY_REFUTE",
+                      "statement":  "The VERIFY phase must be adversarial, treating each finding as false by default. It should spawn all skeptic agents for all findings simultaneously. Each skeptic must cite current file:line evidence to refute a finding; findings are discarded if a majority of skeptics refute them. Refuted findings should be kept in the report.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "VERIFY Phase",
+                      "test":  "Provide a set of findings (some true, some false) to the VERIFY phase and verify that skeptics are spawned, findings are correctly refuted/confirmed based on majority rule and evidence citation, and refuted findings are present in the report.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "SYNTHESIZE_DEDUP_RANK_AUTOTASK",
+                      "statement":  "The SYNTHESIZE phase must deduplicate confirmed findings, rank them by severity, and auto-create actionable, structured backlog fix-tasks (e.g., for critical/high severity) with an idempotency key to prevent duplicates across runs.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "SYNTHESIZE Phase",
+                      "test":  "Run the SYNTHESIZE phase with confirmed findings, verify that tasks are created in the backlog with correct metadata, severity ranking, and that re-running with the same findings does not create duplicate tasks due to idempotency.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "THIN_PROMPTS_FAT_TOOLS",
+                      "statement":  "Finder/verifier agents must use thin prompts and fat tools, passing each agent its dimension and location, and letting the Claude/Codex CLI read the code itself (e.g., `codex -s read-only`, `claude -p --allowedTools Read,Grep,Glob --add-dir`) instead of pre-stuffing large context into stdin.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Agent Interaction",
+                      "test":  "Verify that agent prompts are concise and that agents are invoked with CLI arguments/flags that enable them to read code directly from the filesystem, rather than receiving large code snippets via stdin.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

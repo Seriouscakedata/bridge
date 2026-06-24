@@ -1,0 +1,104 @@
+{
+    "proposer":  "B",
+    "understanding":  "The bridge\u0027s current \u0027deep-audit\u0027 (tools/deep-audit.ps1 + tools/deep-audit-agent.ps1) is a single-pass FIND-only pipeline: Invoke-MultiAgentDeepAudit fans out a handful of role agents (security-model/functional-model/etc.) but it runs them through API LLMs (deepseek/gemini via Invoke-LLM), capped at maxParallelAgents=3, with NO verify phase and only fingerprint dedup. The \u0027real-agent\u0027 passes are weak: the codex pass reads one 24h diff read-only, and the claude pass pipes ~67K of context into `claude.exe -p` via stdin, which HANGS on this Windows host and silently falls back to gemini-3-flash — that hang is the historical deep:deep_failed. Separately, lib/parallel.ps1\u0027s worker functions (Invoke-ParallelWorkers/Invoke-CodexParallel/Spawn-Worker) are WRITE-oriented: they create per-worker git worktrees and merge back, carry documented instabilities (codex sandbox runs as a separate OS user that cannot write linked-worktree .git metadata; untracked-cleanup pathspec; merge conflicts), and explicitly REFUSE to parallelize the bridge repo itself. The task asks to replace the deep-audit with the operator\u0027s proven 3-phase adversarial workflow (FIND N dimensions in parallel -\u003e VERIFY adversarial skeptics per finding -\u003e SYNTHESIZE + auto-file backlog), implemented on the bridge\u0027s own orchestration, held at \u003e=20 concurrent agents on Claude+Codex CLIs ONLY, run RARELY on milestones, with the cheap nightly static guard kept intact. Deliverable now is a PROJECT_MAP+PLAN for DISCUSS review/approval — not code.",
+    "summary":  "Build the milestone adversarial audit by REUSING the read-only subprocess harness the bridge already has (Start-DeepAuditAgentProcess / Complete-DeepAuditAgentProcess / Stop-DeepAuditProcessTree / per-agent result-JSON / quorum), NOT the worktree-merge path. Audit is read-only, so worktrees, merge-back, and the bridge-repo refusal are unnecessary risk — drop them. Add a read-only fan-out primitive INSIDE lib/parallel.ps1 that reuses its CLI registry (claude/codex), worker pool, routing and Invoke-WithChannelEnv spawn, but launches claude/codex CLIs in read-only mode (codex -s read-only; claude -p --allowedTools Read,Grep,Glob --add-dir) with thin prompts that let each CLI READ the code itself — eliminating the large-stdin hang that caused deep_failed. Hold \u003e=20 live agents via a refill-queue pool that interleaves Claude and Codex (different provider quotas) across diverse models/reasoning tiers, retries 429 with backoff, and never drops below the floor; confirm real parallelism by sampling live audit PIDs and logging peak_concurrency. FIND fires all dimensions at once; VERIFY fires all skeptics for all findings at once (default is_real=false, must cite file:line to refute, \u003e=majority refute -\u003e drop); SYNTHESIZE ranks survivors and auto-files dedup\u0027d, idempotent fix-tasks to the backlog. Gate the whole thing behind a NEW milestone/on-demand mode (never cron), with agent-cap + token budget + configurable depth + 0-finding early-exit. Nightly static-grep guard stays untouched (two-mode separation).",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement audit fan-out on the read-only subprocess harness (the deep-audit-agent.ps1 process model: spawn -\u003e poll -\u003e timeout -\u003e process-tree-kill -\u003e per-agent result JSON), NOT on lib/parallel.ps1\u0027s worktree/merge worker functions. Honor \u0027use lib/parallel.ps1\u0027 by adding the new read-only fan-out primitive (e.g. Invoke-ReadOnlyAgentFanout) INSIDE lib/parallel.ps1, reusing its CLI registry, worker pool and Invoke-WithChannelEnv spawn.",
+                               "reason":  "An audit is read-only: agents only read code and emit findings. Worktrees, merge-back, and the \u0027refuse: cannot parallelize the bridge repo itself\u0027 guard exist for WRITE workers and are exactly the instability surface the task fears (codex sandbox-user can\u0027t write linked-worktree .git, untracked-cleanup pathspec, merge conflicts). Reusing the read-only harness sidesteps all of it while still living in parallel.ps1, satisfying the constraint structurally.",
+                               "tradeoff":  "A literal reading of \u0027use Invoke-ParallelWorkers\u0027 is not met; the architect/user must accept that read-only audit deliberately bypasses worktree/merge. Two fan-out code paths (write-worktree for coders, read-only for audit) now coexist in parallel.ps1.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "Finder/verifier agents use THIN prompts + FAT tools: pass each agent its dimension + where to look, and let the claude/codex CLI read the code itself (codex -s read-only -C \u003croot\u003e; claude -p --allowedTools Read,Grep,Glob --add-dir \u003croot\u003e). Do NOT pre-stuff large context into stdin.",
+                               "reason":  "The deep:deep_failed root cause is claude.exe -p hanging on ~67K of stdin context. Letting the CLI pull context via its own file tools eliminates the hang entirely, matches the operator pattern of \u0027reads REAL code\u0027, and gives richer, current-tree evidence (file:line) than a pre-baked diff blob.",
+                               "tradeoff":  "Less deterministic token usage and harder to bound per-agent cost up front; an agent can wander. Mitigated by per-agent timeout + budget cap + a focused dimension scope in the prompt.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "Maintain the \u003e=20 concurrent floor with a refill-queue worker pool that interleaves Claude and Codex CLIs (~50/50) across diverse models and reasoning tiers, retries 429 with exponential backoff, and refills the pool the instant a slot frees — never dropping below 20 while work remains. Replace the current maxParallelAgents=3 cap for this mode.",
+                               "reason":  "Claude (Anthropic) and Codex (OpenAI) draw on SEPARATE provider quotas, so a 50/50 mix halves per-provider concurrency pressure and is the cleanest way to actually hold 20+ without one subscription throttling. Reasoning-tier/model diversity simultaneously gives the perspective diversity the operator\u0027s workflow relies on.",
+                               "tradeoff":  "20 heavyweight CLI processes on one Windows host is real RAM/CPU load and a burst of provider calls; spikes risk OOM or throttle. Acceptable only because runs are rare/milestone-gated.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Prove real parallelism (not sequential) by sampling the set of live audit-agent PIDs during the wave and recording peak_concurrency + a concurrency timeline in the audit report; assert peak \u003e= 20 (given \u003e=20 units of work) as a success criterion.",
+                               "reason":  "The contract explicitly demands a way to confirm 20 ran AT ONCE. Live-PID sampling is cheap, the process-tracking already exists in the harness, and a logged peak is auditable evidence for the operator/architect.",
+                               "tradeoff":  "Peak-sampling can miss a momentary dip; it confirms the floor was reached, not that it was held every instant. A timeline series mitigates but adds a little logging overhead.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "VERIFY is adversarial and barrier-after-FIND: collect+dedup all findings, then spawn ALL skeptics for ALL findings simultaneously. Each skeptic defaults is_real=false and must cite current file:line evidence to REFUTE; \u003e= majority refute =\u003e discard. Keep refuted findings in the report (not silently dropped).",
+                               "reason":  "This adversarial refutation is the operator\u0027s \u0027source of power\u0027 — it filters false positives and confirms real bugs. Default-false + must-cite-to-refute biases toward killing plausible-but-wrong findings, which is the failure mode that makes audits noise.",
+                               "tradeoff":  "The barrier (find all -\u003e verify all) costs wall-clock vs a pipeline that verifies each finding as its finder returns; and aggressive skeptics can over-refute real bugs. Mitigated by majority rule, keeping refuted findings visible, and offering the pipeline variant in the advanced version.",
+                               "confidence":  0.83
+                           },
+                           {
+                               "statement":  "SYNTHESIZE ranks survivors by severity and auto-files them as structured backlog fix-tasks via the existing backlog CRUD, with a per-finding idempotency key (hash of root_cause+file+category) to prevent duplicate filing across milestone runs, a severity threshold (critical/high auto-file; lower =\u003e report-only), and a per-run task cap.",
+                               "reason":  "Turns structured findings into actionable work (the SYNTHESIZE constraint) while preventing backlog spam — without idempotency, repeated milestone runs would re-file the same bugs every time.",
+                               "tradeoff":  "Hash-based idempotency can mis-merge two genuinely different findings at the same file:line, or fail to dedup reworded ones; the threshold can defer real medium bugs to report-only.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "Ship as a NEW, separate mode (e.g. tools/deep-audit.ps1 -Adversarial / a milestone-audit entrypoint) triggered ONLY on-demand by operator command and milestone hooks (before project training, after major pipeline change) — never on the nightly cron or the 15-min auditor sensor. The existing static-grep + light-LLM nightly guard is left fully intact.",
+                               "reason":  "Satisfies the two-mode requirement: cheap daily watchdog stays; expensive deep inspection is rare and milestone-gated. Separation prevents the costly path from ever leaking into nightly scheduling.",
+                               "tradeoff":  "Two audit codepaths to maintain and document; risk of drift between them. Milestone auto-trigger hooks add coupling to project-acceptance/pipeline-change events.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Govern cost and contain faults: enforce total-agent-cap + token budget + configurable depth (dimension count, skeptics-per-finding, finder rounds), early-exit verify when FIND returns 0 findings, a pre-flight cost estimate with operator confirm for milestone runs, and strict per-agent isolation so any single agent timeout/crash/empty-reply never aborts the wave (reuse Stop-DeepAuditProcessTree + per-agent result files + quorum).",
+                               "reason":  "The operator run was ~27 agents / ~1.5M tokens; without caps and depth knobs this is unbounded. Fault isolation is mandatory for a 20+ fan-out — one hung claude.exe must not sink the audit.",
+                               "tradeoff":  "Caps/budget can truncate coverage on large targets (silent under-audit if not surfaced); pre-flight confirm adds operator friction to on-demand runs. Mitigated by logging exactly what was dropped/capped.",
+                               "confidence":  0.86
+                           }
+                       ],
+    "assumptions":  [
+                        "claude-code CLI and codex CLI are both installed and resolvable on the host (Resolve-ClaudeExe / Resolve-CodexExe already exist) and support read-only invocation (codex -s read-only; claude -p with Read/Grep/Glob tools).",
+                        "The host can sustain \u003e=20 concurrent CLI processes for a rare milestone run; the operator accepts the RAM/CPU and provider-cost load because it is not nightly.",
+                        "The Anthropic and OpenAI subscriptions tied to the CLIs allow enough concurrency that a balanced ~50/50 mix plus 429 backoff can hold 20 live agents (queue refill absorbs transient throttling).",
+                        "The bridge backlog CRUD (lib/backlog-*.ps1) exposes a programmatic create path usable to auto-file structured fix-tasks.",
+                        "Claude/Codex CLIs can be coerced to emit the findings schema (root_cause/file:line/evidence/severity/why/fix_sketch) reliably enough that Extract-Json + a single re-ask handles malformed output.",
+                        "Milestone events (before project training, after major pipeline change) are either operator-invoked or have a detectable hook the audit can subscribe to (gated by cooldown + budget).",
+                        "DISCUSS-first holds: this turn delivers the PROJECT_MAP+PLAN only; no implementation lands until the architect reviews and the user approves.",
+                        "Reusing the deep-audit-agent read-only harness (no worktree/merge) is an acceptable interpretation of \u0027use lib/parallel.ps1\u0027 as long as the new fan-out primitive lives in parallel.ps1 and reuses its registry/pool."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "20+ heavyweight claude/codex CLI processes on a single Windows host exhaust RAM/CPU (OOM, swap thrash, or the host itself becomes unresponsive mid-audit).",
+                      "severity":  "high",
+                      "mitigation":  "Audit is read-only (no worktree disk churn). Stagger spawns (~150-250ms), refill-queue rather than instantaneous 20, cap the floor by measured free RAM, monitor and shed to a lower floor only if the host is genuinely starving (logged), and keep runs milestone-only."
+                  },
+                  {
+                      "risk":  "Provider rate limits / subscription concurrency caps (Anthropic + OpenAI) throw 429 / throttle and stall the \u003e=20 floor, or balloon latency so the run never reaches peak concurrency.",
+                      "severity":  "high",
+                      "mitigation":  "Balance Claude/Codex ~50/50 to split quota pressure, exponential backoff + jitter on 429, keep a refill queue that backfills with the other provider when one throttles, spread reasoning tiers, and log per-provider throttle events so the floor breach is visible rather than silent."
+                  },
+                  {
+                      "risk":  "claude.exe -p remains flaky on Windows (the original deep_failed) and a chunk of finder/verifier slots silently produce empty results, degrading coverage.",
+                      "severity":  "high",
+                      "mitigation":  "Thin-prompt-fat-tools removes the large-stdin hang; hard per-agent timeout + process-tree kill (already implemented); per-agent isolation + quorum so empties don\u0027t abort the wave; Codex acts as a counterweight so a Claude-side outage still yields a real audit; classify empty-reply explicitly in the report."
+                  },
+                  {
+                      "risk":  "Adversarial skeptics over-refute (kill real bugs) or under-refute (let false positives through), distorting the confirmed set.",
+                      "severity":  "medium",
+                      "mitigation":  "Default is_real=false but require the skeptic to cite concrete current file:line to refute; majority rule across diverse-lens skeptics; retain refuted findings in the report so the operator can spot wrongful kills; tune skeptic count via configurable depth."
+                  },
+                  {
+                      "risk":  "Auto-filing floods the backlog with duplicate or low-value tasks across repeated milestone runs.",
+                      "severity":  "medium",
+                      "mitigation":  "Per-finding idempotency hash, severity threshold (auto-file critical/high only, lower =\u003e report-only), per-run task cap, and a cross-run findings ledger to suppress already-filed / wontfix items."
+                  },
+                  {
+                      "risk":  "Cost blowout: ~1.5M tokens per run multiplied by over-frequent triggering or runaway finder/verify rounds.",
+                      "severity":  "medium",
+                      "mitigation":  "Milestone-only triggering (never cron), token budget + agent-cap as hard ceilings, configurable depth, 0-finding early-exit before VERIFY, and a pre-flight cost estimate with operator confirm."
+                  },
+                  {
+                      "risk":  "Reviewer/contract mismatch: the architect or user expects the worktree-based Invoke-ParallelWorkers path and treats the read-only reuse as not meeting the \u0027fix parallel-pipe instability\u0027 requirement.",
+                      "severity":  "medium",
+                      "mitigation":  "Make the read-only-vs-worktree rationale explicit in the PLAN for sign-off; still harden the shared parallel.ps1 spawn/registry path (429 retry, refill queue, peak-concurrency telemetry) so the wide-fan-out reliability requirement is met where it actually applies."
+                  }
+              ],
+    "minimal_version":  "Refit the EXISTING deep-audit subprocess harness rather than rebuild: (1) add a read-only CLI finder path in lib/parallel.ps1 that reuses the claude/codex registry + Invoke-WithChannelEnv spawn but launches them read-only (codex -s read-only; claude -p Read/Grep/Glob) with thin prompts so each CLI reads the code itself — this alone fixes deep:deep_failed; (2) raise this mode\u0027s concurrency to a \u003e=20 floor via a provider-balanced refill queue with 429 backoff, and log peak_concurrency; (3) add ONE round of adversarial VERIFY — fan out all skeptics for all findings at once, default is_real=false, must cite file:line, \u003e=majority refute =\u003e drop; (4) SYNTHESIZE: severity-rank survivors and auto-file critical/high to the backlog with idempotency dedup; (5) gate everything behind a new -Adversarial/-Milestone mode invoked on-demand only, leaving the nightly static-grep guard untouched. Reuses existing Stop-DeepAuditProcessTree, result-file, quorum, dedup and synthesis scaffolding, so the new surface area is the read-only CLI dispatch + the verify phase + the backlog filer.",
+    "advanced_version":  "On top of the minimal core: configurable depth/rounds with loop-until-dry FIND (re-spawn finders until K consecutive dry rounds, so the long tail of bugs is found); perspective-diverse skeptics (correctness / security / reproducibility lenses crossed with Claude/Codex reasoning tiers) instead of N identical refuters; a PIPELINE variant that verifies each finding the moment its finder returns (cutting wall-clock vs the barrier model) while still bursting all skeptics; a provider-aware adaptive scheduler that rebalances Claude/Codex in real time on 429 to defend the \u003e=20 floor; full peak-concurrency telemetry + live dashboard panel; milestone auto-trigger hooks (project-acceptance, large pipeline-change commits) with cooldown + token-budget pre-flight + operator confirm; a cross-run findings ledger and audit-verdict memory integration so the system learns false-positive patterns and suppresses known/wontfix items over time; and optional auto-generation of fix workpacks (not just tasks) for the highest-severity confirmed findings."
+}

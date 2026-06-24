@@ -1,0 +1,31 @@
+{
+    "consensus_atoms":  [
+                            "ARCH_3PHASE_REPLACE_DEEPLLM",
+                            "AUDIT_MODES_SEPARATION",
+                            "CONCURRENCY_FLOOR_20PLUS",
+                            "PROVE_REAL_PARALLELISM",
+                            "LLM_CLI_ONLY",
+                            "RATE_LIMIT_HANDLING",
+                            "ORCHESTRATION_PARALLELPS1_FIX",
+                            "AGENT_FAULT_ISOLATION",
+                            "COST_CONTROL_BUDGET_DEPTH",
+                            "PROJECT_MAP_PLAN_FIRST",
+                            "FIND_CONFIGURABLE_DIMENSIONS",
+                            "FIND_STRUCTURED_JSON_OUTPUT",
+                            "VERIFY_ADVERSARIAL_MAJORITY_REFUTE",
+                            "SYNTHESIZE_DEDUP_RANK_AUTOTASK"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "CONCURRENCY_FLOOR_20PLUS",
+                                           "COST_CONTROL_BUDGET_DEPTH"
+                                       ],
+                          "axis":  "Resource Allocation / Concurrency Limits",
+                          "impact":  "medium"
+                      }
+                  ],
+    "reviews":  [
+
+                ]
+}
