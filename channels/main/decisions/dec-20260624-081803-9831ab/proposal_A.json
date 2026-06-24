@@ -1,0 +1,146 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно DISCUSS-First разложить 17 критичных багов data path проекта oko на атомарные исправления с регрессионными pytest-тестами, не запускать первое обучение до зеленого состояния кластеров A-D и не переделывать уже закоммиченные оператором изменения 771b8dd, 050cb4c, a83b983.",
+    "summary":  "Предлагаю фиксировать pipeline через инварианты: crop всегда берется из кадра события; имя crop/sample глобально уникально и стабильно между рестартами; dataset export не создает несогласованных image/label пар и пишет координаты в системе изображения; finetune gate является обязательным оркестратором перед обучением; mislabel-защита связывает событие с track_id и сверяет class_name с VLM. Каждый атом ниже включает один фикс и один регрессионный pytest-сценарий.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "[A/FRAME-SYNC #1] Заменить источник пикселей crop с latest/current frame на immutable event frame из pending.frames[0]; регрессия: synthetic event frame содержит объект, через ~11 секунд latest frame содержит фон, тест проверяет, что crop взят из event frame.",
+                               "reason":  "Иначе bbox события применяется к более позднему кадру и под positive label попадает фон.",
+                               "tradeoff":  "Нужно хранить snapshot event frame до завершения VLM/decision flow, что увеличит память на pending-событие.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "[A/FRAME-SYNC #2] Привязать bbox к тому же frame snapshot, из которого режется crop, и запретить пересчет bbox по последнему кадру; регрессия: объект сдвигается между кадрами, тест проверяет crop по исходному bbox и исходным пикселям.",
+                               "reason":  "Даже при правильном frame source неверная пара frame/bbox даст фон или другой объект.",
+                               "tradeoff":  "Придется расширить pending/event DTO явными полями event_frame_id, event_frame, event_bbox.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "[A/FRAME-SYNC #12] Сделать pending.frames[0] immutable до записи crop и добавить защиту от мутации/dequeue порядка кадров; регрессия: в pending добавляют новые frames после trigger, тест проверяет, что crop не меняется.",
+                               "reason":  "Асинхронный VLM/queue path может незаметно заменить первый кадр или прочитать хвост очереди.",
+                               "tradeoff":  "Потребуется копирование frame metadata/pixels или read-only wrapper, что немного дороже по CPU/RAM.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "[B/CROP-NAMING #3] Убрать naming по одному frame_id и ввести sample_id из camera_id, event_id, track_id, event_frame_id и monotonic/uuid suffix; регрессия: два samples с одинаковым frame_id получают разные пути.",
+                               "reason":  "frame_id сам по себе не является глобальным идентификатором и приводит к overwrite.",
+                               "tradeoff":  "Имена файлов станут длиннее, зато будут диагностируемыми и стабильными.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "[B/CROP-NAMING #7] Добавить camera_id/source_id в ключи crop/image/label path; регрессия: две камеры с frame_id=42 не конфликтуют и обе пары image/label сохраняются.",
+                               "reason":  "Межкамерные коллизии портят датасет без явной ошибки.",
+                               "tradeoff":  "Потребуется мигрировать/учесть старые fixtures, если они ожидали плоскую структуру имен.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "[B/CROP-NAMING #8] Защитить restart-сценарий, где frame_id снова начинается с 0, через run/session id или event timestamp в sample_id; регрессия: pre-existing crop после рестарта не перезаписывается новым frame_id=0.",
+                               "reason":  "Рестарт камеры или процесса делает frame_id повторяемым.",
+                               "tradeoff":  "Для воспроизводимости нужно явно сохранять session/run id в manifest.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "[B/CROP-NAMING #15] Сделать запись crop/label атомарной: fail on existing destination или write-to-temp plus rename; регрессия: два concurrent exports с одинаковыми исходными ids не приводят к silent overwrite.",
+                               "reason":  "Даже хороший naming нужно защищать от гонок и повторной обработки события.",
+                               "tradeoff":  "Повторная обработка начнет явно падать или создавать distinct duplicate id вместо тихой перезаписи.",
+                               "confidence":  0.84
+                           },
+                           {
+                               "statement":  "[C/DATASET-EXPORT #4] Исправить YOLO export: если image=crop, bbox переводится из full-frame coordinates в crop-local coordinates, clamp/validate и normalize по crop_w/crop_h; регрессия: known full-frame bbox и crop rect дают ожидаемые YOLO cx/cy/w/h.",
+                               "reason":  "YOLO-метка относительно полного кадра на crop-изображении обучает модель неверной геометрии.",
+                               "tradeoff":  "Нужно хранить crop origin и размеры, а invalid/out-of-crop boxes отклонять явно.",
+                               "confidence":  0.94
+                           },
+                           {
+                               "statement":  "[C/DATASET-EXPORT #5] Запретить orphan labels: label пишется только после успешной записи image, а missing image удаляет/не создает label; регрессия: simulate image write failure and assert no label remains.",
+                               "reason":  "Orphan-label ломает training loaders и скрывает потерю изображения.",
+                               "tradeoff":  "Экспорт станет более строгим и может выявить старые неполные samples.",
+                               "confidence":  0.91
+                           },
+                           {
+                               "statement":  "[C/DATASET-EXPORT #6] Для background/negative samples писать пустой label или no-label по выбранному формату, но никогда positive bbox; регрессия: background sample экспортируется без bbox rows.",
+                               "reason":  "Positive bbox на background превращает отрицательные примеры в ложную разметку.",
+                               "tradeoff":  "Нужно зафиксировать один допустимый формат background в dataset contract.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "[C/DATASET-EXPORT #16] Сохранять original frame_w/frame_h и crop_w/crop_h в sample manifest/export metadata и использовать их при validation; регрессия: export roundtrip сохраняет размеры и не нормализует bbox без dimensions.",
+                               "reason":  "Без размеров невозможно надежно проверить и преобразовать координаты.",
+                               "tradeoff":  "Manifest/schema станет чуть шире, возможна миграция fixtures.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "[C/DATASET-EXPORT #17] Добавить pre-training dataset validator: каждая image/label пара согласована, normalized YOLO coords в [0,1], class id валиден, background пустой; регрессия: validator ловит orphan image/label, out-of-range bbox и unknown class.",
+                               "reason":  "Экспорт должен завершаться проверяемыми инвариантами, а не полагаться на training loader.",
+                               "tradeoff":  "Появится дополнительный обязательный шаг перед обучением, но он дешевле испорченного train run.",
+                               "confidence":  0.86
+                           },
+                           {
+                               "statement":  "[D/FINETUNE-GATE #9] Исправить gate так, чтобы detection-модели проверялись detection outputs/labels, а classification probabilities не использовались для detection validation; регрессия: fake detection model без classification probs проходит корректный detection-check и не падает/не пропускается.",
+                               "reason":  "Classification-probs на detection-модели делает gate нефункциональным или ложноположительным.",
+                               "tradeoff":  "Нужно разделить интерфейсы validation для classification и detection.",
+                               "confidence":  0.89
+                           },
+                           {
+                               "statement":  "[D/FINETUNE-GATE #10] Заменить сравнение numeric index на canonical class names/class map с явной валидацией id-to-name; регрессия: переставленный class index не проходит gate, если имя класса не совпадает.",
+                               "reason":  "Индексы нестабильны между датасетами/моделями, имена являются смысловым контрактом.",
+                               "tradeoff":  "Потребуется class_map artifact рядом с dataset/model и строгая ошибка при его отсутствии.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "[D/FINETUNE-GATE #11] Ввести обязательный finetune orchestrator, который блокирует запуск первого обучения до green статуса A-D validators/tests; регрессия: попытка train без green gate завершается отказом с явной причиной.",
+                               "reason":  "Без оркестратора отдельные checks не защищают реальный training entrypoint.",
+                               "tradeoff":  "Training path станет менее гибким для ручных экспериментов; override допустим только явно и не для первого обучения.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "[E/MISLABEL #13] Связать trigger_detection с конкретным track_id/event detection, а не только с category; регрессия: два объекта одной категории в кадре не могут подменить bbox/label друг друга.",
+                               "reason":  "Category-only matching смешивает разные tracks и создает неверные labels.",
+                               "tradeoff":  "События без track_id придется отклонять или помечать low-confidence, пока tracker не даст id.",
+                               "confidence":  0.87
+                           },
+                           {
+                               "statement":  "[E/MISLABEL #14] Сверять detector class_name с VLM result/canonical label и отклонять или карантинить sample при mismatch; регрессия: detector=person, VLM=cat не попадает в positive training set.",
+                               "reason":  "Несверенные class names напрямую создают mislabel в датасете.",
+                               "tradeoff":  "Часть спорных samples уйдет в quarantine и снизит recall сбора данных, зато повысит precision.",
+                               "confidence":  0.89
+                           }
+                       ],
+    "assumptions":  [
+                        "Кластерная привязка #1-#17 из TaskContract считается authoritative для DISCUSS-First декомпозиции.",
+                        "Перед реализацией нужно открыть bridge-projects/oko/AUDIT_FINDINGS_2026-06-24.md и сверить file:line для каждого атома.",
+                        "Коммиты 771b8dd, 050cb4c и a83b983 считаются уже принятыми; реализация должна только не ломать их поведение.",
+                        "99034ac5 нельзя считать достаточным закрытием FINETUNE-GATE, пока новые D#9-D#11 тесты не зеленые.",
+                        "Архитектурное ревью оформляется как review gate по инвариантам A-D/E и по тестовой матрице перед merge.",
+                        "Verification command для scope oko должен быть pytest по соответствующему test subset, затем полный pytest проекта oko."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Audit file может содержать детали file:line, которые уточнят или разделят предложенные атомы.",
+                      "severity":  "medium",
+                      "mitigation":  "Сначала выполнить DISCUSS-First сверку с AUDIT_FINDINGS_2026-06-24.md и обновить test matrix без изменения кластерных инвариантов."
+                  },
+                  {
+                      "risk":  "Фиксы crop source и naming могут затронуть уже существующие fixtures или downstream consumers.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавить compatibility layer только для чтения старых samples, но новые samples писать строго по новому контракту."
+                  },
+                  {
+                      "risk":  "Dataset validator может заблокировать существующие данные, собранные до исправлений.",
+                      "severity":  "high",
+                      "mitigation":  "Старые данные прогнать через quarantine/report; в первый training set допускать только samples, прошедшие новые validators."
+                  },
+                  {
+                      "risk":  "Finetune orchestrator может быть обойден альтернативным entrypoint.",
+                      "severity":  "high",
+                      "mitigation":  "Встроить gate в единственный training command/API и добавить pytest, который проверяет отказ запуска без green gate."
+                  },
+                  {
+                      "risk":  "Track_id может отсутствовать в части legitimate detections.",
+                      "severity":  "medium",
+                      "mitigation":  "Такие events не использовать как positive labels; отправлять в quarantine или background review bucket."
+                  }
+              ],
+    "minimal_version":  "Сделать один PR/patchset с 17 атомарными fixes и 17 pytest-регрессиями, добавить обязательный A-D pre-training gate, прогнать targeted pytest для oko и получить архитектурное ревью по инвариантам.",
+    "advanced_version":  "Помимо minimal version добавить dataset contract document, manifest schema migration, quarantine reports для старых/сомнительных samples, property-based tests для coordinate conversion/naming uniqueness и CI job, который блокирует training/export regressions до merge."
+}

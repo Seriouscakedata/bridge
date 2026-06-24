@@ -1,0 +1,31 @@
+{
+    "task":  "[Автозадача из бэклога] [[DISCUSS]] [oko] КРИТИЧНО до первого обучения: 17 ВЕРИФИЦИРОВАННЫХ багов пути данных (adversarial-аудит оператора). Полный список file:line/почему/фикс: bridge-projects/oko/AUDIT_FINDINGS_2026-06-24.md (17 багов, 12 high). Уже починено оператором (в git, НЕ переделывать): 771b8dd, 050cb4c, a83b983. ОСТАЛЬНЫЕ 17 декомпозируй DISCUSS-First на атомы ПО КЛАСТЕРАМ: (A) FRAME-SYNC #1/2/12: кроп из ПОСЛЕДНЕГО кадра (~11с после) по bbox СОБЫТИЯ → фон под меткой person/cat. Фикс: резать из кадра события (pending.frames[0]). (B) CROP-NAMING #3/7/8/15: имя по frame_id only → коллизии/перезапись (сброс в 0 на рестарте, меж-камерные). (C) DATASET-EXPORT #4/5/6/16/17: YOLO-метки против полного кадра а картинка=кроп → bbox неверны; missing-image даёт orphan-метку; background даёт positive-bbox; frame_w/h теряются. (D) FINETUNE-GATE #9/10/11 ВСЁ ЕЩЁ СЛОМАН (99034ac5 помечена done но НЕ работает): classification-probs на detection-модели, числовые index vs имена, НЕТ оркестратора. Гейт не защитит. (E) MISLABEL #13/14: trigger_detection по категории без track_id; class_name не сверяется с VLM. Каждый атом=1 фикс+РЕГРЕСС-ТЕСТ. Архитектор ревьюит. ПЕРВОЕ ОБУЧЕНИЕ НЕ ЗАПУСКАТЬ пока A-D не зелёные. verify=pytest. scope=project oko.",
+    "goal":  "Resolve all 17 remaining critical data path bugs identified by an adversarial audit, ensuring the data pipeline is robust and correct before the first model training run.",
+    "constraints":  [
+                        "Do not re-do fixes already committed (771b8dd, 050cb4c, a83b983).",
+                        "The first model training MUST NOT start until clusters A, B, C, and D are verified \u0027green\u0027 (all bugs fixed and tests passing).",
+                        "Each atomic fix MUST include a corresponding regression test.",
+                        "Architectural review is required for all fixes.",
+                        "Decomposition must follow a \u0027DISCUSS-First\u0027 approach."
+                    ],
+    "known_context":  [
+                          "There are 17 verified data path bugs from an adversarial audit.",
+                          "A full list of bugs is available in `bridge-projects/oko/AUDIT_FINDINGS_2026-06-24.md` (17 bugs, 12 high severity).",
+                          "Three specific bug fixes have already been committed by the operator.",
+                          "The FINETUNE-GATE (cluster D) is still broken despite a commit (99034ac5) marked as done.",
+                          "The scope of this task is `project oko`.",
+                          "Verification should use `pytest`."
+                      ],
+    "output_format":  "A structured decomposition plan, grouped by the specified clusters (A-E), where each \u0027atom\u0027 describes a single fix and its associated regression test.",
+    "task_type":  "bugfix",
+    "risk":  "critical",
+    "allowed_complexity":  "high",
+    "success_tests":  [
+                          "All 17 remaining bugs listed in `bridge-projects/oko/AUDIT_FINDINGS_2026-06-24.md` (excluding those already fixed) are resolved and verified.",
+                          "Each implemented fix has an associated regression test.",
+                          "All regression tests for clusters (A) FRAME-SYNC, (B) CROP-NAMING, (C) DATASET-EXPORT, and (D) FINETUNE-GATE pass successfully.",
+                          "The FINETUNE-GATE (cluster D) is confirmed to be fully functional and correctly prevents issues like classification-probs on detection models, incorrect index usage, and lack of orchestrator.",
+                          "Architectural review of all fixes and regression tests is completed and approved.",
+                          "All `pytest` executions for `project oko` pass without failures related to these bug fixes."
+                      ]
+}

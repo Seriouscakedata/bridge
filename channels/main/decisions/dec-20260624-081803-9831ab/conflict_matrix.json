@@ -1,0 +1,39 @@
+{
+    "consensus_atoms":  [
+                            "A-FS-01",
+                            "A-FS-02",
+                            "B-CN-01",
+                            "B-CN-02",
+                            "B-CN-03",
+                            "B-CN-04",
+                            "C-DE-01",
+                            "C-DE-02",
+                            "C-DE-03",
+                            "C-DE-04",
+                            "C-DE-05",
+                            "D-FG-01",
+                            "D-FG-02",
+                            "D-FG-03",
+                            "E-ML-01",
+                            "E-ML-02"
+                        ],
+    "conflicts":  [
+                      {
+                          "atom_ids":  [
+                                           "K-01",
+                                           "C-DE-01"
+                                       ],
+                          "axis":  "Role of crops in dataset export for training",
+                          "impact":  "high"
+                      }
+                  ],
+    "reviews":  [
+                    {
+                        "atom_id":  "C-DE-01",
+                        "severity":  "blocking",
+                        "why":  "The statement in C-DE-01 (\u0027if exporting crops, convert bboxes to crop-local coordinates and normalize by crop dimensions\u0027) directly contradicts the keystone decision K-01. K-01 explicitly states that \u0027crops are demoted to human/VLM review artifacts (never training images)\u0027, establishing a fundamental constraint that training will *only* use full frames. The conditional clause in C-DE-01 implies that crops *could* be used for training, which is disallowed by K-01.",
+                        "fix":  "Remove the conditional clause regarding crop export for training from C-DE-01. The statement should be simplified to only address full-frame normalization, aligning with K-01\u0027s mandate that crops are not training images.",
+                        "cost":  "low"
+                    }
+                ]
+}

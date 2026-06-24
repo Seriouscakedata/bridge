@@ -1,0 +1,357 @@
+{
+    "final_answer":  "Adopt the full-frame YOLO DETECTION paradigm (K-01) as the keystone that resolves the entire dataset-export class: the first model trains on FULL event frames with class+bbox labels normalized to full-frame dimensions, and crops are demoted to human/VLM review artifacts that never enter the training set. On top of that, build two enforcement keystones — ONE reusable dataset-invariant validator (K-02) and ONE mandatory finetune-gate orchestrator (K-03/D-FG-03) whose definition-of-done is a passing CI integration test, NOT a commit message (this is precisely how 99034ac5 was falsely marked done). Every behavior-changing fix lands red-first (a test that fails on current HEAD and reproduces the bug) before the minimal fix and an architect review of the (test, fix) pair (K-04, relaxed so trivial structural atoms get lightweight, non-blocking review). All 17 remaining bugs are accepted as fixes across clusters A (FRAME-SYNC: crop from the detection\u0027s own immutable event frame, bbox bound to that exact frame, buffer protected from mutation), B (CROP-NAMING: non-resetting + camera_id + per-detection name components, strict image\u003c-\u003elabel stem pairing, atomic writes), C (DATASET-EXPORT: full-frame normalization, image/label atomicity, empty labels for negatives, persisted frame_w/h, K-02 pre-training validation), D (FINETUNE-GATE: detection-metric eval via model.val() not .probs, name-based class identity, the orchestrator), and E (MISLABEL: track-bound labels, VLM-disagreement quarantine). The single high-impact conflict — K-01 vs C-DE-01 — is resolved in K-01\u0027s favor: C-DE-01 is narrowed to full-frame normalization only, with at most an inactive interface seam for a future crop path. Cluster E is folded into the green-gate (K-05) at least as a quarantine. No atom was rejected outright; the judge accepted 21 and modified 2 (K-04, C-DE-01). The first training is hard-blocked by the K-03 orchestrator until clusters A-D (and E per K-05) are verified green via pytest in CI.",
+    "decisions":  [
+                      {
+                          "decision":  "K-01 KEYSTONE: First model is a YOLO DETECTION finetune trained on FULL event frames; labels are class+bbox normalized to full-frame dimensions; crops become human/VLM review artifacts only, never training images.",
+                          "rationale":  "Eliminates the crop-vs-full-frame label ambiguity that is the root cause of the entire C cluster, preserves scene context, and yields a single unambiguous export contract. Judge accept 0.845.",
+                          "alternatives_considered":  [
+                                                          "Train on crops with crop-local labels (rejected: context loss plus coordinate ambiguity)",
+                                                          "Support both crop and full-frame training simultaneously now (deferred: premature complexity for the first model)"
+                                                      ],
+                          "risk":  "Larger/slower images; if frame_w/h is wrong every label is wrong - mitigated by C-DE-04 (persist dims) and the K-02 validator.",
+                          "test":  "Exporter writes a full-frame image whose dimensions match the recorded frame_w/h and a label whose de-normalized bbox lands on the object (IoU\u003e0.9 with the known box)."
+                      },
+                      {
+                          "decision":  "K-02 KEYSTONE: Build ONE reusable dataset-invariant validator encoding every YOLO export rule (1:1 image\u003c-\u003elabel, background -\u003e empty label file, all coords in [0,1], every class id is a known data.yaml name, frame_w/h present and used for normalization).",
+                          "rationale":  "Central control for dataset integrity; becomes the shared test harness for all C atoms and is invoked by the K-03 orchestrator. Judge accept 0.88.",
+                          "alternatives_considered":  [
+                                                          "Ad-hoc per-atom checks (rejected: duplication and drift)"
+                                                      ],
+                          "risk":  "A validator bug gives false confidence - mitigated by shipping it with its own positive/negative fixtures.",
+                          "test":  "The validator has positive/negative fixtures proving it fails dirty datasets and passes clean ones; it is itself the harness for all C atoms."
+                      },
+                      {
+                          "decision":  "K-03 KEYSTONE: The finetune-gate ORCHESTRATOR is the single enforcer of \u0027no training until A-D green\u0027: it runs (1) the K-02 validator and (2) a real detection-mAP eval via model.val() on a FIXED held-out fixture, and ABORTS training with a human-readable reason on any red. Definition-of-done is the orchestrator\u0027s integration test passing in CI, not a commit message.",
+                          "rationale":  "Makes validation + detection eval a hard precondition and directly fixes the \u002799034ac5 marked done but broken\u0027 failure mode by binding DoD to a passing test. Judge accept 0.8125.",
+                          "alternatives_considered":  [
+                                                          "Trust commit messages / a manual checklist (rejected: exactly what failed before)"
+                                                      ],
+                          "risk":  "CI cost and fixture management; model.val() runtime - mitigated by a tiny fixed fixture and a small model.",
+                          "test":  "Red dataset OR sub-threshold metric -\u003e training refused; both green -\u003e training proceeds."
+                      },
+                      {
+                          "decision":  "K-04 (MODIFIED) KEYSTONE: Default to DISCUSS-First + red-first TDD for behavior-changing atoms (clusters A, C, D, E and B-CN-01/03/05): land a test that FAILS on current HEAD reproducing the documented failure, then the minimal fix to green, then architect reviews the (test, fix) pair before merge. For purely structural/low-risk atoms (B-CN-02 camera-id, B-CN-04 stem-pairing) red-first is recommended and review is lightweight and non-blocking.",
+                          "rationale":  "Red-first proves both the bug and the fix; relaxing the blocking requirement for trivial atoms avoids process overhead. Judge modify 0.7475 (overbroad_process_requirement -0.05).",
+                          "alternatives_considered":  [
+                                                          "Mandatory blocking architect review on every atom incl. trivial ones (rejected: too rigid)",
+                                                          "No red-first requirement (rejected: cannot prove regressions are actually caught)"
+                                                      ],
+                          "risk":  "Mis-classifying a behavior-changing atom as \u0027structural\u0027 could skip needed scrutiny - when in doubt, treat as behavior-changing.",
+                          "test":  "Each behavior-changing atom\u0027s test is demonstrated red on the pre-fix commit and green after the fix."
+                      },
+                      {
+                          "decision":  "K-05 KEYSTONE: Fold cluster E (#13/#14) into the green-gate, or at minimum quarantine VLM-disagreements and track-less triggers out of the training set, even though the literal constraint names only A-D.",
+                          "rationale":  "Mislabeled positives poison training as badly as the A-D bugs; cheap insurance against a known hole. Judge accept 0.7775.",
+                          "alternatives_considered":  [
+                                                          "Strictly limit the gate to A-D (rejected: leaves a known mislabel hole open before first training)"
+                                                      ],
+                          "risk":  "Over-aggressive quarantine shrinks the dataset - mitigate by quarantining/logging for review rather than silently dropping.",
+                          "test":  "Gate fails or sample is excluded when detector class_name disagrees with the VLM verdict, or when a trigger lacks a track_id."
+                      },
+                      {
+                          "decision":  "A-FS-01 FRAME-SYNC: Crop and label from the detection\u0027s own immutable event frame (identified by an explicit index), not the latest buffered frame and not pending.frames[0] unconditionally (use the event index when a pre-event buffer exists).",
+                          "rationale":  "Fixes #1/#2/#12 - cropping a frame captured ~11s after the event produces background under the person/cat label. Judge accept 0.875.",
+                          "alternatives_considered":  [
+                                                          "Always use frames[0] (rejected: wrong when a pre-event buffer exists)",
+                                                          "Use the latest frame (rejected: this is the original bug)"
+                                                      ],
+                          "risk":  "Requires the true event-frame index to be known - see open question on the pending.frames buffer layout.",
+                          "test":  "Simulate a detection event with object movement; assert the crop\u0027s pixels match the event-frame object region and the source index used is the event frame (not latest, not frames[0] when a pre-event buffer is present)."
+                      },
+                      {
+                          "decision":  "A-FS-02 FRAME-SYNC: Bind the bbox to the exact source frame the crop is cut from; never recompute the bbox against later frames; apply this pairing to ALL crop-collection paths (primary and secondary).",
+                          "rationale":  "Prevents subtle temporal misalignment between box coordinates and pixels across both code paths. Judge accept 0.8625.",
+                          "alternatives_considered":  [
+                                                          "Fix only the primary path (rejected: the secondary path leaks the same bug)"
+                                                      ],
+                          "risk":  "The secondary path may have different plumbing - verify the same temporal alignment analogously.",
+                          "test":  "For both primary and secondary paths, simulate object movement between frames and assert the crop uses the original bbox and pixels from the same source frame."
+                      },
+                      {
+                          "decision":  "A-FS-03 FRAME-SYNC: Make the selected event frame immutable and protect pending.frames from mutation or dequeue reordering until the crop is successfully recorded.",
+                          "rationale":  "Hardens against post-trigger buffer mutation/reorder bugs with a clear testable invariant. Judge accept 0.81.",
+                          "alternatives_considered":  [
+                                                          "Copy only the chosen frame at trigger time (acceptable alternative implementation)"
+                                                      ],
+                          "risk":  "Memory cost of retaining a frame - bounded by retaining a single frame copy.",
+                          "test":  "Simulate new frames added to pending.frames after a trigger; assert the crop remains unchanged and is taken from the originally selected immutable event frame."
+                      },
+                      {
+                          "decision":  "B-CN-01 CROP-NAMING: Naming scheme includes a non-resetting component (run UUID, UTC timestamp, or persistent monotonic counter) so a frame_id reset on process restart cannot overwrite prior samples.",
+                          "rationale":  "Fixes #3/#7 - frame_id resets to 0 on restart and overwrites earlier crops. Judge accept 0.87.",
+                          "alternatives_considered":  [
+                                                          "frame_id only (rejected: resets to 0 on restart)"
+                                                      ],
+                          "risk":  "Sub-millisecond timestamp collisions - combine timestamp with a counter or UUID.",
+                          "test":  "Simulate a restart resetting frame_id to 0; emit a crop with a previously used frame_id; assert the pre-existing and new crops coexist with distinct names."
+                      },
+                      {
+                          "decision":  "B-CN-02 CROP-NAMING: Include camera_id/source_id in the crop/image/label naming scheme to prevent collisions between cameras that share frame_ids.",
+                          "rationale":  "Fixes #8 inter-camera collision; very low cost. Judge accept 0.8975.",
+                          "alternatives_considered":  [
+
+                                                      ],
+                          "risk":  "camera_id/source_id must be available at export time - see open question.",
+                          "test":  "Two cameras emit samples with the same frame_id; assert distinct filenames and preserved image/label pairs without conflict."
+                      },
+                      {
+                          "decision":  "B-CN-03 CROP-NAMING: Include a per-detection/track index (track_id, event_id, or monotonic suffix) so multiple detections within one frame get unique names.",
+                          "rationale":  "Fixes #15 intra-frame multi-detection overwrite. Judge accept 0.855.",
+                          "alternatives_considered":  [
+
+                                                      ],
+                          "risk":  "track_id may be absent for track-less triggers - fall back to a monotonic suffix (ties to E-ML-01).",
+                          "test":  "Simulate a single frame with two or more distinct detections; assert two or more distinct sample names, one per detection."
+                      },
+                      {
+                          "decision":  "B-CN-04 CROP-NAMING: Derive the label sidecar filename from the exact same composite key as its image, maintaining strict image\u003c-\u003elabel stem pairing under the new scheme.",
+                          "rationale":  "Guarantees the 1:1 pairing the K-02 validator enforces; highest judge score 0.9175.",
+                          "alternatives_considered":  [
+
+                                                      ],
+                          "risk":  "Low.",
+                          "test":  "For every exported image assert exactly one matching label file with an aligned stem, and vice-versa."
+                      },
+                      {
+                          "decision":  "B-CN-05 CROP-NAMING: Use atomic write operations for crop images and labels (write-to-temp-then-rename, or fail-on-existing destination) to prevent silent overwrites or partial writes.",
+                          "rationale":  "Protects against concurrent export and partial-file states. Judge accept 0.825.",
+                          "alternatives_considered":  [
+                                                          "Plain overwrite (rejected: silent data loss)"
+                                                      ],
+                          "risk":  "Cross-platform rename semantics on Windows - use os.replace or an equivalent atomic rename.",
+                          "test":  "Two concurrent export processes write samples with identical source IDs; assert the operation either fails explicitly or yields distinct, non-overwriting files."
+                      },
+                      {
+                          "decision":  "C-DE-01 (MODIFIED) DATASET-EXPORT: Normalize YOLO label coordinates to FULL-FRAME dimensions for all training exports (full frames only, per K-01). Crop-local normalization is NOT implemented or active for the first model; optionally retain an inactive interface seam for a future crop path, but no crop training path is wired or tested now.",
+                          "rationale":  "Resolves the K-01 conflict: keep the correct full-frame normalization, drop the premature crop-training branch. Judge modify 0.7475 (blocking_conflict_with_K-01 -0.15); micro-debate resolved to full-frame-only for the first model.",
+                          "alternatives_considered":  [
+                                                          "Implement and test both crop-local and full-frame branches now (rejected/deferred: premature complexity per micro-debate)"
+                                                      ],
+                          "risk":  "A latent crop branch left in code could be mis-activated - guard it off and mark not-for-training.",
+                          "test":  "De-normalize the exported label against the exported full-frame image\u0027s actual dimensions; assert IoU\u003e0.9 with the known ground-truth box."
+                      },
+                      {
+                          "decision":  "C-DE-02 DATASET-EXPORT: Guarantee image/label atomicity - write a label only after its image is successfully saved, and prevent or prune orphan labels (labels without a matching image).",
+                          "rationale":  "Fixes #5 orphan labels and aligns with the K-02 \u0027every label has an image\u0027 invariant. Judge accept 0.86.",
+                          "alternatives_considered":  [
+
+                                                      ],
+                          "risk":  "Partial failure mid-export - write ordering plus cleanup handles it.",
+                          "test":  "Simulate an image-write failure or a missing source image; assert no dangling label is emitted and the K-02 \u0027every label has an image\u0027 invariant holds."
+                      },
+                      {
+                          "decision":  "C-DE-03 DATASET-EXPORT: Background/negative samples never produce a positive bbox - they yield an empty label file (zero rows) or no label, per the YOLO negative-example convention.",
+                          "rationale":  "Fixes #6 - background samples currently emit a positive bbox. Judge accept 0.8875.",
+                          "alternatives_considered":  [
+                                                          "Skip background entirely (acceptable but loses hard negatives)"
+                                                      ],
+                          "risk":  "Low.",
+                          "test":  "Export a designated background sample; assert it yields a label file that exists with zero bbox rows."
+                      },
+                      {
+                          "decision":  "C-DE-04 DATASET-EXPORT: Persist original frame_w/h (and crop_w/h if applicable) in the sample manifest/export metadata, and use these as the normalization denominator for bbox coordinates and for validation.",
+                          "rationale":  "Fixes #16/#17 - frame_w/h is lost, breaking normalization. Judge accept 0.89.",
+                          "alternatives_considered":  [
+                                                          "Infer dimensions from the image at export (rejected: fragile if image is missing or resized)"
+                                                      ],
+                          "risk":  "Low.",
+                          "test":  "For known frame dimensions and pixel bboxes, assert the export roundtrip preserves the dimensions and the normalized values are exact."
+                      },
+                      {
+                          "decision":  "C-DE-05 DATASET-EXPORT: Run the K-02 validator as a pre-training gate enforcing consistent image/label pairs, coords in [0,1], valid class ids (in data.yaml), and empty labels for background samples.",
+                          "rationale":  "A concrete application of K-02 immediately before training and inside the K-03 orchestrator. Judge accept 0.875.",
+                          "alternatives_considered":  [
+
+                                                      ],
+                          "risk":  "Must run on the actual export directory that feeds training, not a sample.",
+                          "test":  "The validator catches and rejects datasets with orphan image/label pairs, out-of-range coordinates, and unknown class ids."
+                      },
+                      {
+                          "decision":  "D-FG-01 FINETUNE-GATE: Evaluate detection outputs (results.boxes with confidence/class) via a detection metric (mAP from model.val()), never classification .probs.",
+                          "rationale":  "Fixes #9 - .probs is empty/meaningless on detection models, the core reason the gate did not work. Judge accept 0.845.",
+                          "alternatives_considered":  [
+                                                          "Keep using .probs (rejected: the broken behavior)"
+                                                      ],
+                          "risk":  "model.val() needs a proper data.yaml and held-out fixture.",
+                          "test":  "Feed a detection Results object (boxes, no .probs); assert a detection metric is computed without touching .probs, and known-good vs known-bad models yield distinctly different scores."
+                      },
+                      {
+                          "decision":  "D-FG-02 FINETUNE-GATE: Canonicalize class identity by name, not numeric index - use a single name\u003c-\u003eid mapping (from data.yaml) for all gate comparisons.",
+                          "rationale":  "Fixes #10 - numeric index comparisons break under id reordering. Judge accept 0.8675.",
+                          "alternatives_considered":  [
+                                                          "Compare numeric ids (rejected: fragile to class-id reordering)"
+                                                      ],
+                          "risk":  "Low.",
+                          "test":  "Simulate a shuffled class-id ordering; assert the gate still matches by name and a genuinely mismatched mapping is detected as red."
+                      },
+                      {
+                          "decision":  "D-FG-03 FINETUNE-GATE: Implement the mandatory finetune orchestrator (the K-03 keystone realized in cluster D) as the single training entry point that sequences the K-02 validator and detection mAP eval and hard-blocks launch with a clear reason if any A-D check is red. This is the SAME artifact as K-03 - one orchestrator, not two.",
+                          "rationale":  "Fixes #11 - without an orchestrator the gate cannot protect anything. Judge accept 0.8125 (intentional duplicate of K-03 tracked in cluster D).",
+                          "alternatives_considered":  [
+                                                          "Validator and eval as independent optional scripts (rejected: no enforcement)"
+                                                      ],
+                          "risk":  "High implementation cost - share code with K-03 rather than build a second orchestrator.",
+                          "test":  "Integration test: a red dataset or a sub-threshold model -\u003e training refused with a clear reason; a green dataset + good model -\u003e training allowed."
+                      },
+                      {
+                          "decision":  "E-ML-01 MISLABEL: trigger_detection binds the training label to a specific track_id (or event-detection instance) rather than relying solely on detection category.",
+                          "rationale":  "Fixes #13 - same-category objects get swapped/misattributed without a track binding. Judge accept 0.8525.",
+                          "alternatives_considered":  [
+                                                          "Category-only binding (rejected: ambiguous with multiple same-class objects)"
+                                                      ],
+                          "risk":  "Track-less triggers - quarantine them (ties to K-05 and the B-CN-03 monotonic fallback).",
+                          "test":  "Simulate a frame with two same-category objects; assert the label binds to the triggering track_id and is not swapped to the other detection."
+                      },
+                      {
+                          "decision":  "E-ML-02 MISLABEL: Introduce a VLM verification step reconciling the detector class_name with the VLM verdict; on disagreement the sample is dropped/quarantined for review, not auto-labeled with the detector\u0027s class.",
+                          "rationale":  "Fixes #14 - detector/VLM mismatch silently poisons labels. Judge accept 0.7525 (higher cost due to VLM reliability/latency/determinism).",
+                          "alternatives_considered":  [
+                                                          "Trust the detector label (rejected: mislabels)",
+                                                          "Trust the VLM label (rejected: VLM also errs - disagreement -\u003e quarantine is the safe rule)"
+                                                      ],
+                          "risk":  "VLM latency/nondeterminism - the regression test must mock/stub the VLM with fixed verdicts for determinism (open question).",
+                          "test":  "Simulate detector class_name=person but VLM=cat; assert the sample is excluded/flagged and does not enter the positive training set under the detector\u0027s label."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Use crops with crop-local coordinates as training images (the crop-training conditional branch originally in C-DE-01).",
+                         "why":  "Blocking conflict with keystone K-01, which demotes crops to human/VLM review artifacts that are never training images. The micro-debate resolved to full-frame-only for the first model; crop-based training is deferred behind an inactive interface seam, not implemented or tested now."
+                     },
+                     {
+                         "decision":  "Require red-first tests AND merge-blocking architect review for EVERY atom, including purely structural/duplicate ones (K-04 as originally stated).",
+                         "why":  "Overbroad process requirement (judge penalty -0.05). Relaxed: red-first plus blocking review is the default for behavior-changing atoms only; trivial structural atoms (e.g., B-CN-02 camera-id, B-CN-04 stem-pairing) get lightweight, non-blocking review."
+                     },
+                     {
+                         "decision":  "Reject any of the 17 bug-fix atoms outright.",
+                         "why":  "Not applicable - the judge accepted 21 atoms and modified 2 (K-04, C-DE-01); the lowest total score was 0.7475, above the rejection bar. No fix atom was dropped; the two modifications only trimmed sub-clauses."
+                     }
+                 ],
+    "open_questions":  [
+                           "What mAP threshold and held-out fixture composition (size, class balance, source) define \u0027green\u0027 for the K-03 orchestrator\u0027s detection evaluation?",
+                           "Does pending.frames contain a pre-event buffer, and what is the explicit index of the true event frame that A-FS-01 must select?",
+                           "Is camera_id/source_id available at crop-export time, and in which field, so B-CN-02 can include it in names?",
+                           "Which VLM backs E-ML-02, and how is its regression test made deterministic (mock/stub with fixed verdicts, fixed seeds)?",
+                           "For the first training, is cluster E a HARD gate or a soft quarantine? K-05 permits either - the choice must be made before training launches.",
+                           "What is the CI runtime/cost budget for running model.val() inside the orchestrator integration test - is a tiny fixture model plus a handful of held-out images acceptable?",
+                           "Are track-less triggers dropped, quarantined, or labeled with a monotonic fallback id (E-ML-01 / B-CN-03 interaction)?"
+                       ],
+    "implementation_plan":  [
+                                {
+                                    "phase":  "Phase 0 - Process \u0026 shared harness",
+                                    "atoms":  [
+                                                  "K-04",
+                                                  "K-02"
+                                              ],
+                                    "actions":  "Establish the red-first TDD default (test fails on HEAD reproducing the bug, then minimal fix, then architect review of the test+fix pair for behavior-changing atoms). Build the ONE dataset-invariant validator with positive and negative fixtures.",
+                                    "exit_criteria":  "Validator passes clean fixtures and fails every dirty fixture; it is wired into CI as the shared harness for cluster C and the orchestrator."
+                                },
+                                {
+                                    "phase":  "Phase 1 - Cluster A FRAME-SYNC",
+                                    "atoms":  [
+                                                  "A-FS-01",
+                                                  "A-FS-02",
+                                                  "A-FS-03"
+                                              ],
+                                    "actions":  "Crop/label from the detection\u0027s own immutable event frame by explicit index; bind bbox to that exact frame on all crop paths; make the event frame immutable and protect pending.frames from mutation/reorder.",
+                                    "exit_criteria":  "Movement-based regression tests green on both crop paths; event-frame immutability test green."
+                                },
+                                {
+                                    "phase":  "Phase 2 - Cluster B CROP-NAMING",
+                                    "atoms":  [
+                                                  "B-CN-01",
+                                                  "B-CN-02",
+                                                  "B-CN-03",
+                                                  "B-CN-04",
+                                                  "B-CN-05"
+                                              ],
+                                    "actions":  "Add non-resetting + camera_id + per-detection components to the naming scheme; derive label stems from the same composite key; use atomic writes.",
+                                    "exit_criteria":  "Restart, multi-camera, and multi-detection collisions are impossible; strict image\u003c-\u003elabel stem pairing holds; concurrent writes do not silently overwrite."
+                                },
+                                {
+                                    "phase":  "Phase 3 - Cluster C DATASET-EXPORT",
+                                    "atoms":  [
+                                                  "C-DE-01",
+                                                  "C-DE-02",
+                                                  "C-DE-03",
+                                                  "C-DE-04",
+                                                  "C-DE-05"
+                                              ],
+                                    "actions":  "Normalize labels to full-frame dimensions only; enforce image/label atomicity and prune orphans; emit empty labels for background; persist frame_w/h and use them as the normalization denominator; run K-02 on the real export directory.",
+                                    "exit_criteria":  "K-02 validator passes on a real export; IoU\u003e0.9 label test green; no orphan labels; background -\u003e empty label; dimensions persisted and used."
+                                },
+                                {
+                                    "phase":  "Phase 4 - Cluster D FINETUNE-GATE",
+                                    "atoms":  [
+                                                  "D-FG-01",
+                                                  "D-FG-02",
+                                                  "D-FG-03 / K-03"
+                                              ],
+                                    "actions":  "Evaluate via detection boxes + mAP (model.val()), never .probs; canonicalize class identity by name from data.yaml; build the single mandatory orchestrator that runs K-02 + detection eval and hard-blocks training on any red with a clear reason.",
+                                    "exit_criteria":  "Orchestrator integration test green in CI - refuses a red dataset/sub-threshold model with a reason and allows a green dataset + good model. Definition-of-done is this passing test, not a commit message."
+                                },
+                                {
+                                    "phase":  "Phase 5 - Cluster E MISLABEL + K-05 wiring",
+                                    "atoms":  [
+                                                  "E-ML-01",
+                                                  "E-ML-02",
+                                                  "K-05"
+                                              ],
+                                    "actions":  "Bind labels to a concrete track_id/event instance; add VLM reconciliation that quarantines detector/VLM disagreements and track-less triggers; wire these checks into the green-gate.",
+                                    "exit_criteria":  "Track-bound labels prevent same-class swaps; gate fails or sample is quarantined on VLM disagreement or missing track_id (VLM mocked for determinism)."
+                                },
+                                {
+                                    "phase":  "Phase 6 - Green-gate verification \u0026 first training authorization",
+                                    "atoms":  [
+
+                                              ],
+                                    "actions":  "Run the full pytest suite for project oko; confirm the orchestrator is green across clusters A-D (and E per K-05); obtain architect sign-off on all (test, fix) pairs.",
+                                    "exit_criteria":  "All cluster gates green and orchestrator integration test passing -\u003e first training is authorized; until then the orchestrator hard-blocks any training launch."
+                                }
+                            ],
+    "next_step":  "Implement the K-02 dataset-invariant validator together with its positive/negative fixtures (red-first), since it is the shared test harness for every cluster-C atom and a hard dependency of the K-03/D-FG-03 orchestrator that gates the first training.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "high",
+                                  "what":  "K-01\u0027s pivot to full-frame training images introduces a partial-annotation defect that no atom handles. trigger_detection emits only the triggering object\u0027s bbox, but a full event frame can contain other objects (the untriggered cat next to the triggered person). Those become unlabeled regions in a positive training image, teaching the detector to SUPPRESS true positives.",
+                                  "why":  "The export is never specified to aggregate ALL detections in a frame into one multi-row label; C-DE-01\u0027s success test asserts IoU\u003e0.9 with \u0027the known box\u0027 (singular) and B-CN-03 keeps one-sample-per-detection naming, both baking in a one-box-per-image assumption. So even after all 23 atoms go green, the first model trains on systematically incomplete labels — success criteria met, goal (a correct training pipeline) not met. This is a NEW, training-corrupting bug created by the keystone itself, arguably worse than the crop-coordinate bugs it replaces."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The mandatory blocking gate is defined over clusters A-D only, but under K-01 cluster E directly determines training-label CORRECTNESS. The full-frame image\u0027s class label comes straight from trigger_detection; if E-ML-01 (track_id binding) is wrong, the full-frame training image carries the wrong class (#13). Yet K-05 makes E a \u0027soft, non-blocking\u0027 exclusion, so the first training is permitted to start with E not green.",
+                                  "why":  "This lets demonstrably mislabeled samples into the positive training set while the gate reports \u0027green\u0027, violating the stated goal of a correct pipeline before training. The decision even files the E-blocking policy as an unresolved open question (K-05 ratification), so the boundary that allows training to proceed is itself undecided — a critical-risk gate resting on an open question."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "The K-03/D-FG-03 gate is described as a PRE-training abort that runs \u0027a real detection-mAP eval via model.val()\u0027. But model.val() needs a trained model; you cannot compute the finetuned model\u0027s mAP before you train it.",
+                                  "why":  "As a pre-training gate the mAP arm can only evaluate the base/pretrained checkpoint, which says nothing about the new dataset or the finetune outcome — so it cannot \u0027prevent bad training\u0027 as claimed. mAP eval is inherently a POST-training acceptance check. The decision conflates pre-training dataset validation (K-02, valid) with post-hoc model-quality eval, leaving the central guarantee (\u0027no training until D green via a real metric\u0027) unfulfillable as architected."
+                              },
+                              {
+                                  "severity":  "high",
+                                  "what":  "Cluster D cannot actually be confirmed \u0027green\u0027 because its decision boundary is undefined. The green/red mAP threshold is listed as an open question, and the held-out fixture\u0027s ground-truth ownership/labeling is unresolved. If that fixture is labeled by the same detector that generates the pipeline data, the mAP eval is circular and measures nothing.",
+                                  "why":  "success_tests require \u0027FINETUNE-GATE confirmed fully functional\u0027 and D\u0027s definition-of-done is a CI test that distinguishes red from green by mAP — impossible without a defined threshold and independently-verified ground truth. A gate with an undefined threshold gives false confidence, the exact failure mode (false-done 99034ac5) the keystone claims to fix. More broadly, a \u0027final\u0027 decision whose success_tests depend on six still-open questions is not final."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Constraint-1 traceability gap. The clusters cover bugs #1–#17 exactly (A:1/2/12, B:3/7/8/15, C:4/5/6/16/17, D:9/10/11, E:13/14 = 17), but the three already-committed fixes (771b8dd, 050cb4c, a83b983) are never mapped to any bug number.",
+                                  "why":  "Either those commits fixed some of #1–17 — in which case the 23 atoms re-do committed work, violating \u0027Do not re-do fixes already committed\u0027 — or there were really 20 bugs, in which case the \u002717\u0027 accounting is wrong. The task text is itself contradictory (\u002717 verified\u0027 vs \u0027remaining 17\u0027 after 3 fixed: 17−3≠17), and the decision never reconciles it, risking either duplicated effort or a silently dropped bug."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "A-FS-01 contradicts the audit\u0027s own prescribed fix on an unconfirmed premise. The audit fix is literally \u0027cut from the event frame = pending.frames[0]\u0027, but A-FS-01 rejects frames[0] as wrong-when-a-pre-event-ring-buffer-exists — while whether that buffer exists is an explicit open question.",
+                                  "why":  "The canonical event-frame index is therefore unknown, yet the red-first test asserts \u0027source index != frames[0] when a pre-event buffer is present\u0027. If there is no pre-event buffer, frames[0] is correct and the test encodes the wrong invariant; the fix could be off-by-buffer in either direction. Building the regression test (and TDD red-first proof) on an unverified buffer model can lock in an incorrect fix that still passes its own test."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "No handling of already-collected data or the fresh-data dependency K-01 creates. Demoting crops to non-training artifacts invalidates every previously collected sample as a training image; the first run now requires re-collecting enough FULL-FRAME events from scratch.",
+                                  "why":  "The risk note only mentions \u0027reroute plumbing / larger storage\u0027, not that the existing dataset is discarded and the first training is gated on new data volume. Combined with E-ML-02\u0027s fail-closed quarantine (which drops samples whenever the VLM is unavailable), the positive training set can be starved, delaying or degrading the first training well beyond the bug-fix work itself — an unbudgeted schedule and quality risk for a \u0027critical\u0027 goal."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The artifact the contract names as the single source of truth — bridge-projects/oko/AUDIT_FINDINGS_2026-06-24.md — and the oko code are absent from the working tree where the decision is made; only channels/oko orchestration records exist.",
+                                  "why":  "None of the file:line locations, the \u0027verified\u0027 status, the proposed fixes, the three committed SHAs, or \u0027pytest project oko\u0027 can be validated from the available repository. For a critical-risk decomposition, every Judge-accept score and fix claim is unverifiable against real code, and the success_test \u0027all pytest for project oko pass\u0027 is not executable in this context."
+                              }
+                          ],
+    "needs_operator":  true,
+    "red_team_rejudged":  true
+}

@@ -1,0 +1,401 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "K-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.7,
+                                     "impact":  0.95,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correctly establishes full-frame YOLO detection as the training target and removes the crop/full-frame ambiguity that would corrupt labels.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "K-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A reusable invariant validator is the right central control for dataset integrity and is specific enough to become the shared harness.",
+                      "total":  0.88
+                  },
+                  {
+                      "atom_id":  "K-03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.65,
+                                     "impact":  0.95,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "The orchestrator correctly makes validation and detection evaluation a hard precondition for training, though CI cost and fixture management are nontrivial.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "K-04",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.75,
+                                     "feasibility":  0.75,
+                                     "impact":  0.75,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "type":  "overbroad_process_requirement",
+                                            "amount":  0.05
+                                        }
+                                    ],
+                      "reason":  "Red-first tests are valuable, but requiring this for every atom and blocking merge on architect review is too rigid for purely structural or duplicate atoms; keep it as the default for behavior-changing fixes.",
+                      "total":  0.7475
+                  },
+                  {
+                      "atom_id":  "K-05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.7,
+                                     "impact":  0.85,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Including VLM disagreement and missing track binding in the gate reduces mislabeled training data even if it extends beyond the literal A-D scope.",
+                      "total":  0.7775
+                  },
+                  {
+                      "atom_id":  "A-FS-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Directly addresses temporal frame mismatch with a precise event-frame selection rule and a strong movement-based regression test.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "A-FS-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Correctly requires bbox and pixel source to remain paired across crop paths, preventing subtle temporal misalignment.",
+                      "total":  0.8625
+                  },
+                  {
+                      "atom_id":  "A-FS-03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.8,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Useful hardening against buffer mutation or reorder bugs after trigger time, with a clear testable invariant.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "B-CN-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "A non-resetting name component is necessary to prevent restart overwrite bugs and is straightforward to verify.",
+                      "total":  0.87
+                  },
+                  {
+                      "atom_id":  "B-CN-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Adding camera/source identity is low-cost and closes an obvious multi-camera collision mode.",
+                      "total":  0.8975
+                  },
+                  {
+                      "atom_id":  "B-CN-03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Per-detection identity is required when multiple objects share a frame, and the test captures the collision case.",
+                      "total":  0.855
+                  },
+                  {
+                      "atom_id":  "B-CN-04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.9,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Strict image-label stem pairing is essential and cheap; it also reinforces the validator contract.",
+                      "total":  0.9175
+                  },
+                  {
+                      "atom_id":  "B-CN-05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.75,
+                                     "impact":  0.85,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Atomic writes are the right protection against concurrent overwrite and partial-file states, though implementation needs care across platforms.",
+                      "total":  0.825
+                  },
+                  {
+                      "atom_id":  "C-DE-01",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.65,
+                                     "feasibility":  0.75,
+                                     "impact":  0.9,
+                                     "simplicity":  0.6,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "type":  "blocking_conflict_with_K-01",
+                                            "amount":  0.15
+                                        }
+                                    ],
+                      "reason":  "The full-frame normalization requirement is correct, but the crop-training conditional conflicts with K-01. Modify to cover only full-frame training export; crops may have review metadata but must not become training images.",
+                      "total":  0.7475
+                  },
+                  {
+                      "atom_id":  "C-DE-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Image-label atomicity prevents orphan labels and aligns cleanly with the K2 validator invariant.",
+                      "total":  0.86
+                  },
+                  {
+                      "atom_id":  "C-DE-03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Empty labels for negatives match YOLO conventions and prevent false positive training data.",
+                      "total":  0.8875
+                  },
+                  {
+                      "atom_id":  "C-DE-04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Persisting source dimensions is necessary for reliable normalization, validation, and later audit.",
+                      "total":  0.89
+                  },
+                  {
+                      "atom_id":  "C-DE-05",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.8,
+                                     "impact":  0.9,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "This is a valid concrete application of K2 before training and names the critical failure modes clearly.",
+                      "total":  0.875
+                  },
+                  {
+                      "atom_id":  "D-FG-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.75,
+                                     "impact":  0.9,
+                                     "simplicity":  0.65,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Detection models must be evaluated from boxes and detection metrics, not classification probabilities; the test targets the exact previous failure mode.",
+                      "total":  0.845
+                  },
+                  {
+                      "atom_id":  "D-FG-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Name-based class identity avoids fragile numeric-index assumptions and is inexpensive to implement.",
+                      "total":  0.8675
+                  },
+                  {
+                      "atom_id":  "D-FG-03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.65,
+                                     "impact":  0.95,
+                                     "simplicity":  0.55,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Duplicates K3 in the D cluster but is still the right mandatory training entry point and integration target.",
+                      "total":  0.8125
+                  },
+                  {
+                      "atom_id":  "E-ML-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.75,
+                                     "impact":  0.9,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Binding labels to a concrete track or event instance is required to avoid same-class object swaps.",
+                      "total":  0.8525
+                  },
+                  {
+                      "atom_id":  "E-ML-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.6,
+                                     "impact":  0.85,
+                                     "simplicity":  0.5,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Quarantining detector/VLM disagreements is a strong mislabeling control, but VLM reliability, latency, and deterministic test design make it higher cost.",
+                      "total":  0.7525
+                  }
+              ]
+}

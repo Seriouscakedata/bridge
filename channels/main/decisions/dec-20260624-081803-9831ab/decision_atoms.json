@@ -1,0 +1,287 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "K-01",
+                      "statement":  "Declare the first model a YOLO DETECTION finetune: training images are FULL event frames, labels are class+bbox normalized to the full frame, and crops are demoted to human/VLM review artifacts (never training images).",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "KEYSTONE",
+                      "test":  "Assert the exporter writes a full-frame image whose dimensions match the recorded frame_w/h and a label whose de-normalized bbox lands on the object (IoU\u003e0.9 with the known box).",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "K-02",
+                      "statement":  "Build ONE reusable dataset-invariant validator encoding every YOLO export rule (each image has exactly one matching label and vice-versa; background images produce EMPTY label files; all coords∈[0,1]; every class id∈data.yaml names; frame_w/h present and used for normalization).",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "KEYSTONE",
+                      "test":  "The validator is itself the harness for all C atoms and has positive/negative fixtures proving it fails dirty datasets and passes clean ones.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "K-03",
+                      "statement":  "The FINETUNE-GATE ORCHESTRATOR (D11) is the keystone enforcing \u0027no training until A–D green\u0027: it runs (1) the K2 dataset validator, (2) a real detection-mAP eval via model.val() on a FIXED held-out fixture, and ABORTS training with a human-readable reason on any red; definition-of-done is this orchestrator\u0027s integration test passing in CI, NOT a commit message.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "KEYSTONE",
+                      "test":  "Red dataset OR sub-threshold metric → training refused; both green → training proceeds.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "K-04",
+                      "statement":  "Adopt a DISCUSS-First + TDD red-first approach for every atom: first land a regression test that FAILS on current HEAD and reproduces the documented failure, then the minimal fix to green, then architect reviews the (test, fix) pair before merge.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "KEYSTONE",
+                      "test":  "Each atom\u0027s test is demonstrated red on the pre-fix commit and green after.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "K-05",
+                      "statement":  "Include cluster E (#13/#14) into the green-gate or at minimum quarantine VLM-disagreements out of the training set, even though the literal constraint names only A–D.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "KEYSTONE",
+                      "test":  "Gate fails / sample excluded when detector class_name disagrees with VLM verdict, or when a trigger lacks a track_id.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A-FS-01",
+                      "statement":  "Fix frame selection logic to crop from the detection\u0027s own immutable event frame (identified by an explicit index) rather than the latest buffered frame or `pending.frames[0]` (if pre-event buffer exists).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "FRAME-SYNC",
+                      "test":  "Simulate a detection event with object movement; assert the crop\u0027s pixels match the event-frame object region and that the source-frame index used corresponds to the event frame, not the latest or `frames[0]` if pre-event buffer is present.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A-FS-02",
+                      "statement":  "Ensure bounding box (bbox) is consistently tied to the exact source frame from which the crop is cut, preventing re-calculation against later frames and applying this pairing to all crop collection paths.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "FRAME-SYNC",
+                      "test":  "For both primary and secondary crop paths, simulate object movement between frames and assert that the crop is taken using the original bbox and pixels from the source frame, with analogous temporal-alignment verification for the second path.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "A-FS-03",
+                      "statement":  "Make the selected event frame immutable and protect `pending.frames` from mutation or dequeue reordering until the crop is successfully recorded.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "FRAME-SYNC",
+                      "test":  "Simulate new frames being added to `pending.frames` after a trigger; assert that the crop remains unchanged and is taken from the originally selected immutable event frame.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "B-CN-01",
+                      "statement":  "Implement a robust crop/image/label naming scheme that includes a non-resetting component (e.g., run UUID, UTC timestamp, or persistent monotonic counter) to prevent overwrites when `frame_id` resets on process restart.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "CROP-NAMING",
+                      "test":  "Simulate a process restart where `frame_id` resets to 0; emit a crop with a previously used `frame_id` and assert that both the pre-existing crop and the new crop coexist with distinct names, preventing overwrite.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "B-CN-02",
+                      "statement":  "Include `camera_id` (or `source_id`) in the crop/image/label naming scheme to prevent collisions between samples from different cameras that might share `frame_id`s.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "CROP-NAMING",
+                      "test":  "Simulate two cameras emitting samples with the same `frame_id`; assert that both samples are saved with distinct filenames and their respective image/label pairs are preserved without conflict.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "B-CN-03",
+                      "statement":  "Extend the sample naming scheme to include a per-detection or track index (e.g., `track_id`, `event_id`, or monotonic suffix) to ensure unique names for multiple detections within the same frame.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B"
+                                           ],
+                      "category":  "CROP-NAMING",
+                      "test":  "Simulate a single frame containing two or more distinct detections; assert that the exporter produces two or more distinct sample names, each corresponding to a unique detection.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "B-CN-04",
+                      "statement":  "Ensure that the label sidecar file name is derived from the exact same composite key as its corresponding image, maintaining strict `image↔label` pairing under the new naming scheme.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "CROP-NAMING",
+                      "test":  "For every exported image, assert that there is exactly one matching label file with an aligned stem, and vice-versa, verifying the integrity of the image↔label pairing.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "B-CN-05",
+                      "statement":  "Implement atomic write operations for crop images and labels (e.g., write-to-temp then rename, or fail-on-existing destination) to prevent silent overwrites or partial writes during concurrent exports or re-processing.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "CROP-NAMING",
+                      "test":  "Simulate two concurrent export processes attempting to write samples with identical source IDs; assert that the operation either fails explicitly or results in distinct, non-overwriting files.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "C-DE-01",
+                      "statement":  "Align YOLO label coordinates with the exported image type: if exporting full frames (per K1), normalize bboxes to full-frame dimensions; if exporting crops, convert bboxes to crop-local coordinates and normalize by crop dimensions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "DATASET-EXPORT",
+                      "test":  "For a known full-frame bbox and crop rectangle (or full-frame image), de-normalize the exported label against the exported image\u0027s actual dimensions and assert an IoU \u003e 0.9 with the known ground-truth box, verifying correct coordinate transformation and normalization.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "C-DE-02",
+                      "statement":  "Guarantee image and label atomicity during export, ensuring that a label is only written after its corresponding image is successfully saved, and preventing or pruning any orphan labels (labels without a matching image).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "DATASET-EXPORT",
+                      "test":  "Simulate an image write failure or a missing source image; assert that no dangling label file is emitted and that the K2 dataset validator\u0027s \u0027every label has an image\u0027 invariant holds.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "C-DE-03",
+                      "statement":  "Ensure that background or negative samples never produce a positive bounding box; instead, they must generate an empty label file (zero boxes) or no label, adhering to the chosen dataset format\u0027s convention for negative examples.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "DATASET-EXPORT",
+                      "test":  "Export a designated background sample; assert that it yields a label file that exists but contains zero bounding box rows, confirming no positive bbox is generated.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "C-DE-04",
+                      "statement":  "Persist original `frame_w/h` (and `crop_w/h` if applicable) within the sample manifest or export metadata, and utilize these dimensions as the normalization denominator for bounding box coordinates and for validation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "DATASET-EXPORT",
+                      "test":  "For known frame dimensions and pixel bounding boxes, assert that the export roundtrip preserves these dimensions and that the normalized values are exact and expected, verifying metadata preservation and correct usage.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "C-DE-05",
+                      "statement":  "Implement a pre-training dataset validator (reusing K2) to enforce critical invariants: each image/label pair is consistent, normalized YOLO coordinates are within `[0,1]`, class IDs are valid (e.g., in `data.yaml`), and background samples have empty labels.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "DATASET-EXPORT",
+                      "test":  "The validator must catch and reject datasets containing orphan image/label pairs, out-of-range bounding box coordinates, and unknown class IDs, demonstrating its ability to enforce data integrity.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "D-FG-01",
+                      "statement":  "Refactor the finetune gate to use actual detection outputs (e.g., `results.boxes` with confidence/class) and evaluate via a detection metric (like mAP from `model.val()`) instead of relying on classification probabilities (`.probs`), which are often empty or meaningless for detection models.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "FINETUNE-GATE",
+                      "test":  "Feed a detection `Results` object (with boxes, no `.probs`) to the gate; assert that it correctly computes a detection metric without touching `.probs`, and that known-good and known-bad models yield distinctly different scores.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "D-FG-02",
+                      "statement":  "Canonicalize class identity within the finetune gate by replacing numeric class index comparisons with human-readable class names, using a single `name↔id` mapping (e.g., from `data.yaml`) for consistent validation.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "FINETUNE-GATE",
+                      "test":  "Simulate a shuffled class-id ordering; assert that the gate correctly matches classes based on names, and that a genuinely mismatched class mapping is detected as a failure (red status).",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "D-FG-03",
+                      "statement":  "Implement a mandatory finetune orchestrator (as described in K3) that acts as the single entry point for training, sequencing and running the K2 dataset validator and detection mAP evaluation, and hard-blocking training launch with a clear reason if any A-D checks are not green.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "FINETUNE-GATE",
+                      "test":  "Conduct an integration test: feed a red dataset or a model yielding sub-threshold metrics to the orchestrator and assert that training is refused with a clear reason; then, feed a green dataset and a good model, asserting that training is allowed to proceed.",
+                      "reversibility":  "low",
+                      "implementation_cost":  "high"
+                  },
+                  {
+                      "atom_id":  "E-ML-01",
+                      "statement":  "Modify `trigger_detection` to require and bind the training label to a specific `track_id` (or event detection instance), rather than solely relying on detection category, to prevent mislabeling when multiple objects of the same category are present.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "MISLABEL",
+                      "test":  "Simulate a frame with two distinct objects of the same category; assert that the label correctly binds to the triggering `track_id` and does not get swapped or misattributed to another same-category detection.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "E-ML-02",
+                      "statement":  "Introduce a VLM (Vision-Language Model) verification step to reconcile the detector\u0027s `class_name` with the VLM\u0027s semantic verdict for the sample; on disagreement, the sample must be dropped or quarantined for review instead of being auto-labeled with the detector\u0027s class.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "MISLABEL",
+                      "test":  "Simulate a scenario where the detector assigns `class_name=person` but the VLM returns `class_name=cat`; assert that this sample is excluded or flagged and does not enter the positive training set under the detector\u0027s label.",
+                      "reversibility":  "medium",
+                      "implementation_cost":  "high"
+                  }
+              ]
+}

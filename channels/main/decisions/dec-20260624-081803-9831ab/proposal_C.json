@@ -1,0 +1,142 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task is to resolve 17 remaining critical data-path bugs in project \u0027oko\u0027 identified by an adversarial audit, prior to the first model training. The bugs are documented in AUDIT_FINDINGS_2026-06-24.md and grouped into five clusters: (A) FRAME-SYNC, (B) CROP-NAMING, (C) DATASET-EXPORT, (D) FINETUNE-GATE, and (E) MISLABEL. Three fixes have already been committed and must not be redone. Each remaining fix must be atomic, include a regression test, and pass architectural review. Clusters A-D must be fully green before any training launch. The approach must be DISCUSS-First, meaning decomposition into atoms with rationale, tradeoffs, and confidence before implementation.",
+    "summary":  "Decompose the 17 outstanding bugs into 14 atomic fixes (some bugs are tightly coupled and can be addressed by a single atomic change) across five clusters. Each atom includes a precise statement of the fix, the reason it is required, tradeoffs considered, and a confidence level. Regression tests are specified per atom. The plan ensures clusters A-D are completed and verified before training, with architectural review gate at each cluster. The FINETUNE-GATE cluster D is re-architected from scratch because commit 99034ac5 is confirmed non-functional. Cluster E is lower priority but still included for completeness.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Cluster A: Fix frame selection logic to crop from the event\u0027s own frame (pending.frames[0]) instead of the last frame in the buffer.",
+                               "reason":  "Currently the system crops from the last frame (~11s after event), causing background mismatches (person/cat label on empty background). Using the event\u0027s first frame ensures the crop corresponds to the detection moment.",
+                               "tradeoff":  "Requires ensuring pending.frames[0] is always available and not garbage-collected before cropping; may increase memory retention slightly.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster A: Add regression test that simulates a detection event, advances time, and verifies the cropped image matches the event frame, not a later frame.",
+                               "reason":  "To prevent regression of the frame-sync bug and validate the fix under simulated real-world conditions.",
+                               "tradeoff":  "Test must mock or use a controlled frame buffer to be deterministic; slight overhead in test setup.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Cluster B: Change crop naming to include camera_id and a monotonically increasing, persistent sequence number (or UUID) instead of frame_id only.",
+                               "reason":  "Using frame_id alone causes collisions when frame counters reset on restart or across different cameras, leading to overwrites and data loss.",
+                               "tradeoff":  "Increases filename length and requires a sequence counter persisted across restarts; slightly more complex naming logic.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster B: Add regression test that generates crops from multiple cameras and across simulated restarts, verifying zero filename collisions.",
+                               "reason":  "Ensures the new naming scheme eliminates collisions under all identified scenarios.",
+                               "tradeoff":  "Test must simulate camera IDs and counter resets; may need temporary filesystem isolation.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Cluster C: Fix YOLO label coordinates to be relative to the crop, not the full frame, when exporting cropped images.",
+                               "reason":  "Currently bbox coordinates are computed against the full frame but the exported image is a crop, causing misaligned annotations that poison training data.",
+                               "tradeoff":  "Requires coordinate transformation (shifting origin to crop top-left) during export; must handle edge cases where crop exceeds frame bounds.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster C: Fix missing-image handling to skip label generation entirely when the source image is missing, preventing orphan labels.",
+                               "reason":  "Orphan labels (annotation without corresponding image) break dataset integrity and cause training crashes or silent errors.",
+                               "tradeoff":  "Adds a pre-check for image existence; may slightly slow export but prevents data corruption.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster C: Fix background-class handling to never produce a positive bbox; background should be implicit (no label) or explicit negative example.",
+                               "reason":  "Current code generates a positive bounding box for \u0027background\u0027 class, which is semantically incorrect and degrades model performance.",
+                               "tradeoff":  "Requires filtering logic in export; must ensure background frames are either skipped or exported with empty label files.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster C: Preserve frame width and height metadata in exported dataset manifests.",
+                               "reason":  "frame_w/h are currently lost, making it impossible to correctly normalize coordinates or reconstruct original aspect ratios downstream.",
+                               "tradeoff":  "Adds fields to export schema; backward compatibility may require a version bump in dataset format.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Cluster C: Add regression tests for each DATASET-EXPORT sub-bug: bbox correctness after crop, orphan label prevention, background handling, and metadata preservation.",
+                               "reason":  "Each sub-bug is distinct and requires targeted verification to ensure no regression.",
+                               "tradeoff":  "Multiple test cases increase test suite size but are necessary for critical data-path coverage.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Cluster D: Remove classification-probs computation from detection model outputs; detection models do not produce meaningful classification probabilities.",
+                               "reason":  "The current code incorrectly applies softmax over detection outputs, yielding nonsense probabilities that fail to gate bad data.",
+                               "tradeoff":  "Loss of a potential (but broken) gating signal; replacement with detection confidence threshold is simpler and correct.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster D: Replace numeric class indices with human-readable class names in all gating logic and logs.",
+                               "reason":  "Using raw indices caused mismatches and made debugging impossible; names are stable across model updates and human-auditable.",
+                               "tradeoff":  "Requires a mapping table maintained alongside model config; slight overhead but critical for correctness.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Cluster D: Implement a lightweight orchestrator that sequences gating checks (confidence threshold, class whitelist, etc.) and halts pipeline on failure.",
+                               "reason":  "No orchestrator existed, so the broken gating was silently bypassed. An explicit orchestrator ensures gating is always executed and failures block training data ingestion.",
+                               "tradeoff":  "Adds architectural component; must be designed to be non-blocking for valid data and fail-safe (default-deny on error).",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Cluster D: Add integration regression test that feeds a mix of valid and invalid detection outputs through the gate and verifies correct accept/reject decisions.",
+                               "reason":  "End-to-end validation that the entire FINETUNE-GATE cluster works as intended after re-architecture.",
+                               "tradeoff":  "Integration test is more complex and slower than unit tests but necessary given previous complete failure.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Cluster E: Fix trigger_detection to require a valid track_id, not just category, before generating a training example.",
+                               "reason":  "Triggering on category alone can fire on transient false positives; requiring a tracked object ensures temporal consistency and reduces mislabels.",
+                               "tradeoff":  "May slightly reduce number of training examples (false positives are no longer captured), but improves label quality significantly.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Cluster E: Add VLM verification step that compares class_name from the detector with a VLM query on the crop before accepting the label.",
+                               "reason":  "Detector class_name is not verified against visual content, leading to confident mislabels. VLM cross-check catches discrepancies.",
+                               "tradeoff":  "Adds latency and cost (VLM API call) to the labeling pipeline; can be made asynchronous or sampling-based to mitigate.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Cluster E: Add regression tests for track_id requirement and VLM cross-verification logic.",
+                               "reason":  "Both changes alter labeling behavior and must be validated to avoid over-filtering or under-filtering.",
+                               "tradeoff":  "VLM test may need mocking to avoid external API calls in CI; track_id test is straightforward.",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "The AUDIT_FINDINGS_2026-06-24.md file contains exact line numbers and descriptions for all 17 bugs, and the three already-fixed bugs are clearly marked.",
+                        "The operator\u0027s commits (771b8dd, 050cb4c, a83b983) are correct and do not need rework; they do not overlap with the remaining clusters.",
+                        "The codebase is in Python and uses pytest, as implied by the verify=pytest constraint.",
+                        "The FINETUNE-GATE cluster D is completely non-functional despite commit 99034ac5, requiring a from-scratch reimplementation rather than patching.",
+                        "A VLM service or mock is available for the MISLABEL cluster E verification step.",
+                        "The \u0027DISCUSS-First\u0027 approach means this decomposition plan will be reviewed and discussed before any code changes are made.",
+                        "Clusters A-D must be fixed and verified before training; cluster E can be addressed in parallel or subsequently but is included for completeness.",
+                        "Regression tests will be integrated into the existing pytest suite for project oko."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "The FINETUNE-GATE re-architecture introduces new bugs due to complexity and tight coupling with model output formats.",
+                      "severity":  "high",
+                      "mitigation":  "Extensive integration testing with real model outputs; architectural review by two senior engineers; gradual rollout with shadow mode before enforcing gating."
+                  },
+                  {
+                      "risk":  "Crop naming changes may break downstream consumers that rely on the old naming convention.",
+                      "severity":  "medium",
+                      "mitigation":  "Provide a migration script and maintain backward compatibility via symlinks or a lookup table during transition period."
+                  },
+                  {
+                      "risk":  "VLM verification in cluster E adds latency and cost, potentially slowing the pipeline below acceptable thresholds.",
+                      "severity":  "medium",
+                      "mitigation":  "Implement as an optional sampling check (e.g., 10% of labels) with a timeout; make configurable per environment."
+                  },
+                  {
+                      "risk":  "Regression tests may not cover all edge cases, leading to undiscovered regressions in production.",
+                      "severity":  "medium",
+                      "mitigation":  "Combine synthetic tests with a curated set of real-world adversarial examples from the audit; run tests in CI on every commit."
+                  },
+                  {
+                      "risk":  "Architectural review bottleneck delays fixes and blocks training schedule.",
+                      "severity":  "low",
+                      "mitigation":  "Schedule review slots in advance; prepare detailed design docs per cluster to accelerate review; empower senior developers to approve minor atoms."
+                  }
+              ],
+    "minimal_version":  "Fix clusters A, B, C, and D with atomic changes and regression tests. Cluster E is deferred to a follow-up task. All fixes are implemented as direct patches with minimal refactoring. FINETUNE-GATE is rebuilt with essential checks only (confidence threshold, class whitelist, orchestrator). Regression tests cover happy path and known audit failures. No VLM integration; MISLABEL fixes are limited to track_id requirement only.",
+    "advanced_version":  "All five clusters fully resolved. Cluster D includes a robust orchestrator with pluggable gating checks, detailed logging, and metrics export. Cluster E includes VLM cross-verification with adaptive sampling and caching. Crop naming uses content-hash-based deduplication. DATASET-EXPORT produces a versioned manifest with full provenance metadata. Comprehensive regression suite includes fuzz testing, edge-case simulation, and performance benchmarks. Architectural review includes a formal design document and threat model update."
+}

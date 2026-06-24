@@ -1,0 +1,187 @@
+{
+    "proposer":  "B",
+    "understanding":  "OKO\u0027s data path turns camera events into a labeled training set and is about to feed its FIRST YOLO finetune. An adversarial audit found 17 verified bugs (12 high) that each poison that training set or disable the safety gate meant to stop a poisoned run. The bugs cluster into: (A) FRAME-SYNC — crops are cut from the last buffered frame (~11s late) using the event-time bbox, so background gets a person/cat label; (B) CROP-NAMING — filenames keyed on frame_id alone collide and overwrite across restarts (frame_id resets to 0) and across cameras; (C) DATASET-EXPORT — YOLO labels are normalized against the full frame while the saved image is the crop (label/image space mismatch), plus orphan labels for missing images, positive bboxes on background, and lost frame_w/h; (D) FINETUNE-GATE — still broken despite being marked done: it reads classification `.probs` on a detection model, compares numeric indices against class names, and has no orchestrator actually running it, so it gates nothing; (E) MISLABEL — triggers match by category without track_id, and detector class_name is never reconciled with the VLM. The deep root behind C and D is a detection-vs-classification confusion: a detector trains on full frames + bboxes, not on crops. The deliverable here is a DISCUSS-First decomposition into atoms (one fix + one regression test each), architect-reviewed, with the hard rule that the first training stays blocked until A–D are green — and the only thing that can MECHANICALLY enforce that rule is a working gate orchestrator (cluster D), which makes D the true keystone even though it is listed fourth.",
+    "summary":  "Decompose into 17 fix+regression-test atoms grouped A–E, on top of 5 keystone decisions: (K1) declare the first model a DETECTION finetune so training images are full frames with full-frame-normalized bboxes and crops become review-only — this dissolves the C/D space conflict at the root; (K2) build ONE reusable dataset-invariant validator (image↔label 1:1, background→empty label, coords∈[0,1], class∈data.yaml, frame_w/h present) reused by every C atom AND as stage 1 of the gate; (K3) make the gate ORCHESTRATOR (D11) the keystone that runs the validator + a real detection-mAP eval on a fixed held-out fixture and ABORTS training on any red, with orchestrator-integration-test-green as the definition of done (not a commit marker — 99034ac5 lied); (K4) TDD red-first — every atom first lands a test that FAILS on current HEAD reproducing the documented bug, then the minimal fix, then architect review of the pair; (K5) independent judgment: fold E into the gate too, since a mislabel poisons training exactly like A\u0027s background crop. Sequencing: K2 validator first (reused everywhere) → A and B in parallel (independent producers) → C export atoms against the validator → D9/D10 fix gate eval, D11 wires the orchestrator → E source-label correctness → final golden end-to-end synthetic-scene test. Green-light for first training = orchestrator integration test passing.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "K1 — Declare the first model a YOLO DETECTION finetune: training images are FULL event frames, labels are class+bbox normalized to the full frame, and crops are demoted to human/VLM review artifacts (never training images). Regression test: assert the exporter writes a full-frame image whose dimensions match the recorded frame_w/h and a label whose de-normalized bbox lands on the object (IoU\u003e0.9 with the known box).",
+                               "reason":  "Cluster C\u0027s core contradiction (label space = full frame, image = crop) and D9 (`.probs` on a detector) are the same mistake: treating a detection task as a classification-crop task. A detector trains on full frames + bboxes; crops are classification-only. Fixing this once removes the root cause of #4/#9 and frames all other C atoms.",
+                               "tradeoff":  "More storage (persist full frames) and an exporter rewrite; if the operator actually intends a CROP CLASSIFIER first, this is the wrong call and labels should be class-only — so this is a DISCUSS gate, not a silent default.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "K2 — Build ONE reusable dataset-invariant validator encoding every YOLO export rule (each image has exactly one matching label and vice-versa; background images produce EMPTY label files; all coords∈[0,1]; every class id∈data.yaml names; frame_w/h present and used for normalization). Regression test: the validator is itself the harness for all C atoms and has positive/negative fixtures proving it fails dirty datasets and passes clean ones.",
+                               "reason":  "Bugs #5/#6/#16/#17 are all violations of dataset invariants; encoding them once avoids duplicated ad-hoc assertions and yields a single artifact reused as stage 1 of the gate.",
+                               "tradeoff":  "Upfront design cost before any single bug is \u0027fixed\u0027; pays back immediately as both the C test suite and the gate\u0027s first stage.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "K3 — The FINETUNE-GATE ORCHESTRATOR (D11) is the keystone enforcing \u0027no training until A–D green\u0027: it runs (1) the K2 dataset validator, (2) a real detection-mAP eval via model.val() on a FIXED held-out fixture, and ABORTS training with a human-readable reason on any red; definition-of-done is this orchestrator\u0027s integration test passing in CI, NOT a commit message. Regression test: red dataset OR sub-threshold metric → training refused; both green → training proceeds.",
+                               "reason":  "The top constraint (\u0027first training MUST NOT start until A–D green\u0027) is only real if something mechanically blocks it. 99034ac5 was marked done yet the gate gates nothing — proving that human \u0027done\u0027 markers cannot be trusted for a critical safety gate.",
+                               "tradeoff":  "An integration test that spins a tiny train/val cycle is slower and heavier than unit tests; this cost is mandatory for a safety gate and can use a 1-epoch tiny fixture.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "K4 — DISCUSS-First + TDD red-first for every atom: first land a regression test that FAILS on current HEAD and reproduces the documented failure, then the minimal fix to green, then architect reviews the (test, fix) pair before merge. Regression test: each atom\u0027s test is demonstrated red on the pre-fix commit and green after.",
+                               "reason":  "These are \u0027verified\u0027 bugs; a test that passes on broken code closes nothing. Red-first is the only way to trust 17 fixes actually land and stay landed, and it satisfies the architectural-review + DISCUSS-First constraints.",
+                               "tradeoff":  "Slower than batch-patching; rules out shipping a fix whose test never exercised the bug.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "K5 — Independent recommendation: fold cluster E (#13/#14) into the green-gate as well (or at minimum quarantine VLM-disagreements out of the training set), even though the literal constraint names only A–D. Regression test: gate fails / sample excluded when detector class_name disagrees with VLM verdict, or when a trigger lacks a track_id.",
+                               "reason":  "A mislabeled crop (wrong track, or \u0027cat\u0027 that the VLM calls \u0027dog\u0027/background) poisons training identically to A\u0027s background-on-person crop; excluding E from the gate leaves a known poison vector open on the very first run.",
+                               "tradeoff":  "Widens the gate\u0027s scope and may delay first training; flagged explicitly for architect/operator because it diverges from the stated A–D boundary.",
+                               "confidence":  0.7
+                           },
+                           {
+                               "statement":  "A1 (#1) — Crop from the detection\u0027s OWN source frame (pair every bbox with the exact frame it was detected in), not the last buffered frame. Regression test: synthetic 2-position track (object at P in event frame, moved to P\u0027 by last frame); assert the crop\u0027s pixels match the event-frame object region (non-background) and that the source-frame index used == the event frame index.",
+                               "reason":  "The ~11s lag means the event-time bbox indexes empty background in the final frame — a positive label on a negative image, the most damaging label noise.",
+                               "tradeoff":  "Requires carrying a source-frame reference on each detection/pending event instead of grabbing frames[-1]; small buffer-bookkeeping change.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "A2 (#2) — Apply the same bbox↔source-frame pairing (and matching coordinate space) to the SECOND crop path (zone_crop / secondary collector) flagged separately by the audit. Regression test: analogous temporal-alignment assertion for the second code path.",
+                               "reason":  "The audit lists #1 and #2 as distinct frame-sync defects, implying two collection paths; both must use contemporaneous frames or one silently re-poisons the set.",
+                               "tradeoff":  "Exact #2 location must be confirmed against AUDIT_FINDINGS; treated as a distinct atom to avoid a shared-helper fix missing one call site.",
+                               "confidence":  0.6
+                           },
+                           {
+                               "statement":  "A12 (#12) — Use an explicit event-frame INDEX rather than positional pending.frames[0], because with a pre-event buffer frames[0] is ~5s BEFORE the event (also wrong, not just frames[-1]). Regression test: buffer that includes pre-event frames; assert the chosen frame == the recorded event index, not [0] and not [-1].",
+                               "reason":  "The contract\u0027s suggested fix \u0027use frames[0]\u0027 is only correct if no pre-event buffer exists; PROJECT_MAP specifies pre_event_buffer_sec=5, so the robust invariant is \u0027crop from the frame the bbox was detected in\u0027, identified explicitly.",
+                               "tradeoff":  "Slightly more than the one-line frames[0] change, but prevents trading an 11s-late bug for a 5s-early bug.",
+                               "confidence":  0.62
+                           },
+                           {
+                               "statement":  "B3 (#3) — Make crop/image names include a non-resetting component (per-process run UUID or UTC timestamp, or a persisted monotonic counter) so a restart with frame_id back at 0 cannot overwrite prior samples. Regression test: simulate restart (counter resets to 0), emit a crop with a previously-used frame_id, assert both files coexist (distinct names, no overwrite).",
+                               "reason":  "frame_id resets to 0 on restart, so naming on frame_id alone silently destroys earlier training samples.",
+                               "tradeoff":  "Longer, less human-readable filenames; provenance metadata mitigates readability.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "B7 (#7) — Include camera_id in the sample name to eliminate cross-camera collisions. Regression test: two cameras emit the same frame_id; assert distinct filenames.",
+                               "reason":  "Same frame_id from different cameras currently collides, overwriting one camera\u0027s data with another\u0027s.",
+                               "tradeoff":  "None significant beyond name length.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "B8 (#8) — Derive the label sidecar name from the SAME composite key as its image so image↔label pairing is preserved under the new scheme. Regression test: for every produced image there is exactly one matching label file with the aligned stem, and vice-versa.",
+                               "reason":  "YOLO requires image.jpg ↔ image.txt name alignment; changing the image naming without changing the label naming breaks pairing.",
+                               "tradeoff":  "Exact #8 semantics to be confirmed against the audit; paired here with B because it is a naming-consistency defect.",
+                               "confidence":  0.6
+                           },
+                           {
+                               "statement":  "B15 (#15) — Include a per-detection/track index in the name so multiple detections within one frame don\u0027t collide to a single file. Regression test: a frame with two detections produces two distinct sample names.",
+                               "reason":  "Multiple objects per frame share frame_id; without a per-object discriminator they overwrite each other.",
+                               "tradeoff":  "Exact #15 semantics to be confirmed against the audit; modeled as the intra-frame collision case of cluster B.",
+                               "confidence":  0.6
+                           },
+                           {
+                               "statement":  "C4 (#4) — Write the FULL-frame image with a bbox normalized to the full-frame dimensions (consequence of K1), instead of crop-image + full-frame-label. Regression test: de-normalize the exported label against the exported image\u0027s actual dimensions; assert IoU\u003e0.9 with the known ground-truth box.",
+                               "reason":  "Label/image space mismatch makes every exported box wrong for the detector; aligning both to the full frame fixes it.",
+                               "tradeoff":  "Depends on K1 being confirmed as detection (not crop-classifier).",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "C5 (#5) — Guarantee image+label atomicity and prune orphan labels (a label with no image). Regression test: feed a sample whose image write is missing; assert no dangling label is emitted and the validator\u0027s \u0027every label has an image\u0027 invariant holds.",
+                               "reason":  "Orphan labels break YOLO loading and silently corrupt the train/val index.",
+                               "tradeoff":  "Atomic write / cleanup adds a small amount of exporter complexity.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "C6 (#6) — Background/negative samples must emit an EMPTY label file (zero boxes, YOLO\u0027s negative-sample convention), never a positive bbox. Regression test: a background sample yields a label file that exists and contains zero boxes.",
+                               "reason":  "A positive box on a background image teaches the detector to fire on empty scenes.",
+                               "tradeoff":  "Requires the producer to mark samples as background vs positive explicitly.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "C16 (#16) — Persist original frame_w/h with each sample and use them as the normalization denominator. Regression test: known frame dims + known pixel box → assert exact expected normalized values.",
+                               "reason":  "Dropping frame_w/h leaves normalization undefined or wrong; it is the denominator for every YOLO coordinate.",
+                               "tradeoff":  "Small metadata addition per sample.",
+                               "confidence":  0.82
+                           },
+                           {
+                               "statement":  "C17 (#17) — Enforce coords∈[0,1] (clamp/reject) and class id∈data.yaml names at export, via the K2 validator. Regression test: out-of-range coordinates and unknown class ids are rejected, not written.",
+                               "reason":  "Out-of-range coords and undefined class ids are silent dataset corruption; #17\u0027s exact form to be confirmed but is an export-invariant violation.",
+                               "tradeoff":  "Exact #17 mapping provisional; covered by the general validator so it is caught even if mis-attributed.",
+                               "confidence":  0.6
+                           },
+                           {
+                               "statement":  "D9 (#9) — Replace classification `.probs` reads with detection outputs (results.boxes: conf/cls) and evaluate via a detection metric (mAP from model.val() on a held-out fixture). Regression test: feed a detection Results object (boxes present, no probs); assert the gate computes a metric without touching `.probs`, and that a known-good vs known-bad model score differently.",
+                               "reason":  "Ultralytics populates `.probs` only for classification models; on a detector it is empty, so the gate\u0027s evaluation is a no-op and gates nothing.",
+                               "tradeoff":  "model.val() needs a small labeled held-out set, raising the gate\u0027s runtime slightly.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "D10 (#10) — Canonicalize class identity via a single name↔id mapping from data.yaml and compare in ONE space (always ids, or always names). Regression test: with a shuffled class-id ordering the gate still matches correctly, and a genuinely mismatched mapping is detected as red.",
+                               "reason":  "Comparing a numeric predicted index against class-name strings always mismatches, making the gate\u0027s class checks meaningless.",
+                               "tradeoff":  "Requires data.yaml to be the single source of truth for class order.",
+                               "confidence":  0.78
+                           },
+                           {
+                               "statement":  "D11 (#11) — Implement the orchestrator (see K3) that actually RUNS validator+eval as a precondition and blocks training on red; nothing currently calls the gate. Regression test (integration): red dataset or sub-threshold metric → training is refused with a reason; both green → training is allowed to proceed.",
+                               "reason":  "Gate logic that nothing invokes cannot enforce the no-train-until-green constraint; the orchestrator is what makes the constraint mechanical rather than aspirational.",
+                               "tradeoff":  "Heaviest single atom (integration test, tiny train/val fixture); it is the linchpin success test of the whole task.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "E13 (#13) — Attach the training label to the triggering TRACK (match by track_id), not merely by detection category. Regression test: two tracks of the same category in frame; assert the label binds to the triggering track_id, not an arbitrary same-category detection.",
+                               "reason":  "Category-only matching attaches the label to the wrong instance when multiple same-class objects are present, producing subtly mislabeled crops.",
+                               "tradeoff":  "Requires a stable track_id on the trigger; tracker provider must supply it.",
+                               "confidence":  0.72
+                           },
+                           {
+                               "statement":  "E14 (#14) — Reconcile detector class_name against the VLM verdict before accepting a labeled training sample; on disagreement drop or quarantine to review rather than auto-labeling with the detector class. Regression test: detector class ≠ VLM class → the sample is excluded/flagged, not exported under the detector label.",
+                               "reason":  "Unchecked detector labels enter training even when the VLM (a stronger semantic check) disagrees, injecting class-level mislabels.",
+                               "tradeoff":  "Couples export to VLM availability for disputed samples; mitigated by quarantine (don\u0027t block, just don\u0027t auto-label).",
+                               "confidence":  0.72
+                           }
+                       ],
+    "assumptions":  [
+                        "The first model is a YOLO DETECTION finetune (so the correct training image is the full frame with bboxes, and crops are review-only). If the operator actually intends a crop CLASSIFIER first, K1/C4/D9 must be re-scoped to class-only labels — this is the single most important thing to confirm in the DISCUSS step.",
+                        "I could not open bridge-projects/oko/AUDIT_FINDINGS_2026-06-24.md (it is outside this session\u0027s working directory), so the per-bug file:line and the exact semantics of #2, #8, #15, #17 are mapped from the cluster symptoms in the TaskContract; the implementer must reconcile each atom against the audit file before coding.",
+                        "pending.frames is an ordered per-camera buffer and each detection can be (or be made) associated with the index of the frame it was detected in.",
+                        "Ultralytics semantics hold: detection Results expose .boxes; .probs is classification-only; gate scoring should use model.val()/mAP on held-out data.",
+                        "The three already-committed fixes (771b8dd, 050cb4c, a83b983) address findings outside this 1–17 numbering and are not to be touched; the 17 atoms here are bugs #1–#17 (A:1,2,12 B:3,7,8,15 C:4,5,6,16,17 D:9,10,11 E:13,14 = 17).",
+                        "pytest runs within scope=project oko and the regression tests live in the oko repo; the gate\u0027s integration test may run a 1-epoch tiny fixture rather than a full train.",
+                        "track_id is available from the tracker provider for E13, and a VLM verdict is reachable (at least for disputed samples) for E14."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Detection-vs-classification ambiguity: if the first model is actually a crop classifier, the K1/C4/D9 \u0027full-frame image + bbox\u0027 fixes are wrong and the exporter would be rebuilt in the wrong direction.",
+                      "severity":  "high",
+                      "mitigation":  "Make model-type a blocking DISCUSS decision (K1) confirmed by architect/operator before any C/D export rewrite; gate all of cluster C on that answer."
+                  },
+                  {
+                      "risk":  "Literal \u0027use frames[0]\u0027 fix for cluster A trades an 11s-late crop for a 5s-early crop because PROJECT_MAP specifies a 5s pre-event buffer (frames[0] is pre-event, not the event frame).",
+                      "severity":  "high",
+                      "mitigation":  "A12 fixes the invariant to \u0027crop from the explicit event/detection source-frame index\u0027, with a test that fails for both frames[0] and frames[-1] when a pre-event buffer is present."
+                  },
+                  {
+                      "risk":  "Exact audit mapping for #2/#8/#15/#17 is inferred, not read; an atom could fix the wrong line or miss a second call site.",
+                      "severity":  "high",
+                      "mitigation":  "Treat the #-to-atom mapping as provisional; first step of each atom is to open AUDIT_FINDINGS at the cited file:line and write the red-first test against the real defect; the K2 validator also catches export defects even if mis-attributed."
+                  },
+                  {
+                      "risk":  "A regression test that passes on the current broken code gives false confidence the bug is closed (the 99034ac5 \u0027done-but-broken\u0027 failure mode).",
+                      "severity":  "medium",
+                      "mitigation":  "TDD red-first (K4): every test must be demonstrated failing on the pre-fix commit; definition-of-done for the gate is its integration test green in CI, not a commit marker."
+                  },
+                  {
+                      "risk":  "The gate passes on a too-small or non-representative held-out set, giving a false green and letting a bad first training proceed.",
+                      "severity":  "medium",
+                      "mitigation":  "Require a minimum eval-set size plus a fixed known-good/known-bad regression fixture in the gate; the orchestrator fails closed if the held-out set is missing or undersized."
+                  },
+                  {
+                      "risk":  "Cross-cluster interaction: A\u0027s frame fix changes which pixels/dims feed C\u0027s normalization, so atoms green in isolation could still produce a broken end-to-end dataset.",
+                      "severity":  "medium",
+                      "mitigation":  "Add a single golden end-to-end synthetic-scene test (known objects/positions) that runs producer→export→gate and asserts the final dataset+gate verdict; it is the actual green-light for first training."
+                  },
+                  {
+                      "risk":  "Excluding cluster E from the green-gate (per the literal A–D constraint) leaves mislabeled crops poisoning the very first run.",
+                      "severity":  "medium",
+                      "mitigation":  "K5 recommends folding E into the gate or at least quarantining VLM-disagreements; escalate to architect since it diverges from the stated constraint."
+                  }
+              ],
+    "minimal_version":  "Close clusters A, B, C, D only (the constraint\u0027s green-gate set) with one red-first regression test per atom. Concretely: K2 dataset validator → A1/A12 frame-sync (event-frame crop, with the pre-event-buffer guard) → B3/B7 unique cross-restart/cross-camera naming → C4/C5/C6/C16 export correctness against the validator → D9/D10 fix the gate eval to detection-mAP with canonical class mapping → D11 orchestrator that runs validator+eval and HARD-BLOCKS training on red. For cluster E, do not fully fix yet but QUARANTINE VLM-disagreements and track-less triggers so they cannot enter the training set. Green-light = the D11 orchestrator integration test passes on a clean synthetic dataset and refuses a deliberately poisoned one. This is the smallest state in which the first training can safely start.",
+    "advanced_version":  "Everything in minimal, plus: full cluster E (E13 track_id binding, E14 VLM reconciliation) folded INTO the gate (K5); a property-based/fuzz layer over the K2 validator (random dims, boxes, class sets) to catch edge cases beyond fixtures; the golden end-to-end synthetic-scene test wired into CI as a required check; provenance metadata embedded in every sample (camera_id, run_id, track_id, source_frame_index, frame_w/h) for full traceability and post-hoc debugging; a \u0027data audit report\u0027 artifact the orchestrator emits each run (counts of positives/backgrounds, rejected samples and reasons, class balance, mAP on the held-out fixture) so the operator gets a human-readable green/red with evidence; and CI wiring so no training job can be launched except through the orchestrator, making \u0027no training until A–E green\u0027 impossible to bypass rather than merely policy."
+}

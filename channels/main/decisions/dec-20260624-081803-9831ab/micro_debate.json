@@ -1,0 +1,23 @@
+{
+    "skipped":  false,
+    "topics":  [
+                   {
+                       "atom_ids":  [
+                                        "K-01",
+                                        "C-DE-01"
+                                    ],
+                       "rounds":  [
+                                      {
+                                          "for":  "K-01\u0027s mandate for full-frame training simplifies the initial model\u0027s data pipeline, avoids context loss inherent in cropping, and ensures the model learns detections in their natural scene context, which is critical for robust real-world performance and reduces initial implementation complexity.",
+                                          "against":  "C-DE-01\u0027s explicit provision for crop-local coordinates is a necessary architectural foresight. While K-01 restricts the *first* model, a robust export system must be capable of handling crops for future models or specialized tasks without a costly re-architecture.",
+                                          "resolution":  "K-01\u0027s full-frame mandate is adopted for the initial model, but C-DE-01\u0027s design should accommodate future crop-based training paths."
+                                      },
+                                      {
+                                          "for":  "C-DE-01 offers a complete and technically sound solution for coordinate normalization, correctly handling both full frames and crops. Building this comprehensive logic now ensures future flexibility and prevents technical debt, even if the crop path isn\u0027t immediately active.",
+                                          "against":  "K-01\u0027s explicit demotion of crops to review artifacts for the *first model* means implementing and testing the crop-specific logic in C-DE-01 is premature. This adds unnecessary complexity and cost to the initial delivery without immediate benefit.",
+                                          "resolution":  "Focus C-DE-01\u0027s *initial implementation* on the full-frame path as per K-01, but retain the architectural hooks for crop-local coordinate handling for future activation."
+                                      }
+                                  ]
+                   }
+               ]
+}
