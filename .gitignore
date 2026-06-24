@@ -72,6 +72,8 @@ conversation-auto-archive.last
 
 channels/*/.plan-gate-notified
 .pytest-tmp/
+.tmp/
+.verify-tmp/
 pytest_*/
 tmp_pytest_*/
 pytest-cache-files-*/
