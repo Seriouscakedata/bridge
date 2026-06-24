@@ -100,6 +100,19 @@ $script:LapaSkillMap = @{
             proof     = '--proof'
         }
     }
+    'operator-task' = @{
+        command = 'operator-task'
+        flags   = @{
+            goal              = '--goal'
+            success           = '--success'
+            allowed_apps      = '--allowed-apps'
+            allowed_skills    = '--allowed-skills'
+            forbidden_actions = '--forbidden-actions'
+            max_steps         = '--max-steps'
+            stop_flag         = '--stop-flag'
+            proof             = '--proof'
+        }
+    }
 }
 
 function Get-LapaSkillNames {
