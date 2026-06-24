@@ -464,6 +464,82 @@ function Get-SafeServedFilePath {
   return $candidate
 }
 
+function Restore-BridgePinnedChannel {
+  param([string]$Slug)
+  if ([string]::IsNullOrWhiteSpace($Slug)) {
+    if (Get-Command Clear-PinnedChannel -ErrorAction SilentlyContinue) {
+      Clear-PinnedChannel
+      return
+    }
+  }
+  Set-PinnedChannel $Slug
+}
+
+function Clear-CompletedBacklogAddJobs {
+  try {
+    Get-Job -Name 'bridge-backlog-add-*' -ErrorAction SilentlyContinue |
+      Where-Object { $_.State -in @('Completed','Failed','Stopped') } |
+      Remove-Job -Force -ErrorAction SilentlyContinue
+  } catch {}
+}
+
+function Start-BacklogAddIdeaJob {
+  param(
+    [string]$Text,
+    [string]$Status,
+    [string]$Channel,
+    [bool]$SkipCurator = $false
+  )
+  Clear-CompletedBacklogAddJobs
+  $bridgeRootForJob = $root
+  $jobName = 'bridge-backlog-add-' + ([guid]::NewGuid().ToString('N'))
+  return Start-Job -Name $jobName -ArgumentList @($bridgeRootForJob, $Text, $Status, $Channel, $SkipCurator) -ScriptBlock {
+    param(
+      [string]$BridgeRoot,
+      [string]$Text,
+      [string]$Status,
+      [string]$Channel,
+      [bool]$SkipCurator
+    )
+    try {
+      Set-Location -LiteralPath $BridgeRoot
+      . (Join-Path $BridgeRoot 'lib\common.ps1')
+      try { Initialize-Bridge | Out-Null } catch {}
+      $prevPin = $null
+      try {
+        if (Get-Command Get-PinnedChannel -ErrorAction SilentlyContinue) { $prevPin = Get-PinnedChannel }
+        if (-not [string]::IsNullOrWhiteSpace($Channel) -and (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue)) {
+          Set-PinnedChannel $Channel
+        }
+        if ($SkipCurator) {
+          $id = Add-Idea -Text $Text -From 'user' -Tags @('user') -Status $Status -SkipCurator
+        } else {
+          $id = Add-Idea -Text $Text -From 'user' -Tags @('user') -Status $Status
+        }
+        return [pscustomobject]@{
+          ok = [bool]$id
+          id = [string]$id
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+        }
+      } finally {
+        if (Get-Command Clear-PinnedChannel -ErrorAction SilentlyContinue) {
+          if ([string]::IsNullOrWhiteSpace([string]$prevPin)) {
+            Clear-PinnedChannel
+          } elseif (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
+            Set-PinnedChannel $prevPin
+          }
+        }
+      }
+    } catch {
+      return [pscustomobject]@{
+        ok = $false
+        error = [string]$_.Exception.Message
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+      }
+    }
+  }
+}
+
 try {
   while ($listener.IsListening) {
     $ctx = $listener.GetContext()
@@ -1466,15 +1542,21 @@ try {
           if ($null -ne $body.skip_curator) {
             try { $skipCurator = [bool]$body.skip_curator } catch { $skipCurator = $false }
           }
-          try {
-            if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
-            if ($skipCurator) {
+          if ($skipCurator) {
+            try {
+              if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
               $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st -SkipCurator
-            } else {
-              $id = Add-Idea -Text $text -From 'user' -Tags @('user') -Status $st
+            } finally { Restore-BridgePinnedChannel $prevPin }
+            Send-Text $ctx ('{"ok":' + (([bool]$id).ToString().ToLower()) + ',"id":"' + [string]$id + '"}') 'application/json; charset=utf-8'
+          } else {
+            $targetChannel = $chParam
+            if ([string]::IsNullOrWhiteSpace($targetChannel)) {
+              try { $targetChannel = [string](Get-EffectiveChannel) } catch { $targetChannel = 'main' }
             }
-          } finally { Set-PinnedChannel $prevPin }
-          Send-Text $ctx ('{"ok":' + (([bool]$id).ToString().ToLower()) + ',"id":"' + [string]$id + '"}') 'application/json; charset=utf-8'
+            $job = Start-BacklogAddIdeaJob -Text $text -Status $st -Channel $targetChannel -SkipCurator:$false
+            $jobIdJson = ([string]$job.Id) | ConvertTo-Json -Compress
+            Send-Text $ctx ('{"ok":true,"accepted":true,"id":"","job_id":' + $jobIdJson + '}') 'application/json; charset=utf-8' 202
+          }
         }
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/backlog/update') {

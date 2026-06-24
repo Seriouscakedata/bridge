@@ -1,10 +1,10 @@
 ﻿# 2026-06-11 freeze-audit wave1 atom3: claim-guard escape counters used to live in $script:
 # variables — every driver restart reset them to 0, so the escape mechanisms (orphaned-dirty
-# auto-stash at >=6 defers, serial-claim hold at >=4 strikes) could NEVER fire under frequent
+# auto-stash at >=2 defers, serial-claim hold at >=4 strikes) could NEVER fire under frequent
 # restarts and the original wedge returned in slow motion. Both decisions now read previous
 # counts from persisted state (state.json fields written by the caller). Pure functions.
 function Get-DriverDirtyDeferDecision {
-  param([AllowNull()]$State, [string]$IdeaId = '', [int]$Threshold = 6)
+  param([AllowNull()]$State, [string]$IdeaId = '', [int]$Threshold = 2)
   $prevId = ''
   $prevStreak = 0
   try {
@@ -1343,7 +1343,7 @@ $script:DriverLoopIdleClaimBlock = {
             # tree). Leave the idea in the queue and just skip this tick; it gets re-picked once the
             # tree is clean. Dedupe the notice by idea id so idle ticks don't spam while it stays dirty.
             # wave1 atom3: defer streak persisted in state (in-memory reset on every restart meant
-            # the >=6 auto-stash could never fire under frequent restarts).
+            # the >=2 auto-stash could never fire under frequent restarts).
             $dirtyState = $null
             try { $dirtyState = Read-State } catch {}
             $dirtyDecision = Get-DriverDirtyDeferDecision -State $dirtyState -IdeaId ([string]$claimedIdea.id)
@@ -1353,6 +1353,15 @@ $script:DriverLoopIdleClaimBlock = {
                 $s | Add-Member -NotePropertyName dirty_defer_streak -NotePropertyValue ([int]$dirtyDecision.streak) -Force
               }.GetNewClosure()) | Out-Null
             } catch {}
+            if ([int]$dirtyDecision.streak -ge 1) {
+              try {
+                $dirtyFilesText = (& git -C $guardRoot status --short 2>$null | Out-String).Trim()
+                if ([string]::IsNullOrWhiteSpace($dirtyFilesText)) { $dirtyFilesText = ($dirty | Out-String).Trim() }
+                Write-Warning ("⚠ Dirty working tree blocking claim for {0} cycle(s). Dirty files: {1}" -f [int]$dirtyDecision.streak, $dirtyFilesText)
+              } catch {
+                try { Write-Warning ("⚠ Dirty working tree blocking claim for {0} cycle(s). Dirty files: {1}" -f [int]$dirtyDecision.streak, (($dirty | Out-String).Trim())) } catch {}
+              }
+            }
             if ([int]$dirtyDecision.streak -eq 1) {
               $preview = ($dirty | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() }) -join '; '
               Add-Message -From system -Text ("🚧 Автозадача отложена: рабочее дерево не чистое ($($dirty.Count) файлов). Закоммить или сделай stash; мост возьмёт задачу как только дерево станет чистым (идея остаётся в очереди). Превью: $preview") -Kind event | Out-Null
@@ -1365,24 +1374,69 @@ $script:DriverLoopIdleClaimBlock = {
             # the orphaned changes to unwedge the queue. Fully recoverable via `git stash list`/`pop`.
             # wave1 atom3: now ALSO for project channels — an orphaned dirty project repo wedges its
             # queue identically ($guardRoot already points at the project repo there), and the same
-            # >=6-defer gate (~10+ min of refusals) keeps a live operator edit safe from stashing.
+            # >=2-defer gate keeps a live operator edit safe from stashing, but avoids hours of silent idle.
             if ([bool]$dirtyDecision.autostash) {
+              $autoStashSucceeded = $false
               try {
                 $stashMsg = ("bridge auto-stash: orphaned dirty wedged dispatch ({0} files, {1} defers)" -f $dirty.Count, [int]$dirtyDecision.streak)
                 & git -C $guardRoot stash push -u -m $stashMsg 2>$null | Out-Null
                 if ($LASTEXITCODE -eq 0) {
+                  $autoStashSucceeded = $true
                   Add-Message -From system -Text ("🧹 Авто-stash: осиротевший dirty ($($dirty.Count) файлов) убран в stash — очередь разблокирована (восстановить: git stash list / pop).") -Kind event | Out-Null
                   try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='orphaned-dirty-autostash'; files=$dirty.Count; defers=[int]$dirtyDecision.streak; root=$guardRoot }) } catch {}
                 }
               } catch {}
+              if ($autoStashSucceeded) {
+                try {
+                  Update-State ({ param($s)
+                    $s | Add-Member -NotePropertyName dirty_defer_id     -NotePropertyValue '' -Force
+                    $s | Add-Member -NotePropertyName dirty_defer_streak -NotePropertyValue 0  -Force
+                    $m = $null
+                    try { if ($s.PSObject.Properties.Name -contains 'serial_claim_strikes' -and $null -ne $s.serial_claim_strikes) { $m = $s.serial_claim_strikes } } catch {}
+                    if ($null -ne $m -and -not [string]::IsNullOrWhiteSpace([string]$dirtyDecision.idea_id)) {
+                      try {
+                        if ($m -is [System.Collections.IDictionary]) {
+                          if ($m.Contains([string]$dirtyDecision.idea_id)) { [void]$m.Remove([string]$dirtyDecision.idea_id) }
+                        } else {
+                          $m.PSObject.Properties.Remove([string]$dirtyDecision.idea_id)
+                        }
+                      } catch {}
+                      $s | Add-Member -NotePropertyName serial_claim_strikes -NotePropertyValue $m -Force
+                      }
+                  }.GetNewClosure()) | Out-Null
+                } catch {}
+              }
+            }
+            $claimedIdea = $null
+          } else {
+            try {
+              $cleanState = $null
+              try { $cleanState = Read-State } catch {}
+              $cleanDirtyId = ''
+              $cleanDirtyStreak = 0
               try {
+                if ($cleanState -and $cleanState.PSObject.Properties.Name -contains 'dirty_defer_id') { $cleanDirtyId = [string]$cleanState.dirty_defer_id }
+                if ($cleanState -and $cleanState.PSObject.Properties.Name -contains 'dirty_defer_streak') { $cleanDirtyStreak = [int]$cleanState.dirty_defer_streak }
+              } catch {}
+              if ($cleanDirtyStreak -ge 1 -and -not [string]::IsNullOrWhiteSpace($cleanDirtyId)) {
                 Update-State ({ param($s)
                   $s | Add-Member -NotePropertyName dirty_defer_id     -NotePropertyValue '' -Force
                   $s | Add-Member -NotePropertyName dirty_defer_streak -NotePropertyValue 0  -Force
-                }) | Out-Null
-              } catch {}
-            }
-            $claimedIdea = $null
+                  $m = $null
+                  try { if ($s.PSObject.Properties.Name -contains 'serial_claim_strikes' -and $null -ne $s.serial_claim_strikes) { $m = $s.serial_claim_strikes } } catch {}
+                  if ($null -ne $m) {
+                    try {
+                      if ($m -is [System.Collections.IDictionary]) {
+                        if ($m.Contains($cleanDirtyId)) { [void]$m.Remove($cleanDirtyId) }
+                      } else {
+                        $m.PSObject.Properties.Remove($cleanDirtyId)
+                      }
+                    } catch {}
+                    $s | Add-Member -NotePropertyName serial_claim_strikes -NotePropertyValue $m -Force
+                  }
+                }.GetNewClosure()) | Out-Null
+              }
+            } catch {}
           }
         } catch {
           # If git itself errors, fail open — better to start the task than wedge

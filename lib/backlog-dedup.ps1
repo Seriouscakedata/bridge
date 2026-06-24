@@ -9,6 +9,43 @@ if (-not (Get-Command Normalize-BacklogGovernorTouchSet -ErrorAction SilentlyCon
 if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
   try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
 }
+
+function Get-BacklogDedupCachedEmbedding {
+  param($Item)
+  try {
+    if (-not $Item) { return @() }
+    $prop = $Item.PSObject.Properties['embedding']
+    if (-not $prop -or $null -eq $prop.Value) { return @() }
+
+    $vec = New-Object 'System.Collections.Generic.List[double]'
+    foreach ($v in @($prop.Value)) {
+      if ($null -eq $v) { continue }
+      try { [void]$vec.Add([double]$v) } catch {}
+    }
+    if ($vec.Count -eq 0) { return @() }
+    return @($vec.ToArray())
+  } catch {
+    return @()
+  }
+}
+
+function Set-BacklogDedupCachedEmbedding {
+  param($Item, $Embedding)
+  try {
+    if (-not $Item -or -not $Embedding) { return $false }
+    $vec = New-Object 'System.Collections.Generic.List[double]'
+    foreach ($v in @($Embedding)) {
+      if ($null -eq $v) { continue }
+      try { [void]$vec.Add([double]$v) } catch {}
+    }
+    if ($vec.Count -eq 0) { return $false }
+    $Item | Add-Member -NotePropertyName embedding -NotePropertyValue (@($vec.ToArray())) -Force
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Test-IdeaShouldKeep {
   param([string]$Text)
   $ok = [pscustomobject]@{ action = 'ok'; matched_id = $null; similarity = 0.0; similar_to = @() }
@@ -33,6 +70,8 @@ function Test-IdeaShouldKeep {
     $bestDropId = $null
     $bestDropSim = 0.0
     $similarIds = New-Object 'System.Collections.Generic.List[string]'
+    $candidates = New-Object 'System.Collections.Generic.List[object]'
+    $embeddingMisses = New-Object 'System.Collections.Generic.List[object]'
 
     foreach ($item in $items) {
       $status = [string]$item.status
@@ -56,18 +95,54 @@ function Test-IdeaShouldKeep {
       if (-not $eligible -and -not $isDrop) { continue }
       if ([string]::IsNullOrWhiteSpace([string]$item.text)) { continue }
 
-      $ivec = $null
-      try {
-        if ($item.PSObject.Properties.Name -contains 'embedding' -and $item.embedding) { $ivec = @($item.embedding) }
-      } catch {}
-      if (-not $ivec -or $ivec.Count -eq 0) {
-        $ivec = Get-Embedding -Text ([string]$item.text) -TaskType 'RETRIEVAL_DOCUMENT'
-        if (-not $ivec) { continue }
-        $item | Add-Member -NotePropertyName embedding -NotePropertyValue (@($ivec)) -Force
-        $dirty = $true
+      $ivec = @(Get-BacklogDedupCachedEmbedding -Item $item)
+      $candidate = [pscustomobject]@{
+        item   = $item
+        isDrop = [bool]$isDrop
+        vector = $ivec
       }
+      [void]$candidates.Add($candidate)
+      if ($ivec.Count -eq 0) {
+        [void]$embeddingMisses.Add($candidate)
+      }
+    }
+
+    if ($embeddingMisses.Count -gt 0) {
+      $missTexts = @($embeddingMisses.ToArray() | ForEach-Object { [string]$_.item.text })
+      $missVectors = New-Object 'System.Collections.Generic.List[object]'
+      if (Get-Command Get-EmbeddingBatch -ErrorAction SilentlyContinue) {
+        try {
+          foreach ($v in (Get-EmbeddingBatch -Texts $missTexts -TaskType 'RETRIEVAL_DOCUMENT')) {
+            [void]$missVectors.Add($v)
+          }
+        } catch {
+          $missVectors.Clear()
+        }
+      }
+      if ($missVectors.Count -eq $embeddingMisses.Count) {
+        for ($i = 0; $i -lt $embeddingMisses.Count; $i++) {
+          $vec = @($missVectors[$i])
+          if ($vec.Count -eq 0) { continue }
+          $candidate = $embeddingMisses[$i]
+          $candidate.vector = $vec
+          if (Set-BacklogDedupCachedEmbedding -Item $candidate.item -Embedding $vec) { $dirty = $true }
+        }
+      } else {
+        foreach ($candidate in $embeddingMisses) {
+          $vec = Get-Embedding -Text ([string]$candidate.item.text) -TaskType 'RETRIEVAL_DOCUMENT'
+          if (-not $vec) { continue }
+          $candidate.vector = @($vec)
+          if (Set-BacklogDedupCachedEmbedding -Item $candidate.item -Embedding $vec) { $dirty = $true }
+        }
+      }
+    }
+
+    foreach ($candidate in $candidates) {
+      $ivec = @($candidate.vector)
+      if ($ivec.Count -eq 0) { continue }
+      $item = $candidate.item
       $sim = [double](Get-CosineSimilarity -A $qvec -B $ivec)
-      if ($isDrop) {
+      if ([bool]$candidate.isDrop) {
         if ($sim -gt $bestDropSim) { $bestDropSim = $sim; $bestDropId = [string]$item.id }
       } else {
         if ($sim -gt $bestSim) { $bestSim = $sim; $bestId = [string]$item.id }
