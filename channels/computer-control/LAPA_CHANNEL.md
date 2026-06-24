@@ -87,12 +87,17 @@ Canvas/vision режим для custom-drawn sticker panel. Проверяет �
 - отправляет наблюдение и историю в `GeminiOperatorPlanner`;
 - принимает только strict JSON decision: `act`, `finish`, `ask_operator`, `fail`;
 - проверяет perimeter (`allowed_apps`, `allowed_skills`, `forbidden_actions`);
+- если `allowed_apps` задан, generic `uia/vision/keyboard` action обязан декларировать `app/app_name`; одного `window_hwnd` недостаточно;
 - применяет risk floor для отправки, submit, booking, purchase, delete, payment;
-- выполняет skill-действия через `LapaSkillExecutor`;
+- выполняет действия через `LapaActionExecutor`:
+  - `kind=skill` -> существующие навыки ЛАПЫ (`open-app`, `type`, Telegram flows);
+  - `kind=uia` -> `Lapa.run(Intent)` с `Selector`, five-gate loop и UIA VERIFY;
+  - `kind=vision` -> guarded canvas mode `vision_click` с confidence/safety/STOP;
+  - `kind=keyboard` -> навигационные VK-клавиши; это не proof, после него обязателен новый observe;
 - после `incomplete/aborted` наблюдает заново и может попробовать следующий шаг;
 - не принимает `finish` без real evidence.
 
-Статус: каркас и skill-executor подключены, CLI/wrapper доступны, headless-тесты зеленые. Реальные UIA/vision generic actions (`kind=uia`, `kind=vision`, `kind=keyboard`) пока не имеют полноценного concrete executor; сейчас надежный реальный executor — только `kind=skill` через существующие навыки.
+Статус: planner loop, CLI/wrapper и concrete executor для `skill/uia/vision/keyboard` подключены, headless-тесты зеленые. `kind=uia` и `kind=vision` используют те же fail-closed gates, что и ядро ЛАПЫ; `kind=keyboard` намеренно возвращает `INCOMPLETE`, пока следующий observe не даст реальное доказательство. Live desktop acceptance для произвольной нестандартной задачи еще не проведена.
 
 ## 4. Безопасность
 
@@ -119,11 +124,13 @@ Canvas/vision режим для custom-drawn sticker panel. Проверяет �
 - Bridge marker invocation.
 - `open-app`, `type`, `telegram-send`, `telegram-send-sticker`.
 - Self-learning infrastructure: capture/analyze/recipe/validate/recall/wire, opt-in in-process.
-- Operator layer: planner loop, real DesktopObserver, Gemini planner seam, LapaSkillExecutor, CLI `operator-task`, bridge wrapper `operator-task`.
+- Operator layer: planner loop, real DesktopObserver, Gemini planner seam, `LapaActionExecutor` (`skill/uia/vision/keyboard`), CLI `operator-task`, bridge wrapper `operator-task`.
 
 ## 6. Что частично работает или не готово
 
-- `operator-task` пока выполняет реальные действия только через existing skills. Он еще не полноценный arbitrary UIA/canvas executor.
+- `operator-task` теперь имеет arbitrary UIA/canvas/keyboard executor, но его качество на реальном рабочем столе зависит от того, насколько planner увидит корректный UIA selector или даст точное vision-описание.
+- При заданном `allowed_apps` observer не смотрит случайный foreground window: если разрешённое окно не найдено, он возвращает `no target window found`.
+- `kind=keyboard` годится только для навигации между наблюдениями; сам по себе он никогда не доказывает завершение задачи.
 - Self-learning есть как opt-in Python API, но не включено автоматически в bridge skills.
 - Обычный `telegram-send` safety semantics нужно привести к документам: либо явно считать marker авторизацией, либо добавить confirm gate.
 - Live desktop acceptance для `operator-task` еще не проведена.
@@ -141,7 +148,7 @@ python -m compileall -q lapa tests conftest.py
 Текущий результат после подключения `operator-task`:
 
 ```text
-474 passed, 1 skipped
+480 passed, 1 skipped
 ```
 
 Из bridge root проверить wrapper:
@@ -168,7 +175,7 @@ type
 [[ЛАПА: operator-task | goal=Открой Блокнот и напечатай test | allowed_apps=Notepad | allowed_skills=open-app,type | forbidden_actions=delete,pay | max_steps=5]]
 ```
 
-2. Добавить concrete executor для `kind=uia` поверх `Lapa.run(Intent)`.
-3. Добавить concrete executor для `kind=vision` поверх canvas mode.
+2. Провести live smoke для `kind=uia`: открыть приложение, найти observed selector и выполнить low-risk `set_text`.
+3. Провести live smoke для `kind=vision`: low-risk click по custom-drawn элементу с screenshot proof.
 4. Подключить self-learning к operator failure path как opt-in.
 5. Исправить/уточнить safety contract обычного `telegram-send`.
