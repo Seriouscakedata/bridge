@@ -1,0 +1,143 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom-01",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Tri-source consensus. Strong isolation principle: a top-and-tail-delimited section with dedicated function prefixes and zero calls into worktree/merge/cleanup machinery cleanly prevents read-only audit jobs from ever triggering destructive worktree operations. Test is statically verifiable via grep. Low cost, high reversibility. Housing it inside lib/parallel.ps1 (vs a separate file) is justified by shared use of Get-ParallelJobsDir.",
+                      "total":  0.9
+                  },
+                  {
+                      "atom_id":  "atom-02",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.9,
+                                     "impact":  0.8,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. A script-scoped registry keyed by root PID with cached Process handle and pidTicks is the correct backbone; pidTicks defends against PID reuse and the cached handle supports the atom-03 liveness check. Minor: \u0027synchronized\u0027 hashtable is unnecessary since Start-Process spawns external OS processes, not in-runspace threads — but the \u0027e.g.\u0027 phrasing leaves it optional, so no penalty. Slightly lower simplicity for the multi-field record.",
+                      "total":  0.8475
+                  },
+                  {
+                      "atom_id":  "atom-03",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.95,
+                                     "feasibility":  0.95,
+                                     "impact":  0.85,
+                                     "simplicity":  0.9,
+                                     "risk_reduction":  0.95,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and canonically correct PowerShell. Caching the Process object from Start-Process -PassThru and reading .HasExited avoids both the PID-reuse race and the throw-on-missing behavior of Get-Process -Id. Since the session owns these processes, .HasExited is reliable (no access-denied edge case). Highest-confidence atom of the set.",
+                      "total":  0.9225
+                  },
+                  {
+                      "atom_id":  "atom-04",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.88,
+                                     "feasibility":  0.9,
+                                     "impact":  0.75,
+                                     "simplicity":  0.78,
+                                     "risk_reduction":  0.75,
+                                     "specificity":  0.92
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus. Four per-job files (in/out/err/result) under Get-ParallelJobsDir with a distinct roaudit_\u003cguid\u003e prefix matches the existing parallel-jobs convention and the prefix prevents collisions with worker jobs. Consistent design: only three are redirect targets (stdin/stdout/stderr distinct, avoiding the same-file redirect error) while \u0027result\u0027 is job-written. Necessary plumbing of moderate impact.",
+                      "total":  0.834
+                  },
+                  {
+                      "atom_id":  "atom-05",
+                      "verdict":  "modify",
+                      "scores":  {
+                                     "correctness":  0.6,
+                                     "feasibility":  0.85,
+                                     "impact":  0.6,
+                                     "simplicity":  0.7,
+                                     "risk_reduction":  0.55,
+                                     "specificity":  0.8
+                                 },
+                      "penalties":  [
+                                        {
+                                            "name":  "side-effect-in-getter / conflicts-with-atom-06-total",
+                                            "value":  0.05
+                                        }
+                                    ],
+                      "reason":  "Single-source (A). The intent — never count dead processes as active — is correct, but destructive \u0027pruning\u0027 (removal) is the wrong mechanism: it mutates state inside a Get- (read) verb, discards the metadata/result-file pointers needed afterward, and breaks atom-06\u0027s \u0027total\u0027 (launched) count and atom-08\u0027s proc=$null records. Modify to: compute the active count by filtering on cached .HasExited and MARK completed entries inactive rather than removing them; move any actual cleanup to a separate maintenance function.",
+                      "total":  0.68
+                  },
+                  {
+                      "atom_id":  "atom-06",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.95,
+                                     "impact":  0.65,
+                                     "simplicity":  0.85,
+                                     "risk_reduction":  0.6,
+                                     "specificity":  0.9
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but sound API design. Returning a structured @{active; total; activePids} object is more extensible and self-documenting than a bare integer, and it composes with atom-07\u0027s peak-sampling (reads .active). Note the dependency this exposes: a meaningful \u0027total\u0027 requires NOT removing completed entries, which reinforces the atom-05 modification. Trivial to implement, fully reversible.",
+                      "total":  0.81
+                  },
+                  {
+                      "atom_id":  "atom-07",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.9,
+                                     "feasibility":  0.9,
+                                     "impact":  0.85,
+                                     "simplicity":  0.75,
+                                     "risk_reduction":  0.9,
+                                     "specificity":  0.95
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Consensus and well-constructed. PEAK-tracking the active count across repeated samples is the right way to avoid flakiness from sampling as jobs finish; the 6-8s sleep gives ample headroom for the assert peak\u003e=3. Adding Parser::ParseFile syntax checks on both lib/parallel.ps1 and the test itself catches parse regressions cheaply. Works whether status returns an int or the atom-06 object.",
+                      "total":  0.8725
+                  },
+                  {
+                      "atom_id":  "atom-08",
+                      "verdict":  "accept",
+                      "scores":  {
+                                     "correctness":  0.85,
+                                     "feasibility":  0.88,
+                                     "impact":  0.7,
+                                     "simplicity":  0.8,
+                                     "risk_reduction":  0.85,
+                                     "specificity":  0.85
+                                 },
+                      "penalties":  [
+
+                                    ],
+                      "reason":  "Single-source (B) but a clear robustness win: wrapping each Start-Process in try/catch and recording failed spawns as proc=$null stops one bad job from aborting the whole pool launch, and the inactive record integrates with the registry and active-count filter. Caveat (covered, not penalized): not every failure throws — some commands spawn and immediately exit — but the cached-.HasExited liveness check from atom-03 catches that path, so the two atoms together are complete.",
+                      "total":  0.8185
+                  }
+              ]
+}

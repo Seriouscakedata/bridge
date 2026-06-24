@@ -1,0 +1,147 @@
+{
+    "final_answer":  "Build the read-only audit subprocess pool as a self-contained, additively-isolated section inside lib/parallel.ps1 that never touches the existing worktree/merge/coder path. The pool keeps a script-scoped registry keyed by the captured root PID; each job is launched with Start-Process -PassThru and its returned System.Diagnostics.Process handle is cached alongside the PID, a pidTicks anti-reuse stamp, and a jobId. Liveness is read from the cached object\u0027s .HasExited (never Get-Process -Id, which throws on a dead PID and is vulnerable to PID reuse). Each job gets four per-job temp files (roaudit_\u003cguid\u003e.{in,out,err,result}) under Get-ParallelJobsDir, with stdin/stdout/stderr redirected to the three distinct file targets and \u0027result\u0027 written by the job. Start-ReadOnlyAuditJob is fault-tolerant: each Start-Process is wrapped in try/catch and a failed spawn is recorded with proc=$null instead of aborting the launch loop. Get-ReadOnlyAuditPoolStatus is non-destructive — it computes the active count by filtering on cached .HasExited and MARKS completed entries inactive (it does not prune/remove them), so the launched \u0027total\u0027 and the proc=$null failure records survive; it returns a structured @{active; total; activePids} object rather than a bare integer. The test tools/test-readonly-parallel.ps1 launches at least 3 \u0027powershell -NoProfile -Command Start-Sleep\u0027 jobs (6–8s), repeatedly samples status to PEAK-track the active count, asserts the peak is \u003e=3, and runs [System.Management.Automation.Language.Parser]::ParseFile on both lib/parallel.ps1 and itself. All eight atoms are adopted (atom-05 in modified, non-destructive form); the work lands as a single atomic commit.",
+    "decisions":  [
+                      {
+                          "decision":  "Add the read-only audit pool as a top-and-tail delimited section inside lib/parallel.ps1 with dedicated function prefixes (Start-ReadOnlyAuditJob, Get-ReadOnlyAuditPoolStatus) and zero calls into worktree/merge/cleanup functions.",
+                          "rationale":  "Tri-source consensus (judge 0.90). A clearly marked section with prefixed functions and no calls into New-Worktree/Merge-Worktree/Remove-Worktree/cleanup machinery structurally guarantees read-only audit jobs can never trigger destructive worktree operations. Housing it in lib/parallel.ps1 rather than a new file is justified by shared reuse of Get-ParallelJobsDir.",
+                          "alternatives_considered":  [
+                                                          "Place the pool in a separate .ps1 file for hard isolation (rejected: it would duplicate Get-ParallelJobsDir; delimited section + prefixes already give isolation)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Static analysis: confirm the new functions sit inside the marked section and grep shows no calls to New-Worktree/Merge-Worktree/Remove-Worktree/Get-WorkerWorktree/Cleanup-WorkerWorktree/Spawn-Worker from the new code."
+                      },
+                      {
+                          "decision":  "Maintain a script-scoped registry ($script:ReadOnlyAuditRegistry) of root-PID job records, each holding jobId, pid, pidTicks (start-time ticks), and the cached System.Diagnostics.Process handle.",
+                          "rationale":  "Consensus (judge 0.8475). A registry keyed by root PID with a cached handle plus pidTicks is the backbone: pidTicks defends against PID reuse and the cached handle powers the atom-03 liveness check. A \u0027synchronized\u0027 hashtable is unnecessary because Start-Process spawns external OS processes, not in-runspace threads, so a plain script-scoped hashtable suffices.",
+                          "alternatives_considered":  [
+                                                          "Synchronized/thread-safe hashtable (rejected: no in-runspace concurrency to guard against; adds needless overhead)",
+                                                          "Store only bare PIDs without cached handle (rejected: forces Get-Process -Id liveness, which throws and races on PID reuse)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "After launching jobs, inspect $script:ReadOnlyAuditRegistry and confirm it is script-scoped and each entry contains jobId, pid, pidTicks, and a cached System.Diagnostics.Process handle."
+                      },
+                      {
+                          "decision":  "Capture the root PID via Start-Process -PassThru, cache the returned Process object in the registry, and derive job liveness from that object\u0027s .HasExited property.",
+                          "rationale":  "Consensus and canonically correct PowerShell (judge 0.9225, highest of the set). Reading .HasExited on the owned handle avoids both the PID-reuse race and the throw-on-missing behavior of Get-Process -Id; because the session owns these processes there is no access-denied edge case.",
+                          "alternatives_considered":  [
+                                                          "Get-Process -Id \u003cpid\u003e for liveness (rejected: throws when the process has exited and can misidentify a reused PID as alive)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Confirm Start-ReadOnlyAuditJob uses Start-Process -PassThru and Get-ReadOnlyAuditPoolStatus checks the cached object\u0027s .HasExited rather than querying Get-Process -Id."
+                      },
+                      {
+                          "decision":  "Allocate four per-job temp files (input, output, error, result) under Get-ParallelJobsDir with a roaudit_\u003cguid\u003e prefix, redirecting stdin/stdout/stderr to the three distinct file targets via Start-Process -RedirectStandard*.",
+                          "rationale":  "Consensus (judge 0.834). Four files under Get-ParallelJobsDir matches the existing parallel-jobs convention; the roaudit_ prefix prevents collisions with worker jobs. Only three are redirect targets (distinct files avoid the same-file redirect error) while \u0027result\u0027 is written by the job itself.",
+                          "alternatives_considered":  [
+                                                          "Fewer/shared files or reusing one file for multiple streams (rejected: collision risk across jobs and Start-Process errors when the same file backs more than one redirect)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "During a job run, verify roaudit_\u003cguid\u003e.{in,out,err,result} are created under Get-ParallelJobsDir and Start-Process redirects stdin/stdout/stderr to the in/out/err files."
+                      },
+                      {
+                          "decision":  "Get-ReadOnlyAuditPoolStatus computes the active count by filtering on each cached handle\u0027s .HasExited and MARKS completed entries inactive WITHOUT removing them; any real cleanup of stale entries/temp files lives in a separate maintenance function. (atom-05 modified per judge.)",
+                          "rationale":  "Single-source (A), modified by judge (0.68). The intent — never count dead processes as active — is correct, but destructive pruning inside a Get- (read) verb mutates state, discards the metadata/result-file pointers needed afterward, and breaks the launched \u0027total\u0027 count (atom-06) and the proc=$null failed-job records (atom-08). Marking-not-removing preserves all of that while still excluding dead jobs from \u0027active\u0027.",
+                          "alternatives_considered":  [
+                                                          "Destructively prune completed/missing processes from the registry inside the getter (rejected — see rejected[])",
+                                                          "Leave dead entries counted and prune elsewhere only (rejected: would over-report active)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Launch several jobs, let some finish, call Get-ReadOnlyAuditPoolStatus: active reflects only still-running jobs, total still counts every launched job, and completed entries remain in the registry flagged inactive."
+                      },
+                      {
+                          "decision":  "Get-ReadOnlyAuditPoolStatus returns a structured object @{ active; total; activePids } instead of a bare integer.",
+                          "rationale":  "Single-source (B), sound API design (judge 0.81). A structured result is extensible and self-documenting, composes cleanly with the test\u0027s peak-sampling (which reads .active), and a meaningful \u0027total\u0027 depends on NOT removing completed entries — reinforcing the atom-05 modification.",
+                          "alternatives_considered":  [
+                                                          "Return a bare integer active count (rejected: not extensible, hides total/activePids, weaker self-documentation)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Call Get-ReadOnlyAuditPoolStatus and assert the result is a PSCustomObject/Hashtable exposing at least an \u0027active\u0027 property (plus \u0027total\u0027 and \u0027activePids\u0027)."
+                      },
+                      {
+                          "decision":  "tools/test-readonly-parallel.ps1 launches \u003e=3 \u0027powershell -NoProfile -Command Start-Sleep\u0027 jobs (6–8s each), repeatedly samples Get-ReadOnlyAuditPoolStatus to PEAK-track the active count, asserts peak \u003e=3, and runs [System.Management.Automation.Language.Parser]::ParseFile on both lib/parallel.ps1 and itself.",
+                          "rationale":  "Consensus and well-constructed (judge 0.8725). Peak-tracking across repeated samples avoids flakiness from sampling as jobs finish; the 6–8s sleep gives ample headroom for the peak\u003e=3 assert; the ParseFile checks catch parse regressions cheaply and work whether status returns an int or the atom-06 object.",
+                          "alternatives_considered":  [
+                                                          "Single-shot sampling of the active count (rejected: flaky — a sample can land as jobs are completing and miss the true peak)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Run tools/test-readonly-parallel.ps1: it must pass with peak active \u003e=3 and both files parsing cleanly via Parser::ParseFile (zero errors)."
+                      },
+                      {
+                          "decision":  "Make spawning fault-tolerant: wrap each Start-Process in try/catch and record a failed/exited spawn in the registry with proc=$null (inactive) instead of throwing.",
+                          "rationale":  "Single-source (B), clear robustness win (judge 0.8185). One bad job must not abort the whole pool launch; the proc=$null record integrates with the registry and the active-count filter. Some commands spawn then immediately exit (no throw) — the cached-.HasExited liveness check from atom-03 catches that path, so atoms 03 and 08 together are complete.",
+                          "alternatives_considered":  [
+                                                          "Let Start-Process exceptions propagate (rejected: a single failed spawn aborts the entire pool launch)"
+                                                      ],
+                          "risk":  "low",
+                          "test":  "Launch an invalid/non-existent command via Start-ReadOnlyAuditJob: it does not throw, the job is recorded inactive (proc=$null), and Get-ReadOnlyAuditPoolStatus excludes it from the active count."
+                      }
+                  ],
+    "rejected":  [
+                     {
+                         "decision":  "Destructively prune (remove) completed/missing processes from the registry inside Get-ReadOnlyAuditPoolStatus (original atom-05).",
+                         "why":  "Mutates state inside a read (Get-) verb, discards the metadata/result-file pointers needed after completion, and breaks both the launched \u0027total\u0027 count (atom-06) and the proc=$null failed-job records (atom-08). Replaced by non-destructive marking, with real cleanup deferred to a separate maintenance function."
+                     },
+                     {
+                         "decision":  "Use a synchronized/thread-safe hashtable for the registry.",
+                         "why":  "Start-Process spawns external OS processes, not in-runspace threads, so there is no concurrent-runspace access to guard. A plain script-scoped hashtable is sufficient and simpler."
+                     },
+                     {
+                         "decision":  "Determine job liveness with Get-Process -Id \u003cpid\u003e.",
+                         "why":  "Throws when the process has already exited and is vulnerable to PID reuse reporting a dead job as alive. Replaced by reading .HasExited on the cached, session-owned Process handle."
+                     },
+                     {
+                         "decision":  "Place the read-only audit pool in a separate .ps1 file.",
+                         "why":  "It would duplicate Get-ParallelJobsDir; the required isolation from the worktree/merge path is already achieved with a delimited section plus dedicated function prefixes inside lib/parallel.ps1."
+                     }
+                 ],
+    "open_questions":  [
+                           "Scaling the proven mechanism from the demonstration threshold of 3 to the planned concurrency target of 20 (explicitly deferred by the source plan).",
+                           "Lifecycle of the separate maintenance/cleanup function that atom-05 moved cleanup into: when it runs, and whether it deletes the per-job roaudit_\u003cguid\u003e.{in,out,err,result} temp files in addition to removing stale registry entries.",
+                           "How downstream audit logic consumes the per-job \u0027result\u0027 file — out of scope for this foundational atom but needed by the next phase.",
+                           "§14 decisions are \u0027on the operator\u0027 per the source approval_decisions.md — confirm no operator-level decision is still blocking before merge."
+                       ],
+    "implementation_plan":  [
+                                "In lib/parallel.ps1, open a clearly delimited block (e.g. \u0027# === Read-Only Audit Pool (BEGIN) ===\u0027 / \u0027# === Read-Only Audit Pool (END) ===\u0027) separate from all worktree/merge code.",
+                                "Declare $script:ReadOnlyAuditRegistry as a plain script-scoped hashtable (or list) of root-PID job records.",
+                                "Implement Start-ReadOnlyAuditJob: allocate roaudit_\u003cguid\u003e.{in,out,err,result} under Get-ParallelJobsDir; call Start-Process -PassThru -NoNewWindow with -RedirectStandardInput/-Output/-Error to the in/out/err files, wrapped in try/catch; on success record jobId, pid, pidTicks, cached Process handle; on failure record the entry with proc=$null.",
+                                "Implement Get-ReadOnlyAuditPoolStatus: iterate the registry, mark entries inactive where the cached handle\u0027s .HasExited is true (no removal), and return @{ active; total; activePids } where active = count of entries with a live, non-null handle.",
+                                "Add a separate maintenance function (out-of-getter) responsible for actually removing stale registry entries and deleting their temp files; do not call it from the getter.",
+                                "Create tools/test-readonly-parallel.ps1: dot-source lib/parallel.ps1; launch \u003e=3 \u0027powershell -NoProfile -Command Start-Sleep 6..8\u0027 jobs via Start-ReadOnlyAuditJob; loop-sample Get-ReadOnlyAuditPoolStatus tracking the maximum .active observed; assert peak \u003e=3; run [System.Management.Automation.Language.Parser]::ParseFile on both lib/parallel.ps1 and the test file and assert zero parse errors; exit non-zero on any failure.",
+                                "Run the test; confirm it is green with peak active \u003e=3, and confirm grep shows no worktree/merge/cleanup calls from the new section.",
+                                "Commit both files as a single atomic, atom-sized change (no commit famine)."
+                            ],
+    "next_step":  "Add the delimited Read-Only Audit Pool section to lib/parallel.ps1 — registry + Start-ReadOnlyAuditJob (Start-Process -PassThru, cached handle, four roaudit_\u003cguid\u003e temp files, try/catch→proc=$null) + non-destructive Get-ReadOnlyAuditPoolStatus returning @{active;total;activePids} — then create and run tools/test-readonly-parallel.ps1 to prove peak active \u003e=3 and clean ParseFile on both files.",
+    "red_team_findings":  [
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Test bootstrap is under-specified and would make the green-test acceptance fail. implementation_plan step 6 says the test should \u0027dot-source lib/parallel.ps1\u0027 only. But the new code path Start-ReadOnlyAuditJob -\u003e Get-ParallelJobsDir -\u003e Get-BridgeRoot, and Get-BridgeRoot is defined in lib/common.ps1 / lib/features.ps1, NOT in lib/parallel.ps1.",
+                                  "why":  "If the test dot-sources only parallel.ps1, the first job launch throws \u0027Get-BridgeRoot is not recognized\u0027. Because spawning is deliberately fault-tolerant (try/catch -\u003e proc=$null), EVERY job is recorded inactive, peak active = 0, and the peak\u003e=3 assertion fails. The decision must dot-source common.ps1 (or stub Get-BridgeRoot); as written, success_test #1 and #4 (test green) are unmet."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "Start-Process -RedirectStandardInput requires the input file to already EXIST on disk; the plan only \u0027allocates\u0027 the roaudit_\u003cguid\u003e.in path without stating it is written first. Every working spawn in this repo creates the input file before launch (deep-audit.ps1:253 WriteAllText $inF, Invoke-CodexParallel parallel.ps1:90), precisely because of this.",
+                                  "why":  "If -RedirectStandardInput points at a non-existent .in file, Start-Process throws \u0027Cannot find path...\u0027, the try/catch records proc=$null, and if it hits all jobs the active peak is 0 -\u003e test red. Compounding it: a dummy \u0027Start-Sleep\u0027 job needs no stdin at all, so redirecting stdin is gratuitous added failure surface for the exact assertion being proven."
+                              },
+                              {
+                                  "severity":  "medium",
+                                  "what":  "The atom ships a temp-file leak that reintroduces a previously-fixed regression. Get-ReadOnlyAuditPoolStatus is non-destructive by design and \u0027real cleanup\u0027 is deferred to a separate maintenance function that is neither implemented nor called in this atom (open_questions even flags its lifecycle as unknown). So the four roaudit_\u003cguid\u003e.{in,out,err,result} files accumulate in jobs\\parallel.",
+                                  "why":  "Get-CanaryMetrics/probe machinery (common.ps1:1037-1043) recursively FILE-COUNTS the jobs tree and feeds that count into the adaptive probe timeout. This is the same \u0027jobs-weighted adaptive probe timeout\u0027 inflation that parallel.ps1:720-723 added explicit worker_* reaping to stop. The new pool re-creates that leak (and the \u0027result\u0027 file is never reaped even on the happy path). It passes the atom test but degrades the wider system."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The cached Process handle is never materialized. Every other Start-Process -PassThru site in this codebase immediately does `$null = $proc.Handle` (parallel.ps1:38, 111; 40-agent-invoke.ps1:100,649,805) to retain the OS handle so .HasExited/.Id stay valid after the process exits. The decision relies entirely on .HasExited but never mentions retaining the handle.",
+                                  "why":  "Without a retained handle, .HasExited can throw or return stale data after the process exits. If Get-ReadOnlyAuditPoolStatus reads .HasExited per entry without a per-entry try/catch, one exited job makes the whole status call throw, breaking the \u0027mark inactive\u0027 path and the test\u0027s repeated sampling. It also silently contradicts the file\u0027s own established invariant."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "The dummy test cannot prove the contract\u0027s actual requirement — \u0027захват КОРНЕВОГО PID агента\u0027 (capture the agent\u0027s ROOT PID). Start-Process -PassThru returns the DIRECTLY launched process; for \u0027powershell -Command Start-Sleep\u0027 that is the leaf, so .HasExited is faithful and peak\u003e=3 passes trivially.",
+                                  "why":  "Real audit agents are typically launched via a wrapper/launcher that forks the agent and exits (the very reason \u0027root PID\u0027 is emphasized). In that case the captured \u0027root\u0027 handle dies early and .HasExited reports the still-running agent as inactive (false-negative liveness). The success test, built only on direct Start-Sleep processes, structurally cannot detect this, so the \u0027foundation for parallelism\u0027 is unproven for its stated purpose."
+                              },
+                              {
+                                  "severity":  "low",
+                                  "what":  "pidTicks is justified as a \u0027PID-reuse anti-reuse stamp\u0027, but the design reads liveness exclusively from the cached Process object and never re-resolves a job by PID (Get-Process -Id was explicitly rejected).",
+                                  "why":  "Since there is no code path that re-looks-up a process by its PID, there is no path where PID reuse could ever be observed or mis-attributed. The cached-handle design already eliminates that threat, so pidTicks guards nothing — harmless, but the stated rationale is internally inconsistent and adds dead metadata."
+                              }
+                          ],
+    "needs_operator":  true
+}

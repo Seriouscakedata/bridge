@@ -1,0 +1,91 @@
+{
+    "proposer":  "B",
+    "understanding":  "Phase 1 atom of the audit-redesign: add a NEW, isolated read-only subprocess pool to lib/parallel.ps1 that spawns CLI jobs, records each job\u0027s ROOT PID in a registry, and reports the count of live root PIDs — all WITHOUT touching the existing coder path (New-Worktree/Merge-Worktree/Remove-Worktree/Get-WorkerWorktree/Cleanup-WorkerWorktree). Plan §13 Phase 1 (lines 266-284) frames this as the \u0027read-only parallel substrate\u0027: per-job artifacts, root PID registry, timeline sampler, dummy stress test. The atom only needs to PROVE the concurrency mechanism on 3 jobs (floor=3); the production floor of 20, snapshotting, and provider routing are later phases. The existing file already gives me every idiom I need to reuse: Start-Process -PassThru -\u003e System.Diagnostics.Process, \u0027.HasExited\u0027 for liveness (lines 45/117), \u0027$proc.Id\u0027 as the spawned PID, per-job temp files under Get-ParallelJobsDir with a GUID prefix (lines 87-88), and taskkill /PID /T /F for tree-kill (line 125). The stall-detect test (test-parallel-stall-detect.ps1) shows the exact test skeleton and the pid+pidTicks identity pattern to copy.",
+    "summary":  "Add a self-contained \u0027READ-ONLY AUDIT POOL\u0027 section to lib/parallel.ps1 with a module-scoped root-PID registry and three new functions — Start-ReadOnlyAuditJob (spawns a CLI subprocess via Start-Process -PassThru, allocates per-job input/output/error/result temp files, records root PID + cached Process handle + start-ticks), an internal/registry helper holding the live jobs, and Get-ReadOnlyAuditPoolStatus (counts entries whose cached process is non-null and not HasExited). It reuses the existing spawn/liveness idioms but calls ZERO worktree/merge helpers and creates no git state. Then add tools/test-readonly-parallel.ps1 that dot-sources common.ps1+parallel.ps1, launches ≥3 `powershell -Command \"Start-Sleep N\"` jobs through the pool, repeatedly samples Get-ReadOnlyAuditPoolStatus while they run, tracks the PEAK active count, asserts peak ≥3, and ParseFile-checks both .ps1 files. Generous sleep (≈6-8s) makes the peak deterministic. Keep it an atom-sized commit (≈80-130 new lines, no edits to existing functions).",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Implement the pool as a new top-and-tail-delimited section with its own \u0027$script:ReadOnlyAuditRegistry\u0027 state and a dedicated function prefix (Start-ReadOnlyAuditJob / Get-ReadOnlyAuditPoolStatus), and call NONE of New-Worktree, Merge-Worktree, Remove-Worktree, Get-WorkerWorktree, Cleanup-WorkerWorktree, Spawn-Worker.",
+                               "reason":  "The constraints and plan §13 (line 284 \u0027no worktree merge/checkout cleanup path is used\u0027) demand strict separation. A distinct namespace + a banner comment makes the boundary auditable by grep and guarantees the existing coder path is byte-for-byte untouched, so no regression to the merge flow is possible.",
+                               "tradeoff":  "A little duplicated spawn/temp-file boilerplate instead of refactoring shared helpers out of Invoke-CodexParallel; accepted deliberately because de-risking the existing path beats DRY for a foundation atom.",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Capture the root PID via Start-Process -PassThru and CACHE the returned System.Diagnostics.Process object in the registry; compute liveness from the cached object\u0027s \u0027.HasExited\u0027, NOT from Get-Process -Id $pid.",
+                               "reason":  "This is exactly how the existing code samples \u0027alive\u0027 (lines 45/117) so it stays idiomatic, and the cached handle is immune to PID-reuse: a recycled OS PID could make Get-Process -Id report a stranger process as \u0027still alive\u0027. .HasExited binds liveness to the actual spawned handle. $proc.Id is the root PID for the dummy (powershell.exe) by definition.",
+                               "tradeoff":  "Holding Process handles keeps OS handles open until the registry is cleared, and for a future REAL CLI launched via a .cmd/.ps1 shim the spawned PID may be a launcher, not the leaf agent — out of scope for this atom but flagged for Phase 2 (use Resolve-*Exe to spawn the exe directly + taskkill /T).",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Allocate four per-job temp files (input/output/error/result) under Get-ParallelJobsDir with a DISTINCT prefix such as \u0027roaudit_\u003cguid\u003e.{in,out,err,result}\u0027, redirecting stdin/stdout/stderr via Start-Process -RedirectStandard*.",
+                               "reason":  "Plan line 277 requires \u0027per-job artifacts\u0027; reusing Get-ParallelJobsDir matches the existing convention (lines 87-88). A distinct \u0027roaudit_\u0027 prefix prevents collision with the existing \u0027worker_\u003csid\u003e_*\u0027 cleanup glob (line 727) so neither path reaps the other\u0027s files.",
+                               "tradeoff":  "Adds a small temp-file lifecycle to own; the atom can leave files for the caller/test to clean (or skip cleanup) since cleanup-of-WORKERS is the excluded concern, not cleanup of audit temp files. Full Receive/cleanup is deferred to the advanced version.",
+                               "confidence":  0.85
+                           },
+                           {
+                               "statement":  "Get-ReadOnlyAuditPoolStatus returns at minimum the active-root-PID COUNT (acceptance contract), but return it inside a small object (e.g. @{ active; total; activePids }) rather than a bare int.",
+                               "reason":  "The success test only needs the count, but a structured return lets the test\u0027s peak-sampler read .active cheaply and gives Phase 2\u0027s \u0027timeline sampler\u0027 (line 277) a place to grow (peak_concurrency) without breaking the signature.",
+                               "tradeoff":  "Slightly more than the literal \u0027returns the number of active root PIDs\u0027 ask; mitigated by keeping .active as the obvious primary field so a caller can still treat it as the count.",
+                               "confidence":  0.8
+                           },
+                           {
+                               "statement":  "Make spawning fault-tolerant: wrap each Start-Process in try/catch and represent a failed/exited job as a registry entry with proc=$null (counted as inactive) rather than throwing.",
+                               "reason":  "Plan acceptance line 283 requires that \u0027one dummy timeout/crash/malformed result does not abort the phase\u0027. A non-throwing pool is the substrate property that makes fan-out robust, and it mirrors the existing code\u0027s \u0027try { ... } catch {}\u0027 around every spawn (lines 34-39).",
+                               "tradeoff":  "Failures become silent-ish (recorded, not raised); mitigated by storing an error/launch-status field per entry so the driver can later surface it.",
+                               "confidence":  0.88
+                           },
+                           {
+                               "statement":  "The test uses ≥3 jobs each sleeping ~6-8s and PEAK-tracks active count across many ~150-250ms samples, asserting peak ≥3; it also runs [System.Management.Automation.Language.Parser]::ParseFile on BOTH .ps1 files and fails on any parse error.",
+                               "reason":  "A single post-hoc sample races job startup/exit and is flaky; generous sleep + repeated sampling + max() makes \u0027peak ≥3\u0027 deterministic on a busy Windows host. Embedding ParseFile satisfies that acceptance criterion directly inside the green test, matching the existing test skeleton (#Requires 5.1, Set-StrictMode -Off, dot-source common+parallel).",
+                               "tradeoff":  "Test wall-time of several seconds; acceptable for a foundation test and far cheaper than debugging flakes. Sleep must exceed worst-case process spawn latency to avoid a false-negative peak.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Also record start-time ticks (pidTicks) alongside the PID in each registry entry, copying the test-parallel-stall-detect identity pattern.",
+                               "reason":  "PID+StartTime is the robust process identity used elsewhere in the codebase; recording it now costs nothing and lets a future tree-kill / external liveness check (Phase 2) verify it is killing the SAME process it spawned, not a recycled PID.",
+                               "tradeoff":  "One extra field that the minimal acceptance test does not strictly read; negligible cost, and it keeps the registry shape forward-compatible.",
+                               "confidence":  0.75
+                           }
+                       ],
+    "assumptions":  [
+                        "\u0027Root PID of the agent\u0027 for this atom means the PID of the process directly spawned by Start-Process -PassThru ($proc.Id); for the dummy job that is the powershell.exe running Start-Sleep. Deep process-tree resolution for real CLI shims is a later phase.",
+                        "\u0027Read-only\u0027 here is structural — the pool simply does not create/merge/cleanup any git worktree; the dummy job needs no CLI read-only flag. Real Claude (--allowedTools Read,Grep,Glob) / Codex (-s read-only) flags belong to Phase 2\u0027s job builders.",
+                        "lib/parallel.ps1 is dot-sourced after lib/common.ps1, so helpers like Get-ParallelJobsDir and Get-BridgeRoot are available, and a $script:-scoped registry persists for the driver\u0027s process lifetime (single-driver model, no concurrent dispatchers mutating the same registry).",
+                        "The test runs on the Windows/PowerShell 5.1 host where Start-Process -PassThru reliably returns a live Process with .HasExited, consistent with the existing stall-detect test.",
+                        "\u0027Atomic-sized commit\u0027 means only the new section in lib/parallel.ps1 plus the new tools/test-readonly-parallel.ps1 (and optionally a config.json knob), with no edits to existing functions — staged and committed quickly to avoid commit_famine.",
+                        "The floor for this atom is 3 (prove the mechanism); the production floor of 20 and throttling are explicitly out of scope per the task."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Test flakiness: if job sleep is too short or sampling too sparse, the peak-active count never reaches 3 and the green-test acceptance fails intermittently.",
+                      "severity":  "medium",
+                      "mitigation":  "Use a generous per-job sleep (≈6-8s, well above spawn latency), sample every ~150-250ms, track the running max, and assert on the max — not a single snapshot. Keep N tunable at the top of the test."
+                  },
+                  {
+                      "risk":  "PID-reuse false positives if liveness ever falls back to Get-Process -Id instead of the cached handle, over-counting active jobs.",
+                      "severity":  "low",
+                      "mitigation":  "Drive liveness from the cached Process object\u0027s .HasExited (primary), and store pidTicks so any external check can confirm identity. Never key liveness on the bare PID."
+                  },
+                  {
+                      "risk":  "Temp-file collision or leak — sharing the jobs dir with the existing \u0027worker_\u003csid\u003e_*\u0027 cleanup glob could let one path delete the other\u0027s artifacts, or audit temp files could accumulate.",
+                      "severity":  "low",
+                      "mitigation":  "Use a distinct \u0027roaudit_\u003cguid\u003e\u0027 prefix so the existing worker_ cleanup never matches; defer/own audit-file cleanup in a later Receive function and document that the atom intentionally leaves artifacts for inspection."
+                  },
+                  {
+                      "risk":  "Accidental coupling: a reviewer or future edit reintroduces a worktree/merge call into the pool, violating the core constraint and the previously-observed worktree instability.",
+                      "severity":  "medium",
+                      "mitigation":  "Physically isolate the code in a banner-delimited section with a unique prefix; add a self-documenting comment \u0027NO worktree/merge — read-only only\u0027; the test asserts only pool functions are exercised. A grep for worktree calls in the new section stays empty."
+                  },
+                  {
+                      "risk":  "Real-CLI root PID divergence: when Phase 2 swaps the dummy for claude/codex launched via a .cmd/.ps1 wrapper, $proc.Id may be a launcher rather than the agent leaf, making the registry count the wrong process.",
+                      "severity":  "low",
+                      "mitigation":  "Out of scope for this atom (dummy proves the mechanism); flagged explicitly. Phase 2 should spawn the resolved exe directly (Resolve-ClaudeExe/Resolve-CodexExe) and use taskkill /PID /T /F for tree operations."
+                  },
+                  {
+                      "risk":  "Parse-cleanliness regression — a syntax slip (here-strings, escaping) in the new code fails [Parser]::ParseFile and blocks the whole file from dot-sourcing.",
+                      "severity":  "low",
+                      "mitigation":  "Run ParseFile on both files inside the test itself (acceptance criterion), and keep the new functions free of complex here-string interpolation; lean on Start-Process arg arrays as the existing code does."
+                  }
+              ],
+    "minimal_version":  "In lib/parallel.ps1, append one delimited \u0027READ-ONLY AUDIT POOL\u0027 section: (1) a module-scoped registry \u0027$script:ReadOnlyAuditRegistry\u0027 (a Generic List of per-job records: jobId, pid, pidTicks, process-handle, inFile/outFile/errFile/resultFile, launchOk); (2) Start-ReadOnlyAuditJob -FilePath/-ArgumentList (or -Command) that allocates 4 roaudit_\u003cguid\u003e temp files under Get-ParallelJobsDir, spawns via Start-Process -PassThru with stdout/stderr redirected, records the root PID + cached handle + ticks in the registry inside try/catch (failed spawn -\u003e launchOk=$false, proc=$null), and returns the job record; (3) Get-ReadOnlyAuditPoolStatus that returns @{ active; total; activePids } where active = count of records with a non-null process and -not HasExited. NO worktree/merge/checkout calls anywhere. Then add tools/test-readonly-parallel.ps1 (#Requires -Version 5.1; Set-StrictMode -Off; dot-source common.ps1+parallel.ps1) that launches 3 `powershell -NoProfile -Command \"Start-Sleep -Seconds 7\"` jobs via Start-ReadOnlyAuditJob, loops sampling Get-ReadOnlyAuditPoolStatus every ~200ms tracking peak active, asserts peak ≥3, ParseFile-checks both lib/parallel.ps1 and itself, kills any survivors, and exits 0 on success / 1 with a clear FAIL message otherwise. Commit both files as one atom.",
+    "advanced_version":  "Everything in the minimal version, plus the substrate hooks the plan\u0027s later phases need (kept additive, still no worktree path): Stop-ReadOnlyAuditJob / Stop-ReadOnlyAuditPool doing timeout TREE-kill via taskkill /PID /T /F (line 277 \u0027timeout tree kill\u0027); Wait-ReadOnlyAuditPool -TimeoutSec with an -OnTick heartbeat mirroring the existing wait loops; Receive-ReadOnlyAuditJob that reads the result/error files into a structured object and cleans that job\u0027s temp files; a built-in TIMELINE sampler so Get-ReadOnlyAuditPoolStatus also exposes peak_concurrency and a sample log (line 277 \u0027timeline sampler\u0027); per-record placeholders for agent_id/provider/role/dimension to receive Phase 2 metadata (plan line 210); a config.json-driven floor/max-concurrency throttle (toward the production floor of 20) read like Get-ParallelComplexityFloor; and an expanded test proving resilience — mix a normal job, a crash (exit 1), a malformed/empty-result job, and a timeout job, asserting the pool still reports peak ≥ floor and that the one bad job does NOT abort the run (plan line 283). Each addition is its own follow-up atom to preserve commit-size discipline."
+}

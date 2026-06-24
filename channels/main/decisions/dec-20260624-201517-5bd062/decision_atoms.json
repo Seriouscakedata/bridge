@@ -1,0 +1,102 @@
+{
+    "atoms":  [
+                  {
+                      "atom_id":  "atom-01",
+                      "statement":  "Implement the read-only audit pool as a new top-and-tail-delimited section in lib/parallel.ps1, with its own script-scoped state and dedicated function prefixes (e.g., Start-ReadOnlyAuditJob, Get-ReadOnlyAuditPoolStatus), ensuring no calls are made to existing worktree/merge/cleanup functions.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Architecture/Isolation",
+                      "test":  "Verify that the new functions are physically located within a clearly marked section in `lib/parallel.ps1` and that static analysis (e.g., `grep`) confirms no calls to existing `New-Worktree`, `Merge-Worktree`, `Remove-Worktree`, `Get-WorkerWorktree`, `Cleanup-WorkerWorktree`, or `Spawn-Worker` functions are made from the new code.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-02",
+                      "statement":  "Implement a script-scoped registry (e.g., a synchronized hashtable or list) to store root PIDs and associated job metadata, including the cached System.Diagnostics.Process object and start-time ticks (pidTicks).",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Data Management",
+                      "test":  "After launching jobs, inspect the `$script:ReadOnlyAuditRegistry` variable (or equivalent) to confirm it is script-scoped and stores entries containing `jobId`, `pid`, `pidTicks`, and a `process-handle` (or equivalent `System.Diagnostics.Process` object).",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-03",
+                      "statement":  "Capture the root PID via `Start-Process -PassThru`, cache the returned `System.Diagnostics.Process` object in the registry, and compute job liveness from the cached object\u0027s `.HasExited` property, rather than relying on `Get-Process -Id`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Process Management",
+                      "test":  "During the test, observe that `Start-ReadOnlyAuditJob` uses `Start-Process -PassThru` and that `Get-ReadOnlyAuditPoolStatus` determines liveness by checking the `.HasExited` property of the cached `System.Diagnostics.Process` object, not by querying `Get-Process -Id`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-04",
+                      "statement":  "Allocate four per-job temporary files (input, output, error, result) under `Get-ParallelJobsDir` with a distinct prefix (e.g., `roaudit_\u003cguid\u003e`) and redirect `stdin`/`stdout`/`stderr` to these files via `Start-Process -RedirectStandard*`.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Data Management",
+                      "test":  "During a job execution, verify that `Start-ReadOnlyAuditJob` creates four temporary files (e.g., `roaudit_\u003cguid\u003e.{in,out,err,result}`) under `Get-ParallelJobsDir` and that `Start-Process` arguments correctly redirect `stdin`, `stdout`, and `stderr` to these files.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-05",
+                      "statement":  "The `Get-ReadOnlyAuditPoolStatus` function must prune completed or missing processes from the registry before returning the count of active processes.",
+                      "source_proposals":  [
+                                               "A"
+                                           ],
+                      "category":  "Process Management",
+                      "test":  "Launch multiple jobs, allow some to complete, then call `Get-ReadOnlyAuditPoolStatus` and verify that the count of active processes accurately reflects only the running jobs, implying that completed processes have been pruned from the registry.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-06",
+                      "statement":  "The `Get-ReadOnlyAuditPoolStatus` function should return the active root PID count within a structured object (e.g., `@{ active; total; activePids }`) rather than a bare integer.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "API/Interface",
+                      "test":  "Call `Get-ReadOnlyAuditPoolStatus` and assert that the returned value is a PowerShell object (e.g., `PSCustomObject` or `Hashtable`) containing at least an `active` property with the count of active PIDs.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "low"
+                  },
+                  {
+                      "atom_id":  "atom-07",
+                      "statement":  "The test script `tools/test-readonly-parallel.ps1` must launch at least 3 dummy jobs using `powershell -NoProfile -Command Start-Sleep` (with sufficient duration, e.g., 6-8s), repeatedly sample `Get-ReadOnlyAuditPoolStatus` to PEAK-track the active count, assert that the peak active count is ≥3, and run `[System.Management.Automation.Language.Parser]::ParseFile` on both `lib/parallel.ps1` and itself to verify syntax.",
+                      "source_proposals":  [
+                                               "A",
+                                               "B",
+                                               "C"
+                                           ],
+                      "category":  "Testing",
+                      "test":  "Execute `tools/test-readonly-parallel.ps1`. The test must pass, demonstrating that at least 3 `powershell -NoProfile -Command Start-Sleep` jobs run concurrently, the peak active count reaches ≥3, and both `lib/parallel.ps1` and `tools/test-readonly-parallel.ps1` parse without errors using `[System.Management.Automation.Language.Parser]::ParseFile`.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  },
+                  {
+                      "atom_id":  "atom-08",
+                      "statement":  "Implement fault-tolerant job spawning by wrapping each `Start-Process` call in a `try/catch` block, recording failed/exited jobs in the registry with `proc=$null` (or similar inactive state) instead of throwing an exception.",
+                      "source_proposals":  [
+                                               "B"
+                                           ],
+                      "category":  "Robustness",
+                      "test":  "Modify the test to attempt launching a non-existent or invalid command via `Start-ReadOnlyAuditJob`. Verify that `Start-ReadOnlyAuditJob` does not throw an exception, and that the failed job is recorded in the registry with an inactive status (e.g., `proc=$null`), and `Get-ReadOnlyAuditPoolStatus` correctly excludes it from the active count.",
+                      "reversibility":  "high",
+                      "implementation_cost":  "medium"
+                  }
+              ]
+}

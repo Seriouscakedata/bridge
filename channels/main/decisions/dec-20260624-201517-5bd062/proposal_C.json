@@ -1,0 +1,63 @@
+{
+    "proposer":  "C",
+    "understanding":  "The task requires implementing a new, isolated read-only audit subprocess pool in lib/parallel.ps1. This pool must be completely separate from existing worktree/merge functions, using per-job temporary files and a root-PID registry. A test script must demonstrate at least 3 concurrent jobs with peak active PIDs ≥ 3. The implementation must not touch existing code paths, and both scripts must parse cleanly.",
+    "summary":  "Add three new functions to lib/parallel.ps1: Start-ReadOnlyAuditJob (launches CLI subprocess with temp files, captures root PID), a root-PID registry mechanism, and Get-ReadOnlyAuditPoolStatus (returns count of active root PIDs). Create tools/test-readonly-parallel.ps1 that runs ≥3 dummy jobs concurrently and verifies peak active PIDs ≥ 3. Existing worktree/merge code remains untouched.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Use a script-scoped synchronized hashtable as the root-PID registry",
+                               "reason":  "Provides thread-safe access for concurrent job tracking without external dependencies, suitable for PowerShell\u0027s single-threaded pipeline with background jobs",
+                               "tradeoff":  "Slightly less performant than a dedicated concurrent collection, but sufficient for the current 3-job threshold and simple to implement",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Implement per-job temporary files using System.IO.Path.GetTempFileName() with a structured naming convention",
+                               "reason":  "Ensures isolation between jobs, prevents file collisions, and allows easy cleanup; standard .NET method is reliable",
+                               "tradeoff":  "Creates multiple temp files per job (input/output/error/result) which may clutter temp directory, but cleanup is handled by the job lifecycle",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Capture root PID using System.Diagnostics.Process.Id from the started process",
+                               "reason":  "Directly obtains the OS-level process identifier without relying on PowerShell job infrastructure, ensuring accurate tracking",
+                               "tradeoff":  "Requires storing Process objects or PIDs separately from PowerShell jobs, adding slight management overhead",
+                               "confidence":  0.95
+                           },
+                           {
+                               "statement":  "Place new functions in a clearly marked region at the end of lib/parallel.ps1",
+                               "reason":  "Physically separates new code from existing worktree/merge functions, reducing risk of accidental interference and making audit boundaries clear",
+                               "tradeoff":  "File grows longer, but the separation is explicit and maintainable",
+                               "confidence":  0.98
+                           },
+                           {
+                               "statement":  "Test script uses Start-Sleep as dummy workload with staggered start times",
+                               "reason":  "Simple, deterministic way to create concurrent processes that overlap in time, ensuring peak PID count can be observed",
+                               "tradeoff":  "Test timing may be slightly platform-dependent, but sleep durations can be tuned for reliability",
+                               "confidence":  0.85
+                           }
+                       ],
+    "assumptions":  [
+                        "lib/parallel.ps1 already exists and contains worktree/merge functions that must not be modified",
+                        "PowerShell version 5.1 or later is available (supports classes and System.Management.Automation.Language.Parser)",
+                        "The execution environment allows spawning subprocesses (no execution policy blocking)",
+                        "Temporary file creation via .NET is permitted and the temp directory is writable",
+                        "The test script will be run in an environment where at least 3 concurrent processes can be spawned"
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Root PID registry may contain stale entries if jobs terminate abnormally without cleanup",
+                      "severity":  "low",
+                      "mitigation":  "Implement a periodic cleanup mechanism in Get-ReadOnlyAuditPoolStatus that checks process existence before counting; document that registry is eventually consistent"
+                  },
+                  {
+                      "risk":  "Temporary file accumulation if job cleanup fails",
+                      "severity":  "low",
+                      "mitigation":  "Register a trap or finally block in Start-ReadOnlyAuditJob to clean up temp files on job completion; use a temp subdirectory with a unique session identifier for bulk cleanup"
+                  },
+                  {
+                      "risk":  "Test script may fail intermittently if system is under heavy load and processes don\u0027t overlap as expected",
+                      "severity":  "low",
+                      "mitigation":  "Use sufficiently long sleep durations (e.g., 5-10 seconds) and add retry logic or relaxed timing assertions in the test"
+                  }
+              ],
+    "minimal_version":  "Add Start-ReadOnlyAuditJob and Get-ReadOnlyAuditPoolStatus functions to lib/parallel.ps1 with a simple hashtable registry; create test script with 3 concurrent Start-Sleep jobs and a basic assertion on peak PID count.",
+    "advanced_version":  "Add comprehensive error handling, automatic stale PID cleanup, structured logging per job, a configurable concurrency throttle, and a Wait-ReadOnlyAuditJob function for job completion tracking. Test script includes edge cases (job failures, rapid start/stop, cleanup verification)."
+}

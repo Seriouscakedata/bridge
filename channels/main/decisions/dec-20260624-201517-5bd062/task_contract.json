@@ -1,0 +1,29 @@
+{
+    "task":  "[Автозадача из бэклога] [operator] [Аудит-редизайн Фаза 1 / атом 1] Read-only audit subprocess pool в lib/parallel.ps1 — ОТДЕЛЬНО от worktree/merge функций.\n\nИсточник (durable, заморожен): channels/main/decisions/dec-20260624-163731-1486a6/project_map_plan.md §13 Phase 1 + approval_decisions.md. Утверждён юзером (tg 53853637), решения §14 на операторе.\n\nЗАДАЧА (атом, bridge-репо, control-plane):\n1. В lib/parallel.ps1 добавить НОВЫЕ функции read-only аудит-пула, НЕ трогая существующий worktree/coder-путь:\n   - Start-ReadOnlyAuditJob — запуск CLI-субпроцесса в read-only режиме, per-job temp файлы (input/output/error/result), захват КОРНЕВОГО PID агента.\n   - реестр корневых PID (root-PID registry) запущенных джоб.\n   - Get-ReadOnlyAuditPoolStatus — возвращает число активных корневых PID.\n   НЕТ worktree, НЕТ merge, НЕТ checkout/cleanup правок воркеров.\n2. Добавить tools/test-readonly-parallel.ps1: dummy-CLI джоба (powershell -Command \"Start-Sleep N\"), запустить ≥3 одновременно, утверждать что реестр сэмплит ≥3 активных корневых PID на пике.\n\nACCEPTANCE: тест доказывает peak активных PID ≥3; путь worktree/merge НЕ используется; [System.Management.Automation.Language.Parser]::ParseFile чисто для обоих .ps1; целевой тест зелёный. Коммит атом-размера (быстро, без commit_famine). Это фундамент параллелизма из плана (порог 20 — позже, сначала доказать механизм на 3).",
+    "goal":  "To implement a new, isolated, read-only subprocess execution pool within `lib/parallel.ps1` as a foundational component for future parallel audit operations, ensuring it does not interfere with existing worktree/merge functionalities and can demonstrate concurrent execution of at least 3 jobs.",
+    "constraints":  [
+                        "The new read-only audit subprocess pool must be separate from existing worktree/merge functions.",
+                        "Existing worktree/coder-path functionality must NOT be touched.",
+                        "The new implementation must NOT involve worktree, merge, or checkout/cleanup modifications for workers.",
+                        "The commit must be atomic-sized (quick, without commit famine).",
+                        "The worktree/merge path must NOT be used by the new functionality."
+                    ],
+    "known_context":  [
+                          "The task is sourced from `channels/main/decisions/dec-20260624-163731-1486a6/project_map_plan.md §13 Phase 1` and `approval_decisions.md`.",
+                          "The task has been approved by user (tg 53853637).",
+                          "Decisions §14 are on the operator.",
+                          "This task lays the foundation for parallelism as per the plan.",
+                          "The current demonstration threshold is 3 concurrent jobs, with a target of 20 to be addressed later."
+                      ],
+    "output_format":  "code changes (PowerShell scripts) and a new test script.",
+    "task_type":  "architecture",
+    "risk":  "low",
+    "allowed_complexity":  "low",
+    "success_tests":  [
+                          "The `tools/test-readonly-parallel.ps1` proves a peak of active PIDs ≥ 3.",
+                          "The worktree/merge path is confirmed NOT to be used by the new functionality.",
+                          "Both `lib/parallel.ps1` (after changes) and `tools/test-readonly-parallel.ps1` parse cleanly according to `[System.Management.Automation.Language.Parser]::ParseFile`.",
+                          "The target test (`tools/test-readonly-parallel.ps1`) runs successfully (is green).",
+                          "The resulting commit is atomic-sized."
+                      ]
+}

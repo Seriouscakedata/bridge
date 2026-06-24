@@ -1,0 +1,67 @@
+{
+    "proposer":  "A",
+    "understanding":  "Нужно добавить в lib/parallel.ps1 изолированный read-only пул CLI-субпроцессов для аудита: запускать процессы без worktree/merge/checkout логики, хранить root PID каждого запущенного процесса, уметь считать активные PID, и добавить отдельный тест tools/test-readonly-parallel.ps1, который доказывает одновременную активность минимум 3 subprocess jobs.",
+    "summary":  "Предлагаю минимально расширить lib/parallel.ps1 новыми функциями и script-scope реестром PID, не изменяя существующие worktree/coder функции. Start-ReadOnlyAuditJob будет создавать per-job temp input/output/error/result файлы, запускать CLI через Start-Process -PassThru, сохранять корневой PID и метаданные. Get-ReadOnlyAuditPoolStatus будет чистить завершившиеся PID и возвращать число активных корневых процессов. Новый тест запустит 3 dummy PowerShell sleep-процесса, будет polling-ом ловить peak active count \u003e= 3, затем дождется завершения и проверит синтаксис обоих ps1 через Parser.ParseFile.",
+    "decision_atoms":  [
+                           {
+                               "statement":  "Добавить только новые read-only audit функции в lib/parallel.ps1, без изменения существующего worktree/merge пути.",
+                               "reason":  "Контракт прямо требует изоляции нового механизма от текущей coder/worktree инфраструктуры.",
+                               "tradeoff":  "Появится небольшой параллельный API рядом со старым кодом, но без риска регрессий в существующем пути.",
+                               "confidence":  0.96
+                           },
+                           {
+                               "statement":  "Использовать script-scope реестр root PID и метаданных jobs.",
+                               "reason":  "Это самый простой способ сохранить состояние пула внутри загруженного lib/parallel.ps1 и дать Get-ReadOnlyAuditPoolStatus считать активные процессы.",
+                               "tradeoff":  "Реестр живет только в текущей PowerShell-сессии; для этого атома persistent registry не нужен.",
+                               "confidence":  0.93
+                           },
+                           {
+                               "statement":  "Запускать subprocess через Start-Process -PassThru с RedirectStandardOutput и RedirectStandardError в per-job temp файлы.",
+                               "reason":  "Start-Process возвращает объект с PID корневого процесса и естественно поддерживает файловый stdout/stderr capture.",
+                               "tradeoff":  "Не будет streaming output в реальном времени, зато реализация простая и надежная для read-only audit jobs.",
+                               "confidence":  0.9
+                           },
+                           {
+                               "statement":  "Get-ReadOnlyAuditPoolStatus должен перед подсчетом удалять из реестра завершившиеся или отсутствующие процессы.",
+                               "reason":  "Иначе счетчик активных PID будет завышаться после завершения jobs.",
+                               "tradeoff":  "Статус-функция получит небольшой побочный эффект pruning, но это ожидаемое поведение для live registry.",
+                               "confidence":  0.92
+                           },
+                           {
+                               "statement":  "Тест tools/test-readonly-parallel.ps1 должен использовать dummy CLI: powershell -NoProfile -Command Start-Sleep.",
+                               "reason":  "Это доказывает сам механизм параллельного subprocess pool без зависимости от реального audit CLI.",
+                               "tradeoff":  "Тест проверяет инфраструктуру concurrency, а не полный будущий audit workflow.",
+                               "confidence":  0.95
+                           }
+                       ],
+    "assumptions":  [
+                        "Тест запускается в Windows PowerShell или PowerShell, где доступен powershell.exe.",
+                        "lib/parallel.ps1 можно dot-source-ить из tools/test-readonly-parallel.ps1.",
+                        "Read-only гарантия для этого атома означает отсутствие worktree/merge/checkout/cleanup логики и запуск CLI без правок воркеров; будущие CLI-specific sandbox flags можно добавить позже.",
+                        "Существующий dirty/untracked state не должен трогаться этим атомом."
+                    ],
+    "risks":  [
+                  {
+                      "risk":  "Процессы sleep могут завершиться до того, как тест успеет засэмплить peak \u003e= 3.",
+                      "severity":  "low",
+                      "mitigation":  "Использовать достаточную длительность sleep и polling с коротким интервалом сразу после старта всех jobs."
+                  },
+                  {
+                      "risk":  "Оставшиеся процессы или temp-файлы после падения теста.",
+                      "severity":  "low",
+                      "mitigation":  "Обернуть тест в try/finally, ждать или останавливать дочерние процессы и чистить созданные temp paths."
+                  },
+                  {
+                      "risk":  "Новый код случайно зацепит существующие функции parallel/worktree.",
+                      "severity":  "medium",
+                      "mitigation":  "Добавлять только новые имена функций и script-scope переменные с ReadOnlyAudit префиксом; не менять существующие вызовы."
+                  },
+                  {
+                      "risk":  "Разные PowerShell версии по-разному обрабатывают Start-Process redirection и аргументы.",
+                      "severity":  "low",
+                      "mitigation":  "Формировать аргументы как массив/строку в совместимом стиле и использовать Parser.ParseFile как обязательную синтаксическую проверку."
+                  }
+              ],
+    "minimal_version":  "Добавить Start-ReadOnlyAuditJob и Get-ReadOnlyAuditPoolStatus в lib/parallel.ps1, script-scope реестр PID, per-job temp файлы, и tools/test-readonly-parallel.ps1, который запускает 3 powershell sleep jobs, проверяет peak \u003e= 3, Parser.ParseFile для обоих файлов и завершает все процессы.",
+    "advanced_version":  "Поверх минимальной версии позже добавить лимиты пула, structured result JSON, timeout/cancel API, явные CLI read-only sandbox flags, telemetry по duration/exitCode и стресс-тест на целевой порог 20 jobs."
+}

@@ -464,6 +464,148 @@ function Get-ParallelJobsDir {
   return $dir
 }
 
+# === Read-Only Audit Pool (BEGIN) ===
+$script:ReadOnlyAuditRegistry = @{}
+
+function Start-ReadOnlyAuditJob {
+  param(
+    [Parameter(Mandatory=$true)][string]$FilePath,
+    [string[]]$ArgumentList = @(),
+    [string]$WorkingDirectory = '',
+    [string]$InputText = '',
+    [hashtable]$Metadata = @{}
+  )
+
+  if ($null -eq $script:ReadOnlyAuditRegistry) { $script:ReadOnlyAuditRegistry = @{} }
+
+  $jobsDir = Get-ParallelJobsDir
+  $jobId = 'roaudit_' + ([guid]::NewGuid().ToString('N'))
+  $prefix = Join-Path $jobsDir $jobId
+  $inF = "$prefix.in"
+  $outF = "$prefix.out"
+  $errF = "$prefix.err"
+  $resultF = "$prefix.result"
+  $u8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($inF, [string]$InputText, $u8)
+  [System.IO.File]::WriteAllText($resultF, '', $u8)
+
+  $proc = $null
+  $rootPid = $null
+  $pidTicks = 0L
+  $spawnError = ''
+  $hadUpperPath = $false
+  $upperPathValue = $null
+  try {
+    $startArgs = @{
+      FilePath = $FilePath
+      ArgumentList = @($ArgumentList)
+      RedirectStandardInput = $inF
+      RedirectStandardOutput = $outF
+      RedirectStandardError = $errF
+      NoNewWindow = $true
+      PassThru = $true
+      ErrorAction = 'Stop'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+      $startArgs.WorkingDirectory = $WorkingDirectory
+    }
+    $upperPathValue = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    $pathValue = [Environment]::GetEnvironmentVariable('Path', 'Process')
+    $hadUpperPath = -not [string]::IsNullOrEmpty($upperPathValue)
+    if ($hadUpperPath -and -not [string]::IsNullOrEmpty($pathValue)) {
+      [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+    }
+    $proc = Start-Process @startArgs
+    if ($proc) {
+      $null = $proc.Handle
+      $rootPid = [int]$proc.Id
+      try { $pidTicks = [int64]$proc.StartTime.Ticks } catch { $pidTicks = 0L }
+    }
+  } catch {
+    $spawnError = [string]$_.Exception.Message
+    $proc = $null
+  } finally {
+    if ($hadUpperPath) {
+      [Environment]::SetEnvironmentVariable('PATH', $upperPathValue, 'Process')
+    }
+  }
+
+  $record = [pscustomobject]@{
+    jobId = $jobId
+    pid = $rootPid
+    pidTicks = $pidTicks
+    proc = $proc
+    active = [bool]($proc -ne $null)
+    inputPath = $inF
+    outputPath = $outF
+    errorPath = $errF
+    resultPath = $resultF
+    filePath = $FilePath
+    argumentList = @($ArgumentList)
+    workingDirectory = $WorkingDirectory
+    metadata = $Metadata
+    startedAt = (Get-Date).ToString('o')
+    completedAt = $null
+    spawnError = $spawnError
+  }
+
+  $key = if ($rootPid -ne $null) { [string]$rootPid } else { 'failed:' + $jobId }
+  $script:ReadOnlyAuditRegistry[$key] = $record
+  return $record
+}
+
+function Get-ReadOnlyAuditPoolStatus {
+  if ($null -eq $script:ReadOnlyAuditRegistry) { $script:ReadOnlyAuditRegistry = @{} }
+
+  $activePids = New-Object System.Collections.Generic.List[int]
+  foreach ($entry in @($script:ReadOnlyAuditRegistry.GetEnumerator())) {
+    $record = $entry.Value
+    $isActive = $false
+    if ($record -and $record.proc) {
+      try { $isActive = -not $record.proc.HasExited } catch { $isActive = $false }
+    }
+    $record.active = [bool]$isActive
+    if (-not $isActive -and $null -eq $record.completedAt) {
+      $record.completedAt = (Get-Date).ToString('o')
+    }
+    if ($isActive -and $record.pid -ne $null) {
+      [void]$activePids.Add([int]$record.pid)
+    }
+  }
+
+  return [pscustomobject]@{
+    active = [int]$activePids.Count
+    total = [int]$script:ReadOnlyAuditRegistry.Count
+    activePids = @($activePids.ToArray())
+  }
+}
+
+function Clear-ReadOnlyAuditPoolRegistry {
+  param([switch]$DeleteFiles)
+  if ($null -eq $script:ReadOnlyAuditRegistry) { $script:ReadOnlyAuditRegistry = @{}; return 0 }
+
+  $removed = 0
+  foreach ($entry in @($script:ReadOnlyAuditRegistry.GetEnumerator())) {
+    $record = $entry.Value
+    $isActive = $false
+    if ($record -and $record.proc) {
+      try { $isActive = -not $record.proc.HasExited } catch { $isActive = $false }
+    }
+    if ($isActive) { continue }
+    if ($DeleteFiles -and $record) {
+      foreach ($path in @($record.inputPath, $record.outputPath, $record.errorPath, $record.resultPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($path)) {
+          try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch {}
+        }
+      }
+    }
+    $script:ReadOnlyAuditRegistry.Remove($entry.Key)
+    $removed++
+  }
+  return $removed
+}
+# === Read-Only Audit Pool (END) ===
+
 function Normalize-ParallelId {
   param([string]$Value)
   $safe = ([string]$Value).Trim() -replace '[^A-Za-z0-9_.-]+','-'
