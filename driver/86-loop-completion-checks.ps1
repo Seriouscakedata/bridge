@@ -551,10 +551,9 @@ function Test-DriverDoneGateRegressionTimeoutInconclusive {
     $baseTimeoutSchedule = @($withoutFallback.ToArray())
   }
 
-  # A PURE wall-clock timeout (exit 124 / TimedOut) with ZERO failing tests is "no signal",
-  # not a proven regression -> classify INCONCLUSIVE (fail-open) instead of hard-failing the
-  # task on contention noise. A real regression surfaces as a NON-timeout failure
-  # (exit!=0, TimedOut=$false), already filtered out above via NonTimeoutFailureSeen.
+  # A repeated wall-clock timeout (exit 124 / TimedOut) is now treated as a blocking
+  # gate failure. It already consumed the bounded retry/fallback schedule, so returning
+  # inconclusive here only wastes DONE attempts on a test that is deterministically stuck.
   if ($attempts -lt 3) { return $false }
   if ($baseTimeoutSchedule.Count -lt 3) { return $false }
 
@@ -621,13 +620,10 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
     $timedOutTestsText = ("; timed_out_tests={0}" -f ($timedOutTestsList -join ','))
   }
 
-  # A pure wall-clock timeout is ALWAYS fail-open (inconclusive), regardless of attempt count:
-  # the suite reported no failing test — it was killed on wall-clock under contention, which is
-  # not a proven regression. Real regressions arrive as non-timeout failures and are handled on
-  # the hard 2-strike path, never here. The operator still sees this ⚠️ event and state records
-  # the inconclusive outcome, so a persistently slow gate stays visible without blocking DONE.
-  $outcome = 'inconclusive_timeout'
-  $message = "⚠️ Gate-regression timeout final outcome=inconclusive_timeout$attemptsText ($reasonText$budgetText$fallbackText$timedOutTestsText) — timeout не является доказанной регрессией; задача не переводится в fail/CONTINUE."
+  # A timeout after the bounded retry/fallback schedule is actionable: the same test is
+  # stuck, and letting DONE pass as inconclusive burns attempts without new evidence.
+  $outcome = 'timeout_fail'
+  $message = "🚨 Gate-regression timeout final outcome=timeout_fail$attemptsText ($reasonText$budgetText$fallbackText$timedOutTestsText) — exit=124/timeout считается FAIL; задача возвращается на CONTINUE."
 
   return [pscustomobject][ordered]@{
     Outcome = $outcome
