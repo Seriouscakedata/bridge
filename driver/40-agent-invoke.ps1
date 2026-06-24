@@ -271,6 +271,12 @@ function Test-AgentAuthFailureText {
   param([AllowNull()][string]$Text)
   $t = [string]$Text
   if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  # A genuine CLI auth failure is a SHORT terminal error. A longer agent reply that merely DISCUSSES or
+  # QUOTES an auth error (e.g. a diagnosis containing "[PLANNER/Claude]: Failed to authenticate") must
+  # NOT be read as the agent's OWN auth failure -- that naive substring match false-paused the whole
+  # bridge overnight 2026-06-24 (operator fix). Require the reply to be short so only a real terminal
+  # auth error matches; a long discussion is treated as normal output.
+  if ($t.Length -gt 1200) { return $false }
   return ($t -match '(?is)(Failed\s+to\s+authenticate|API\s+Error:\s*401|Invalid\s+authentication\s+credentials)')
 }
 
