@@ -564,6 +564,53 @@ function Set-AuditLedgerEntryValue {
   }
 }
 
+function Get-AuditLedgerEntryState {
+  param($Entry)
+  $state = [string](Get-AuditFindingField -Raw $Entry -Names @('state'))
+  if ([string]::IsNullOrWhiteSpace($state)) {
+    $state = [string](Get-AuditFindingField -Raw $Entry -Names @('status'))
+  }
+  return (Normalize-AuditLedgerToken -Value $state -Fallback 'open')
+}
+
+function Set-AuditLedgerEntryState {
+  param(
+    $Entry,
+    [string]$State,
+    [string]$NowText = '',
+    [string]$Reason = ''
+  )
+  $normalized = Normalize-AuditLedgerToken -Value $State -Fallback 'open'
+  Set-AuditLedgerEntryValue -Entry $Entry -Name 'state' -Value $normalized
+  Set-AuditLedgerEntryValue -Entry $Entry -Name 'status' -Value $normalized
+  if (-not [string]::IsNullOrWhiteSpace($NowText)) {
+    Set-AuditLedgerEntryValue -Entry $Entry -Name 'lastStatusChangeAt' -Value $NowText
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+    Set-AuditLedgerEntryValue -Entry $Entry -Name 'statusReason' -Value $Reason
+  }
+}
+
+function Confirm-AuditLedgerFindingFixed {
+  param($Entry, [string]$RootCauseKey, $SeenThisRun, [string]$NowText)
+  if (-not $Entry -or [string]::IsNullOrWhiteSpace($RootCauseKey)) { return $false }
+  if ($SeenThisRun -and $SeenThisRun.ContainsKey($RootCauseKey)) { return $false }
+
+  $state = Get-AuditLedgerEntryState -Entry $Entry
+  if ($state -in @('fixed','suppressed')) { return $false }
+  if ($state -notin @('new','open','regressed')) { return $false }
+
+  $verification = [ordered]@{
+    method = 'rootCauseKey_absent_from_current_findings'
+    rootCauseKey = $RootCauseKey
+    verifiedAt = $NowText
+  }
+  Set-AuditLedgerEntryState -Entry $Entry -State 'fixed' -NowText $NowText -Reason 'structural_absence_verified'
+  Set-AuditLedgerEntryValue -Entry $Entry -Name 'fixedAt' -Value $NowText
+  Set-AuditLedgerEntryValue -Entry $Entry -Name 'fixedVerification' -Value $verification
+  return $true
+}
+
 function New-AuditLedgerEntry {
   param($Finding, [string]$RootCauseKey, [string]$FindingId, [string]$NowText)
   $category = Normalize-AuditLedgerToken -Value ([string](Get-AuditFindingField -Raw $Finding -Names @('category'))) -Fallback 'uncategorized'
@@ -580,6 +627,7 @@ function New-AuditLedgerEntry {
     lastSeen = $NowText
     seenCount = 1
     state = 'new'
+    status = 'new'
     title = [string](Get-AuditFindingField -Raw $Finding -Names @('title'))
   }
 }
@@ -590,6 +638,7 @@ function Update-FindingsLedger {
   $reportFindings = New-Object 'System.Collections.Generic.List[object]'
   $seenThisRun = @{}
   $suppressedCount = 0
+  $fixedCount = 0
   $nowText = $Now.ToUniversalTime().ToString('o')
 
   foreach ($f in @($CurrentFindings)) {
@@ -608,7 +657,7 @@ function Update-FindingsLedger {
     }
 
     $entry = $Ledger[$rck]
-    $state = Normalize-AuditLedgerToken -Value ([string]$entry.state) -Fallback 'open'
+    $state = Get-AuditLedgerEntryState -Entry $entry
     $seenCount = 0
     try { $seenCount = [int]$entry.seenCount } catch { $seenCount = 0 }
     Set-AuditLedgerEntryValue -Entry $entry -Name 'id' -Value $fid
@@ -618,7 +667,9 @@ function Update-FindingsLedger {
     Set-AuditLedgerEntryValue -Entry $entry -Name 'title' -Value ([string](Get-AuditFindingField -Raw $f -Names @('title')))
 
     if ($state -in @('fixed','suppressed')) {
-      Set-AuditLedgerEntryValue -Entry $entry -Name 'state' -Value 'regressed'
+      Set-AuditLedgerEntryState -Entry $entry -State 'regressed' -NowText $nowText -Reason 'finding_reappeared'
+      Set-AuditLedgerEntryValue -Entry $entry -Name 'regressedAt' -Value $nowText
+      Set-AuditLedgerEntryValue -Entry $entry -Name 'regressedFromState' -Value $state
       [void]$reportFindings.Add($f)
       continue
     }
@@ -629,7 +680,9 @@ function Update-FindingsLedger {
     }
 
     if ($state -eq 'new') {
-      Set-AuditLedgerEntryValue -Entry $entry -Name 'state' -Value 'open'
+      Set-AuditLedgerEntryState -Entry $entry -State 'open' -NowText $nowText -Reason 'seen_again'
+    } else {
+      Set-AuditLedgerEntryState -Entry $entry -State $state
     }
 
     if ($isCritical) {
@@ -639,10 +692,17 @@ function Update-FindingsLedger {
     }
   }
 
+  foreach ($rck in @($Ledger.Keys)) {
+    if (Confirm-AuditLedgerFindingFixed -Entry $Ledger[$rck] -RootCauseKey ([string]$rck) -SeenThisRun $seenThisRun -NowText $nowText) {
+      $fixedCount++
+    }
+  }
+
   return @{
     ledger = $Ledger
     reportFindings = @($reportFindings.ToArray())
     suppressedCount = $suppressedCount
+    fixedCount = $fixedCount
   }
 }
 

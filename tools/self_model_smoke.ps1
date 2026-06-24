@@ -95,6 +95,9 @@ function Get-SelfModelSmokeFixtureBase {
             if (-not (Test-Path -LiteralPath $base -PathType Container)) {
                 New-Item -ItemType Directory -Path $base -Force | Out-Null
             }
+            $probe = Join-Path $base ('.write-probe-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $probe -Force | Out-Null
+            Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue
             return $base
         } catch {}
     }
