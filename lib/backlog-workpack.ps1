@@ -1738,6 +1738,21 @@ function Get-BacklogWorkpackExecEligibility {
     if (Test-IdeaExternal $Item) { return [pscustomobject]@{ eligible=$false; reason='external-source'; detail='external/radar source is not auto-claimed by workpack frontier'; admission=$null } }
   } catch {}
 
+  # 2026-06-24 (#60): keep [[DISCUSS]] / [[DEEP-THINK]] DECISION tasks OUT of coding workpack batches.
+  # They must be claimed SOLO so the single-item idle-claim path routes them to the Decision-Synthesis
+  # engine (Get-SynthesisRouteDecision -> Invoke-SynthesisDriverTurn). Inside a batch the FastLane guard
+  # (driver/81-loop-idle-claim.ps1 -FastLane $isWorkpackBatch) short-circuits the synthesis router so
+  # task_mode='normal' and the task runs the coding pipeline and produces NO design (the false-green that
+  # blocked audit-rebuild 58e3a459). Safe: Get-NextApprovedIdea (lib/backlog-core.ps1) has no workpack
+  # filter, so a lone excluded DISCUSS item is still claimed solo. Precise marker match (not the loose
+  # 'discuss' verb) avoids over-excluding coding atoms that merely mention discussion.
+  try {
+    $wpItemText = [string](Get-BacklogPackObjectValue -Obj $Item -Name 'text' -Default '')
+    if ([regex]::IsMatch($wpItemText, '(?im)\[\[\s*(DISCUSS|DEEP-THINK)\s*\]\]')) {
+      return [pscustomobject]@{ eligible=$false; reason='discuss-synthesis-solo'; detail='DISCUSS/DEEP-THINK decision task routes to the synthesis flow, not a coding workpack batch'; admission=$null }
+    }
+  } catch {}
+
   $isProjectScoped = Test-BacklogWorkpackProjectScopedItem -Item $Item
   if ($isProjectScoped -and -not [bool]$ProjectScopeAllowed) {
     return [pscustomobject]@{ eligible=$false; reason='project-scope-blocked'; detail='project-scoped approved item is not runnable in the bridge channel'; admission=$null }
