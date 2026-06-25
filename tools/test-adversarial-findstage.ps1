@@ -134,7 +134,7 @@ $voteCollector2 = {
 $filer2 = { param($Atoms) }
 
 $auditResult = Invoke-AdversarialAudit `
-    -Trigger 'adversarial_milestone' `
+    -Trigger 'operator' `
     -SnapshotRoot $snapRoot `
     -RunId 'test-findstage-001' `
     -OutRoot $outRoot `
