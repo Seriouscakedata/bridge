@@ -103,7 +103,8 @@ $singleFinding = [pscustomobject]@{
     agent_id         = 'test-finder'
     root_cause       = 'Test root cause'
     why              = 'Test why'
-    evidence_snippet = 'line 1: # sample'
+    evidence_snippet = '# sample'
+    fix_sketch       = 'test fix'
     file             = 'sample.ps1'
     line             = 1
     severity         = 'high'
@@ -126,8 +127,8 @@ $voteCollector = {
             finding_id = $js.finding_id
             vote       = $voteVal
             reason     = 'test'
-            file       = $js.snapshot_root
-            line       = 0
+            file       = 'sample.ps1'
+            line       = 1
         }
     }
     return $votes
@@ -144,12 +145,14 @@ try {
         -OutRoot $outRoot `
         -FindRunner $findRunner `
         -VoteCollector $voteCollector `
+        -Filer { param($Atom) } `
         -SkepticsPerFinding 3 `
         -MinValidVotes 2
 
     Assert-Equal '#3-a: confirmed_after_dedup==1' ($result.phases.synth.confirmed_after_dedup) 1
     Assert-Equal '#3-b: filed.filed==1' ($result.phases.filed.filed) 1
-    Assert-True  '#3-c: report_json_path exists' (Test-Path $result.report_json_path)
+    $reportExists = (-not [string]::IsNullOrWhiteSpace([string]$result.report_json_path)) -and (Test-Path -LiteralPath $result.report_json_path)
+    Assert-True  '#3-c: report_json_path exists' $reportExists
 } catch {
     Write-Host "FAIL: #3 threw exception: $_"
     $script:fail++
