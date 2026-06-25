@@ -11,6 +11,96 @@
     }
 }
 
+function Test-AuditSkepticSchema {
+    param(
+        [Parameter(Mandatory=$true)][object]$Obj
+    )
+
+    $missing = [System.Collections.Generic.List[string]]::new()
+
+    if ([string]::IsNullOrWhiteSpace([string]$Obj.finding_id)) {
+        $missing.Add('finding_id')
+    }
+
+    $validVotes = @('refute','support','abstain')
+    $voteVal = [string]$Obj.vote
+    if ($voteVal -notin $validVotes) {
+        $missing.Add('vote')
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Obj.reason)) {
+        $missing.Add('reason')
+    }
+
+    if ($voteVal -eq 'support') {
+        if ([string]::IsNullOrWhiteSpace([string]$Obj.file)) {
+            $missing.Add('file')
+        }
+        $lineVal = $Obj.line
+        $lineInt = 0
+        $lineValid = [int]::TryParse([string]$lineVal, [ref]$lineInt) -and $lineInt -ge 1
+        if (-not $lineValid) {
+            $missing.Add('line')
+        }
+    }
+
+    $isValid = $missing.Count -eq 0
+    return [pscustomobject]@{ valid = $isValid; missing = @($missing) }
+}
+
+function Resolve-AuditFindingVerdict {
+    param(
+        [Parameter(Mandatory=$true)][object]$Finding,
+        [Parameter(Mandatory=$true)][object[]]$Votes,
+        [int]$MinValidVotes = 2
+    )
+
+    # Passthrough: already rejected at grounding
+    if ([string]$Finding.state -eq 'rejected_grounding') {
+        return [pscustomobject]@{
+            verdict      = 'rejected_grounding'
+            valid_count  = 0
+            refute_count = 0
+            support_count = 0
+        }
+    }
+
+    # Filter valid non-abstain votes
+    $validVotes = @($Votes | Where-Object {
+        $schema = Test-AuditSkepticSchema -Obj $_
+        $schema.valid -and ([string]$_.vote) -ne 'abstain'
+    })
+    $validCount   = $validVotes.Count
+    $refuteCount  = @($validVotes | Where-Object { ([string]$_.vote) -eq 'refute' }).Count
+    $supportCount = @($validVotes | Where-Object { ([string]$_.vote) -eq 'support' }).Count
+
+    if ($validCount -lt $MinValidVotes) {
+        return [pscustomobject]@{
+            verdict      = 'unverified'
+            valid_count  = $validCount
+            refute_count = $refuteCount
+            support_count = $supportCount
+        }
+    }
+
+    $threshold = [math]::Ceiling($validCount / 2)
+
+    if ($refuteCount -ge $threshold) {
+        $verdictVal = 'refuted'
+    } elseif ($supportCount -ge 1) {
+        $verdictVal = 'confirmed'
+    } else {
+        $verdictVal = 'unverified'
+    }
+
+    return [pscustomobject]@{
+        verdict      = $verdictVal
+        valid_count  = $validCount
+        refute_count = $refuteCount
+        support_count = $supportCount
+    }
+}
+
 function New-AuditCliJobSpec {
     param(
         [Parameter(Mandatory=$true)][string]$Provider,
