@@ -278,7 +278,8 @@ function Invoke-AuditGroundingGate {
     foreach ($f in $Findings) {
         $check = Test-AuditFindingGrounded -Finding $f -SnapshotRoot $SnapshotRoot
         $fCopy = $f | Select-Object -Property *
-        $fCopy | Add-Member -NotePropertyName 'state' -NotePropertyValue (if ($check.grounded) { 'grounded' } else { 'rejected_grounding' }) -Force
+        $stateVal = if ($check.grounded) { 'grounded' } else { 'rejected_grounding' }
+        $fCopy | Add-Member -NotePropertyName 'state' -NotePropertyValue $stateVal -Force
         $fCopy | Add-Member -NotePropertyName 'grounding_reason' -NotePropertyValue $check.reason -Force
         $result += $fCopy
     }
@@ -290,7 +291,7 @@ function Get-AuditGroundingSummary {
         [Parameter(Mandatory=$true)][object[]]$Findings
     )
 
-    $grounded = ($Findings | Where-Object { $_.state -eq 'grounded' }).Count
-    $rejected = ($Findings | Where-Object { $_.state -eq 'rejected_grounding' }).Count
+    $grounded = @($Findings | Where-Object { $_.state -eq 'grounded' }).Count
+    $rejected = @($Findings | Where-Object { $_.state -eq 'rejected_grounding' }).Count
     return @{ grounded = $grounded; rejected_grounding = $rejected }
 }
