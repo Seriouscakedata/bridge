@@ -670,6 +670,29 @@ function Build-AuditFinderJobSpec {
     }
 }
 
+function Get-AuditConcurrencyFloor {
+    param([object]$Config = $null)
+    if ($null -ne $Config) {
+        try {
+            $floor = $Config.audit.adversarial.concurrencyFloor
+            if ($null -ne $floor) { return [int]$floor }
+        } catch {}
+    }
+    return 20
+}
+
+function Test-AuditFloorMet {
+    param(
+        [Parameter(Mandatory=$true)][int]$Peak,
+        [Parameter(Mandatory=$true)][int]$JobsDispatched,
+        [Parameter(Mandatory=$true)][int]$Floor
+    )
+    if ($JobsDispatched -lt $Floor) {
+        return [bool]($Peak -ge $JobsDispatched)
+    }
+    return [bool]($Peak -ge $Floor)
+}
+
 function Invoke-AuditFindStage {
     param(
         [Parameter(Mandatory=$true)][object]$Matrix,
@@ -704,6 +727,14 @@ function Invoke-AuditFindStage {
         if ($null -ne $raw) {
             foreach ($item in @($raw)) { [void]$outputs.Add([string]$item) }
         }
+        $_fFloor = Get-AuditConcurrencyFloor
+        $_findTelem = [pscustomobject]@{
+            peak_concurrency  = 0
+            samples           = 0
+            jobs_dispatched   = $specsArr.Count
+            concurrency_floor = $_fFloor
+            floor_met         = $true
+        }
     } else {
         if (-not (Get-Command -Name Start-ReadOnlyAuditJob -ErrorAction SilentlyContinue) -or
             -not (Get-Command -Name Wait-ReadOnlyAuditPoolDrain -ErrorAction SilentlyContinue)) {
@@ -713,6 +744,9 @@ function Invoke-AuditFindStage {
             }
             . $parallelPath
         }
+
+        Clear-ReadOnlyAuditPoolRegistry | Out-Null
+        Reset-ReadOnlyAuditPoolTimeline
 
         $jobRecords = [System.Collections.Generic.List[object]]::new()
         foreach ($spec in $specsArr) {
@@ -734,6 +768,16 @@ function Invoke-AuditFindStage {
 
         if ($jobRecords.Count -gt 0) {
             Wait-ReadOnlyAuditPoolDrain
+        }
+
+        $_findTl   = Get-ReadOnlyAuditPoolTimeline
+        $_fFloor   = Get-AuditConcurrencyFloor
+        $_findTelem = [pscustomobject]@{
+            peak_concurrency  = [int]$_findTl.peak
+            samples           = [int]$_findTl.count
+            jobs_dispatched   = $specsArr.Count
+            concurrency_floor = $_fFloor
+            floor_met         = (Test-AuditFloorMet -Peak ([int]$_findTl.peak) -JobsDispatched $specsArr.Count -Floor $_fFloor)
         }
 
         foreach ($record in $jobRecords) {
@@ -795,6 +839,7 @@ function Invoke-AuditFindStage {
     return [pscustomobject]@{
         findings    = $allFindings.ToArray()
         finder_jobs = $specsArr.Count
+        telemetry   = $_findTelem
     }
 }
 
@@ -829,6 +874,14 @@ function Invoke-AuditVerifyStage {
         if ($null -ne $collected) {
             $allVotes = @($collected)
         }
+        $_vFloor = Get-AuditConcurrencyFloor
+        $_verifyTelem = [pscustomobject]@{
+            peak_concurrency  = 0
+            samples           = 0
+            jobs_dispatched   = $allJobSpecs.Count
+            concurrency_floor = $_vFloor
+            floor_met         = $true
+        }
     } else {
         if (-not (Get-Command -Name Start-ReadOnlyAuditJob -ErrorAction SilentlyContinue) -or
             -not (Get-Command -Name Wait-ReadOnlyAuditPoolDrain -ErrorAction SilentlyContinue)) {
@@ -838,6 +891,9 @@ function Invoke-AuditVerifyStage {
             }
             . $parallelPath
         }
+
+        Clear-ReadOnlyAuditPoolRegistry | Out-Null
+        Reset-ReadOnlyAuditPoolTimeline
 
         $jobRecords = @()
         foreach ($jobSpec in $allJobSpecs) {
@@ -858,6 +914,16 @@ function Invoke-AuditVerifyStage {
 
         if ($jobRecords.Count -gt 0) {
             Wait-ReadOnlyAuditPoolDrain
+        }
+
+        $_verifyTl    = Get-ReadOnlyAuditPoolTimeline
+        $_vFloor      = Get-AuditConcurrencyFloor
+        $_verifyTelem = [pscustomobject]@{
+            peak_concurrency  = [int]$_verifyTl.peak
+            samples           = [int]$_verifyTl.count
+            jobs_dispatched   = $jobRecords.Count
+            concurrency_floor = $_vFloor
+            floor_met         = (Test-AuditFloorMet -Peak ([int]$_verifyTl.peak) -JobsDispatched $jobRecords.Count -Floor $_vFloor)
         }
 
         foreach ($record in $jobRecords) {
@@ -910,7 +976,10 @@ function Invoke-AuditVerifyStage {
         $result += $fCopy
     }
 
-    $result
+    return [pscustomobject]@{
+        findings  = @($result)
+        telemetry = $_verifyTelem
+    }
 }
 
 function Get-AuditVerifySummary {
@@ -1107,6 +1176,8 @@ function Invoke-AdversarialAudit {
     $rawFindings = @()
     $schemaRejected = 0
     $finderJobsCount = 0
+    $_findTelemetry   = $null
+    $_verifyTelemetry = $null
 
     if ($null -ne $FindRunner) {
         $rawFindings = @(& $FindRunner $matrix $SnapshotRoot)
@@ -1114,6 +1185,7 @@ function Invoke-AdversarialAudit {
         $_findResult = Invoke-AuditFindStage -Matrix $matrix -SnapshotRoot $SnapshotRoot -MaxFinders $MaxFinders -JobRunner $FindJobRunner
         $rawFindings = @($_findResult.findings)
         $finderJobsCount = [int]$_findResult.finder_jobs
+        $_findTelemetry = $_findResult.telemetry
     }
 
     $validatedFindings = @($rawFindings | Where-Object {
@@ -1132,18 +1204,22 @@ function Invoke-AdversarialAudit {
 
     # e. VERIFY stage
     $verified = if ($grounded.Count -gt 0) {
-        Invoke-AuditVerifyStage -Findings $grounded -SnapshotRoot $SnapshotRoot `
+        $_vr = Invoke-AuditVerifyStage -Findings $grounded -SnapshotRoot $SnapshotRoot `
             -SkepticsPerFinding $SkepticsPerFinding -MinValidVotes $MinValidVotes `
             -VoteCollector $VoteCollector
+        $_verifyTelemetry = $_vr.telemetry
+        $_vr.findings
     } else {
-        ,@()
+        @()
     }
     $verified = @($verified)
 
     # f. SYNTHESIZE stage
     $synth = if ($verified.Count -gt 0) {
-        Invoke-AuditSynthesize -Findings $verified -RunId $RunId -OutRoot $OutRoot -Telemetry $Telemetry
+        $_auditTelemetry = @{ find = $_findTelemetry; verify = $_verifyTelemetry }
+        Invoke-AuditSynthesize -Findings $verified -RunId $RunId -OutRoot $OutRoot -Telemetry $_auditTelemetry
     } else {
+        $_auditTelemetry = @{ find = $_findTelemetry; verify = $_verifyTelemetry }
         [pscustomobject]@{
             confirmed_deduped = @()
             report_json_path  = $null
@@ -1162,6 +1238,16 @@ function Invoke-AdversarialAudit {
     $filed = Invoke-AuditFileConfirmed -ConfirmedFindings $synth.confirmed_deduped `
         -RunId $RunId -ExistingFingerprints $ExistingFingerprints -Filer $Filer
 
+    $_capacityFloorFailed = $false
+    foreach ($_pt in @($_findTelemetry, $_verifyTelemetry)) {
+        if ($null -ne $_pt -and
+            [int]$_pt.jobs_dispatched -ge [int]$_pt.concurrency_floor -and
+            -not [bool]$_pt.floor_met) {
+            $_capacityFloorFailed = $true
+            break
+        }
+    }
+
     # Verify summary (guard empty — Invoke-AuditVerifyStage param is Mandatory without AllowEmptyCollection)
     $verifySummary = if ($verified.Count -gt 0) {
         Get-AuditVerifySummary -Findings $verified
@@ -1170,9 +1256,9 @@ function Invoke-AdversarialAudit {
     }
 
     return [pscustomobject]@{
-        trigger          = $Trigger
-        mode             = (Get-AuditMode $Trigger)
-        phases           = [pscustomobject]@{
+        trigger               = $Trigger
+        mode                  = (Get-AuditMode $Trigger)
+        phases                = [pscustomobject]@{
             find_raw           = $rawFindings.Count
             finder_jobs        = $finderJobsCount
             schema_rejected    = $schemaRejected
@@ -1182,7 +1268,9 @@ function Invoke-AdversarialAudit {
             synth              = $synth.counts
             filed              = $filed.counts
         }
-        report_json_path = $synth.report_json_path
-        report_md_path   = $synth.report_md_path
+        telemetry             = $_auditTelemetry
+        capacity_floor_failed = $_capacityFloorFailed
+        report_json_path      = $synth.report_json_path
+        report_md_path        = $synth.report_md_path
     }
 }
