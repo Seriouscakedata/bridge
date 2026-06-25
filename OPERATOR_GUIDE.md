@@ -8,7 +8,7 @@
 > **Начни с `BRIDGE_STATUS.md`** — единая точка входа: актуальная версия, что умеет мост сейчас,
 > как проверить ЖИВОЕ состояние (git/процессы/state), карта документов. Этот гайд — глубже про управление.
 >
-> Последнее обновление: 2026-06-23.
+> Последнее обновление: 2026-06-25.
 
 ---
 
@@ -106,14 +106,25 @@ $s = [IO.File]::ReadAllText('C:\Users\rafie\OneDrive\Documents\bridge\channels\o
 > транзитивно — grep по `backlog.ps1` ничего не найдёт.)
 > Пока план не утверждён, driver один раз пишет в канал «⏸ Project Autopilot ждёт утверждения PROJECT_PLAN».
 
-> **Staged planning gate (2026-06-02):** approval now requires a staged plan, not one big
-> ad-hoc document. A project must have:
-> `PROJECT_BRIEF.md`, `DISCUSS_PRODUCT.md`, `DISCUSS_UX.md`, `DISCUSS_UI.md`,
-> `DISCUSS_BACKEND.md`, `DISCUSS_QA.md`, `DISCUSS_INTEGRATION.md`, `PROJECT_MAP.md`,
-> `PROJECT_PLAN.md`, and `.bridge/project-contract.json`.
-> The order is `brief -> product -> UX -> UI -> backend -> QA -> integration`; every later stage
-> must use earlier-stage decisions. `Set-ProjectPlanApproved` hashes all of these files, so changing
-> any stage re-gates autopilot until the plan is approved again.
+> **Bridge Spec Layer gate (актуально по коду, 2026-06-21):** approval теперь зависит от
+> `spec_profile` / `project_size` в `.bridge/project-contract.json`, а не всегда требует один и тот же
+> полный набор `DISCUSS_*`.
+>
+> - `lite` (`small`, `tiny`, `simple`, `mvp`) — для небольших проектов: `PROJECT_BRIEF.md`,
+>   `.bridge/constitution.md`, `.bridge/specs/acceptance.md`, `PROJECT_MAP.md`, `PROJECT_PLAN.md`,
+>   `.bridge/project-contract.json`. Полный `DISCUSS_*` и `planning_flow` не обязательны.
+> - `standard` — обычный проект: staged flow
+>   `brief -> product -> UX -> UI -> backend -> QA -> integration` плюс `.bridge/constitution.md`,
+>   `.bridge/specs/product.md`, `.bridge/specs/acceptance.md`.
+> - `full` (`large`, `complex`, `strict`, `production`) — крупный/рисковый проект: deeper staged flow
+>   плюс `.bridge/specs/product.md`, `.bridge/specs/ux.md`, `.bridge/specs/architecture.md`,
+>   `.bridge/specs/acceptance.md`.
+> - `legacy` — если профиль не указан: старое поведение с полным staged `DISCUSS_*`, чтобы не ломать
+>   уже существующие проекты.
+>
+> `Set-ProjectPlanApproved` пишет `plan_approved_signature_version = bridge-spec-v1`, сохраняет
+> `plan_spec_profile` и хэширует именно файлы выбранного профиля. Изменение любого обязательного файла
+> этого профиля снова ставит autopilot на re-approval.
 
 2. Когда проектный backlog пуст или почти пуст, project git clean **и план утверждён**, driver создаёт coordinator-задачу.
 3. Planner возвращает массив атомов внутри маркера:
