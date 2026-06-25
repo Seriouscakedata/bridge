@@ -249,7 +249,7 @@
                      "maxChunksPerTask":  10
                  },
     "parallel":  {
-                     "enabled":  false,
+                     "enabled":  true,
                      "maxStreams":  20,
                      "claudeCoderModel":  "sonnet",
                      "drainingTimeoutSec":  30,
@@ -650,7 +650,7 @@
                      },
     "radarEveryHours":  720,
     "synthesisMode":  {
-                          "enabled":  false,
+                          "enabled":  true,
                           "defaultDepth":  "smart",
                           "claudeModel":  "claude-opus-4-8",
                           "cheapModel":  "gemini-2.5-flash",
