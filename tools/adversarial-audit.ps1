@@ -427,3 +427,169 @@ function Get-AuditGroundingSummary {
     $rejected = @($Findings | Where-Object { $_.state -eq 'rejected_grounding' }).Count
     return @{ grounded = $grounded; rejected_grounding = $rejected }
 }
+
+function Build-AuditSkepticJobSpec {
+    param(
+        [Parameter(Mandatory=$true)][object]$Finding,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot,
+        [Parameter(Mandatory=$true)][string]$Provider,
+        [Parameter(Mandatory=$true)][int]$Index
+    )
+
+    if ($Provider -notin @('claude','codex')) {
+        throw "Invalid provider '$Provider'. Must be 'claude' or 'codex'."
+    }
+
+    $fid = $Finding.finding_id
+    $file = $Finding.file
+    $line = $Finding.line
+    $desc = $Finding.description
+    $prompt = "You are an independent skeptic reviewing a security/quality finding. Check the finding against the cited file and line in the snapshot. Return STRICT JSON only (no extra text): { `"finding_id`": `"$fid`", `"vote`": `"refute|support|abstain`", `"reason`": `"...`", `"file`": `"...`", `"line`": <int> }. Finding: id=$fid file=$file line=$line description=$desc. Snapshot root: $SnapshotRoot"
+
+    return [pscustomobject]@{
+        finding_id    = $fid
+        provider      = $Provider
+        index         = $Index
+        prompt        = $prompt
+        snapshot_root = $SnapshotRoot
+    }
+}
+
+function Invoke-AuditVerifyStage {
+    param(
+        [Parameter(Mandatory=$true)][object[]]$Findings,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot,
+        [int]$SkepticsPerFinding = 3,
+        [int]$MinValidVotes = 2,
+        [scriptblock]$VoteCollector = $null
+    )
+
+    $allJobSpecs = @()
+    foreach ($finding in $Findings) {
+        if ([string]$finding.state -ne 'grounded') {
+            continue
+        }
+
+        for ($i = 0; $i -lt $SkepticsPerFinding; $i++) {
+            $provider = if ($i % 2 -eq 0) { 'claude' } else { 'codex' }
+            $allJobSpecs += Build-AuditSkepticJobSpec -Finding $finding -SnapshotRoot $SnapshotRoot -Provider $provider -Index $i
+        }
+    }
+
+    $allVotes = @()
+    if ($VoteCollector) {
+        $collected = & $VoteCollector $allJobSpecs
+        if ($null -ne $collected) {
+            $allVotes = @($collected)
+        }
+    } else {
+        if (-not (Get-Command -Name Start-ReadOnlyAuditJob -ErrorAction SilentlyContinue) -or
+            -not (Get-Command -Name Wait-ReadOnlyAuditPoolDrain -ErrorAction SilentlyContinue)) {
+            $parallelPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\lib\parallel.ps1'))
+            if (-not (Test-Path -LiteralPath $parallelPath -PathType Leaf)) {
+                throw "Missing lib/parallel.ps1 at $parallelPath"
+            }
+            . $parallelPath
+        }
+
+        $jobRecords = @()
+        foreach ($jobSpec in $allJobSpecs) {
+            $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ("audit-skeptic-" + [guid]::NewGuid().ToString('N') + '.json')
+            $cliSpec = New-AuditCliJobSpec -Provider $jobSpec.provider -SnapshotRoot $jobSpec.snapshot_root -Prompt $jobSpec.prompt -ResultPath $resultPath
+            $jobRecords += Start-ReadOnlyAuditJob `
+                -FilePath $cliSpec.filePath `
+                -ArgumentList $cliSpec.argumentList `
+                -WorkingDirectory $jobSpec.snapshot_root `
+                -InputText $cliSpec.inputText `
+                -Metadata @{
+                    finding_id = $jobSpec.finding_id
+                    provider   = $jobSpec.provider
+                    index      = $jobSpec.index
+                }
+        }
+
+        if ($jobRecords.Count -gt 0) {
+            Wait-ReadOnlyAuditPoolDrain
+        }
+
+        foreach ($record in $jobRecords) {
+            $stdout = ''
+            try {
+                if ($record.outputPath -and (Test-Path -LiteralPath $record.outputPath -PathType Leaf)) {
+                    $stdout = [System.IO.File]::ReadAllText($record.outputPath)
+                }
+            } catch {
+                $stdout = ''
+            }
+
+            $parsedVotes = @()
+            try {
+                if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+                    $parsed = $stdout | ConvertFrom-Json -ErrorAction Stop
+                    $parsedVotes = @($parsed)
+                }
+            } catch {
+                $parsedVotes = @()
+            }
+
+            if ($parsedVotes.Count -eq 0) {
+                $allVotes += [pscustomobject]@{
+                    finding_id = [string]$record.metadata.finding_id
+                    vote       = 'abstain'
+                    reason     = 'stdout-json-parse-failed'
+                    file       = ''
+                    line       = 0
+                }
+                continue
+            }
+
+            $allVotes += $parsedVotes
+        }
+    }
+
+    $result = @()
+    foreach ($f in $Findings) {
+        $fCopy = $f | Select-Object -Property *
+        if ([string]$f.state -eq 'rejected_grounding') {
+            $resolved = Resolve-AuditFindingVerdict -Finding $f -Votes @() -MinValidVotes $MinValidVotes
+            $fCopy | Add-Member -NotePropertyName 'verdict' -NotePropertyValue $resolved.verdict -Force
+            $fCopy | Add-Member -NotePropertyName 'quorum' -NotePropertyValue @{
+                valid_count        = 0
+                refute_count       = 0
+                support_count      = 0
+                skeptics_requested = 0
+                votes_received     = 0
+            } -Force
+            $result += $fCopy
+            continue
+        }
+
+        $votesForF = @($allVotes | Where-Object { [string]$_.finding_id -eq [string]$f.finding_id })
+        $resolved = Resolve-AuditFindingVerdict -Finding $f -Votes $votesForF -MinValidVotes $MinValidVotes
+        $validVotes = @($votesForF | Where-Object { (Test-AuditSkepticSchema -Obj $_).valid })
+        $refuteCount = @($validVotes | Where-Object { [string]$_.vote -eq 'refute' }).Count
+        $supportCount = @($validVotes | Where-Object { [string]$_.vote -eq 'support' }).Count
+
+        $fCopy | Add-Member -NotePropertyName 'verdict' -NotePropertyValue $resolved.verdict -Force
+        $fCopy | Add-Member -NotePropertyName 'quorum' -NotePropertyValue @{
+            valid_count        = @($validVotes).Count
+            refute_count       = $refuteCount
+            support_count      = $supportCount
+            skeptics_requested = if ([string]$f.state -eq 'grounded') { $SkepticsPerFinding } else { 0 }
+            votes_received     = @($votesForF).Count
+        } -Force
+        $result += $fCopy
+    }
+
+    Write-Output -NoEnumerate $result
+}
+
+function Get-AuditVerifySummary {
+    param([Parameter(Mandatory=$true)][object[]]$Findings)
+    return @{
+        confirmed          = @($Findings | Where-Object { $_.verdict -eq 'confirmed' }).Count
+        refuted            = @($Findings | Where-Object { $_.verdict -eq 'refuted' }).Count
+        unverified         = @($Findings | Where-Object { $_.verdict -eq 'unverified' }).Count
+        rejected_grounding = @($Findings | Where-Object { $_.verdict -eq 'rejected_grounding' }).Count
+    }
+}
