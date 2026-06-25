@@ -352,15 +352,15 @@ function Test-AuditFinderSchema {
     }
 
     $lineVal = $Obj.line
-    $lineD = 0.0
-    $okLine = [double]::TryParse([string]$lineVal, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$lineD)
-    if (-not ($okLine -and $lineD -ge 1 -and $lineD -eq [math]::Floor($lineD))) {
+    $lineInt = 0
+    $okLine = [int]::TryParse([string]$lineVal, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$lineInt)
+    if (-not ($okLine -and $lineInt -ge 1)) {
         return [pscustomobject]@{ valid=$false; missing=@(); reason="line must be a positive integer" }
     }
 
     $confVal = $Obj.confidence
     $confD = 0.0
-    $okConf = [double]::TryParse([string]$confVal, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$confD)
+    $okConf = [double]::TryParse([string]$confVal, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$confD)
     if (-not ($okConf -and $confD -ge 0 -and $confD -le 1)) {
         return [pscustomobject]@{ valid=$false; missing=@(); reason="confidence must be 0..1" }
     }
@@ -373,71 +373,68 @@ function ConvertFrom-AuditFinderOutput {
         [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Text
     )
 
-    # Find first '{' or '[' and try to extract and parse JSON
-    $startBrace = $Text.IndexOf('{')
-    $startBracket = $Text.IndexOf('[')
-
-    $startIdx = -1
-    $isArray = $false
-
-    if ($startBrace -ge 0 -and ($startBracket -lt 0 -or $startBrace -le $startBracket)) {
-        $startIdx = $startBrace
-        $isArray = $false
-    } elseif ($startBracket -ge 0) {
-        $startIdx = $startBracket
-        $isArray = $true
-    }
-
-    if ($startIdx -lt 0) {
-        return @()
-    }
-
-    # Find matching closing bracket by depth counting
-    $openChar = if ($isArray) { '[' } else { '{' }
-    $closeChar = if ($isArray) { ']' } else { '}' }
-    $depth = 0
-    $endIdx = -1
-    $inString = $false
-    $escape = $false
-
-    for ($i = $startIdx; $i -lt $Text.Length; $i++) {
-        $ch = $Text[$i]
-        if ($escape) { $escape = $false; continue }
-        if ($ch -eq '\' -and $inString) { $escape = $true; continue }
-        if ($ch -eq '"') { $inString = -not $inString; continue }
-        if ($inString) { continue }
-        if ($ch -eq $openChar) { $depth++ }
-        elseif ($ch -eq $closeChar) {
-            $depth--
-            if ($depth -eq 0) { $endIdx = $i; break }
+    # Collect all candidate start positions for '{' and '['; try each in order
+    $candidates = [System.Collections.Generic.List[int]]::new()
+    for ($ci = 0; $ci -lt $Text.Length; $ci++) {
+        $ch = $Text[$ci]
+        if ($ch -eq '{' -or $ch -eq '[') {
+            $candidates.Add($ci)
         }
     }
 
-    if ($endIdx -lt 0) {
+    if ($candidates.Count -eq 0) {
         return @()
     }
 
-    $jsonStr = $Text.Substring($startIdx, $endIdx - $startIdx + 1)
+    foreach ($startIdx in $candidates) {
+        $isArray = ($Text[$startIdx] -eq '[')
+        $openChar = if ($isArray) { '[' } else { '{' }
+        $closeChar = if ($isArray) { ']' } else { '}' }
+        $depth = 0
+        $endIdx = -1
+        $inString = $false
+        $escape = $false
 
-    try {
-        $parsed = $jsonStr | ConvertFrom-Json
-    } catch {
-        return @()
-    }
-
-    # Wrap single object in array
-    if ($parsed -isnot [System.Array]) {
-        $parsed = @($parsed)
-    }
-
-    $valid = @()
-    foreach ($item in $parsed) {
-        $check = Test-AuditFinderSchema -Obj $item
-        if ($check.valid) {
-            $valid += $item
+        for ($i = $startIdx; $i -lt $Text.Length; $i++) {
+            $ch = $Text[$i]
+            if ($escape) { $escape = $false; continue }
+            if ($ch -eq '\' -and $inString) { $escape = $true; continue }
+            if ($ch -eq '"') { $inString = -not $inString; continue }
+            if ($inString) { continue }
+            if ($ch -eq $openChar) { $depth++ }
+            elseif ($ch -eq $closeChar) {
+                $depth--
+                if ($depth -eq 0) { $endIdx = $i; break }
+            }
         }
+
+        if ($endIdx -lt 0) { continue }
+
+        $jsonStr = $Text.Substring($startIdx, $endIdx - $startIdx + 1)
+        $parsed = $null
+        try {
+            $parsed = $jsonStr | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            continue
+        }
+
+        # Normalize to array
+        if ($parsed -isnot [System.Array]) {
+            $parsed = @($parsed)
+        }
+
+        $valid = @()
+        foreach ($item in $parsed) {
+            $check = Test-AuditFinderSchema -Obj $item
+            if ($check.valid) {
+                $valid += $item
+            }
+        }
+        Write-Output -NoEnumerate $valid
+        return
     }
-    Write-Output -NoEnumerate $valid
+
+    return @()
 }
 
 function Test-AuditFindingGrounded {

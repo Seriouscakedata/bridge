@@ -33,7 +33,7 @@ $atom2 = Build-AuditFixAtom -Finding $f2 -RunId 'test-run-01'
 Assert-True ($atom2.text -match 'security') "B5: Build-AuditFixAtom text contains 'security'"
 Assert-True ($atom1.text -notmatch '^Fix \[\]') 'B6: atom text does not have empty brackets []'
 
-# --- PART C ---
+# --- PART C: numeric validation (line + confidence) ---
 $baseF = [pscustomobject]@{
     root_cause='rc'; file='src/foo.ps1'; line=42; evidence_snippet='ev'; severity='high'
     why='w'; fix_sketch='f'; confidence=0.8; dimension='correctness'; agent_id='test'
@@ -47,13 +47,27 @@ function Make-Finding {
     return $f
 }
 
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 3000000000)).valid -eq $true) 'C1: line=3000000000 (Int64) -> valid'
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 5.0)).valid -eq $true) 'C2: line=5.0 -> valid'
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding '42')).valid -eq $true) "C3: line='42' (string) -> valid"
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 1 '0.9')).valid -eq $true) "C4: confidence='0.9' (string) -> valid"
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 'abc')).valid -eq $false) "C5: line='abc' -> invalid"
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 5.5)).valid -eq $false) 'C6: line=5.5 -> invalid'
-Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 0)).valid -eq $false) 'C7: line=0 -> invalid'
+# line: out-of-Int32 is now INVALID (consistent with grounding gate)
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 3000000000)).valid -eq $false)  'C1: line=3000000000 (out of Int32) -> INVALID'
+# line: decimal string '5.0' is INVALID (Integer style rejects decimal point)
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding '5.0')).valid -eq $false)       "C2: line='5.0' (decimal string) -> INVALID"
+# line: valid integer cases
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding '42')).valid -eq $true)         "C3: line='42' (string) -> valid"
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 42)).valid -eq $true)           'C3b: line=42 (int) -> valid'
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 1)).valid -eq $true)            'C3c: line=1 -> valid'
+# line: thousands-separator and exponent are now INVALID
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding '1,234')).valid -eq $false)     "C3d: line='1,234' (thousands-sep) -> INVALID"
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding '1e3')).valid -eq $false)       "C3e: line='1e3' (exponent) -> INVALID"
+# confidence: valid cases
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 1 '0.9')).valid -eq $true)      "C4: confidence='0.9' (string) -> valid"
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 1 0.9)).valid -eq $true)        'C4b: confidence=0.9 (float) -> valid'
+# confidence: thousands-separator and NaN are now INVALID
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 1 '1,000')).valid -eq $false)   "C4c: confidence='1,000' (thousands-sep) -> INVALID"
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 1 'NaN')).valid -eq $false)     "C4d: confidence='NaN' -> INVALID"
+# unchanged cases
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 'abc')).valid -eq $false)       "C5: line='abc' -> INVALID"
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 5.5)).valid -eq $false)         'C6: line=5.5 -> INVALID'
+Assert-True ((Test-AuditFinderSchema -Obj (Make-Finding 0)).valid -eq $false)           'C7: line=0 -> INVALID'
 
 $batch = @(
     (Make-Finding 3000000000),
@@ -71,7 +85,7 @@ try {
     $batchThrew = $true
 }
 Assert-True (-not $batchThrew) 'C8: batch filter does not throw'
-Assert-True ($batchValid.Count -eq 2) 'C9: batch filter keeps 2 valid findings'
+Assert-True ($batchValid.Count -eq 1) 'C9: batch filter keeps 1 valid finding (3000000000 now INVALID)'
 
 # --- PART E ---
 $tempRoot = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "test-hardening-$([System.Guid]::NewGuid().ToString('N').Substring(0,8))")
@@ -91,6 +105,19 @@ if ($groundedArr.Count -gt 0) {
     Assert-True ($groundedArr[0].severity -eq 'critical') "E2: severity normalized from 'Critical' to 'critical'"
 }
 Remove-Item -Recurse -Force $tempRoot -ErrorAction SilentlyContinue
+
+# --- PART D: ConvertFrom-AuditFinderOutput scan (#5) ---
+$validFindingJson = '{"root_cause":"test rc","file":"src/foo.ps1","line":1,"evidence_snippet":"ev","severity":"high","why":"test why","fix_sketch":"fix it","confidence":0.8,"dimension":"correctness","agent_id":"test-agent"}'
+
+# D1: stray '{ a = 1 }' (not valid JSON — keys unquoted) precedes valid finding object
+$textD1 = "Reasoning: { a = 1 } extra brace. Real finding: $validFindingJson"
+$d1 = @(ConvertFrom-AuditFinderOutput -Text $textD1)
+Assert-True ($d1.Count -eq 1) 'D1: stray-brace before valid object -> returns 1 finding'
+
+# D2: prose '[x]' (not valid JSON — x is not a JSON value) precedes valid finding array
+$textD2 = "Consider [x] in context. Results: [$validFindingJson]"
+$d2 = @(ConvertFrom-AuditFinderOutput -Text $textD2)
+Assert-True ($d2.Count -eq 1) 'D2: stray-bracket before valid array -> recovers 1 finding'
 
 Write-Host ""
 Write-Host "Results: $pass passed, $fail failed"
