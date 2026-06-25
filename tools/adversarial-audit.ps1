@@ -51,7 +51,7 @@ function Test-AuditSkepticSchema {
 function Resolve-AuditFindingVerdict {
     param(
         [Parameter(Mandatory=$true)][object]$Finding,
-        [Parameter(Mandatory=$true)][object[]]$Votes,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][object[]]$Votes,
         [int]$MinValidVotes = 2
     )
 
@@ -581,7 +581,7 @@ function Invoke-AuditVerifyStage {
         $result += $fCopy
     }
 
-    Write-Output -NoEnumerate $result
+    $result
 }
 
 function Get-AuditVerifySummary {
