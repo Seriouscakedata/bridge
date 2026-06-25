@@ -240,9 +240,12 @@ function New-AuditCliJobSpec {
 
     if ($Provider -eq 'codex') {
         $filePath = 'codex'
-        $argList = @('exec', '--color', 'never', '-s', 'read-only', '-C', $SnapshotRoot, '-o', $ResultPath, '-')
+        # Resolve the real codex.exe the bridge uses (bare 'codex' is not on PATH); fall back to bare name if unavailable (keeps unit tests green without codex installed).
+        try { if (Get-Command Resolve-CodexExe -ErrorAction SilentlyContinue) { $resolved = Resolve-CodexExe (Get-BridgeConfig); if ($resolved) { $filePath = $resolved } } } catch {}
+        $argList = @('exec', '--color', 'never', '-s', 'read-only', '--skip-git-repo-check', '-C', $SnapshotRoot, '-o', $ResultPath, '-')
     } else {
         $filePath = 'claude'
+        try { if (Get-Command Resolve-ClaudeExe -ErrorAction SilentlyContinue) { $resolved = Resolve-ClaudeExe (Get-BridgeConfig); if ($resolved) { $filePath = $resolved } } } catch {}
         $argList = @('-p', '--add-dir', $SnapshotRoot, '--allowedTools', 'Read,Grep,Glob', '--model', $Model)
     }
 
@@ -767,7 +770,7 @@ function Invoke-AuditFindStage {
         }
 
         if ($jobRecords.Count -gt 0) {
-            Wait-ReadOnlyAuditPoolDrain
+            Wait-ReadOnlyAuditPoolDrain -TimeoutSec 300
         }
 
         $_findTl   = Get-ReadOnlyAuditPoolTimeline
@@ -913,7 +916,7 @@ function Invoke-AuditVerifyStage {
         }
 
         if ($jobRecords.Count -gt 0) {
-            Wait-ReadOnlyAuditPoolDrain
+            Wait-ReadOnlyAuditPoolDrain -TimeoutSec 300
         }
 
         $_verifyTl    = Get-ReadOnlyAuditPoolTimeline
@@ -932,7 +935,26 @@ function Invoke-AuditVerifyStage {
             $parsedVotes = $null
             try {
                 if (-not [string]::IsNullOrWhiteSpace($stdout)) {
-                    $parsedVotes = $stdout | ConvertFrom-Json -ErrorAction Stop
+                    # Real CLI agents wrap the JSON vote in ```json fences / taskkill prose ("SUCCESS: ... terminated").
+                    # The finder parser projects onto finder fields (dropping vote/finding_id/reason), so extract the
+                    # first balanced {...} object and ConvertFrom-Json it RAW to preserve the vote fields.
+                    $vStart = $stdout.IndexOf('{')
+                    while ($vStart -ge 0 -and $null -eq $parsedVotes) {
+                        $vDepth = 0
+                        for ($vi = $vStart; $vi -lt $stdout.Length; $vi++) {
+                            $vc = $stdout[$vi]
+                            if ($vc -eq '{') { $vDepth++ }
+                            elseif ($vc -eq '}') {
+                                $vDepth--
+                                if ($vDepth -eq 0) {
+                                    $vCand = $stdout.Substring($vStart, $vi - $vStart + 1)
+                                    try { $parsedVotes = @(($vCand | ConvertFrom-Json -ErrorAction Stop)) } catch { $parsedVotes = $null }
+                                    break
+                                }
+                            }
+                        }
+                        if ($null -eq $parsedVotes) { $vStart = $stdout.IndexOf('{', $vStart + 1) }
+                    }
                 }
             } catch {
                 $parsedVotes = $null
