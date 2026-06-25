@@ -75,6 +75,9 @@ function Invoke-AuditFileConfirmed {
 
     foreach ($finding in $ConfirmedFindings) {
         if ($null -eq $finding) { continue }
+        if ([string]$finding.verdict -ne 'confirmed') {
+            throw "POLICY VIOLATION: Invoke-AuditFileConfirmed accepts only verdict=confirmed findings. Use Invoke-AuditSynthesize.confirmed_deduped."
+        }
         $fp = Get-AuditFindingFingerprint -Finding $finding
         if ($fpSet.Contains($fp)) {
             [void]$skipped.Add($finding)
@@ -84,10 +87,16 @@ function Invoke-AuditFileConfirmed {
         if ($null -ne $Filer) {
             & $Filer $atom
         } else {
-            if (Get-Command Add-Idea -ErrorAction SilentlyContinue) {
-                [void](Add-Idea -Text $atom.text -Tags $atom.tags -From 'adversarial-audit' -SkipCurator)
+            if (-not (Get-Command Add-Idea -ErrorAction SilentlyContinue)) {
+                throw "Add-Idea is unavailable; cannot file confirmed audit finding."
             }
+            $ideaId = Add-Idea -Text $atom.text -Tags $atom.tags -From 'adversarial-audit' -SkipCurator
+            if ([string]::IsNullOrWhiteSpace([string]$ideaId)) {
+                throw "Add-Idea returned an empty id; confirmed audit finding was not filed."
+            }
+            $atom | Add-Member -NotePropertyName backlog_id -NotePropertyValue ([string]$ideaId) -Force
         }
+        [void]$fpSet.Add($fp)
         [void]$filed.Add($atom)
     }
 

@@ -30,6 +30,18 @@ function Assert-True {
     }
 }
 
+function Assert-Throws {
+    param([string]$Label, [scriptblock]$Body)
+    try {
+        & $Body
+        Write-Host "FAIL: $Label -- expected exception"
+        $script:fail++
+    } catch {
+        Write-Host "PASS: $Label"
+        $script:pass++
+    }
+}
+
 # --- Build 2 confirmed findings with distinct fingerprints ---
 $f1 = [pscustomobject]@{
     verdict          = 'confirmed'
@@ -82,6 +94,22 @@ $atom = Build-AuditFixAtom -Finding $fDriver -RunId 'run-cp-test'
 Assert-True  'cp: requires_admission=$true'   ([bool]$atom.requires_admission)
 Assert-True  'cp: tags contains operator'     (($atom.tags -contains 'operator'))
 Assert-True  'cp: tags contains audit'        (($atom.tags -contains 'audit'))
+
+# Test 4: Unconfirmed finding cannot be filed through the confirmed-only gate
+$fUnverified = [pscustomobject]@{
+    verdict          = 'unverified'
+    file             = 'lib/not-confirmed.ps1'
+    line             = 7
+    category         = 'candidate-only'
+    evidence_snippet = 'maybe risky'
+    severity         = 'low'
+}
+$filedAtoms3 = [System.Collections.Generic.List[object]]::new()
+$fakeFiler3 = { param($atom) [void]$script:filedAtoms3.Add($atom) }
+Assert-Throws 'policy: unconfirmed finding rejected' {
+    Invoke-AuditFileConfirmed -ConfirmedFindings @($fUnverified) -RunId 'run-unconfirmed-test' -Filer $fakeFiler3 | Out-Null
+}
+Assert-Equal 'policy: unconfirmed not filed' $filedAtoms3.Count 0
 
 Write-Host ""
 Write-Host "Results: $pass PASS, $fail FAIL"
