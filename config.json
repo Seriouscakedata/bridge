@@ -249,7 +249,7 @@
                      "maxChunksPerTask":  10
                  },
     "parallel":  {
-                     "enabled":  true,
+                     "enabled":  false,
                      "maxStreams":  20,
                      "claudeCoderModel":  "sonnet",
                      "drainingTimeoutSec":  30,
