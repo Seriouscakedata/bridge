@@ -26,7 +26,7 @@ Write-Host "PASS codex-spec"
 $spec2 = New-AuditCliJobSpec -Provider 'claude' -SnapshotRoot $snap -Prompt $prompt
 Assert-True -Condition ($spec2.filePath -eq 'claude') -Message "FAIL: filePath not claude"
 Assert-True -Condition ($spec2.inputText -eq $prompt) -Message "FAIL: claude inputText mismatch"
-Assert-True -Condition ($spec2.argumentList -notcontains '-p') -Message "FAIL: claude prompt must stay in inputText, not -p"
+Assert-True -Condition ($spec2.argumentList -contains '-p') -Message "FAIL: claude argumentList must contain -p for print mode"
 $idxAT = [Array]::IndexOf([string[]]$spec2.argumentList, '--allowedTools')
 Assert-True -Condition ($idxAT -ge 0 -and $spec2.argumentList[$idxAT + 1] -eq 'Read,Grep,Glob') -Message "FAIL: --allowedTools missing"
 Write-Host "PASS claude-spec"
