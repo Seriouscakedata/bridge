@@ -635,6 +635,169 @@ function Build-AuditSkepticJobSpec {
     }
 }
 
+function Build-AuditFinderJobSpec {
+    param(
+        [Parameter(Mandatory=$true)][string]$Dimension,
+        [Parameter(Mandatory=$true)][object]$Perspective,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot,
+        [Parameter(Mandatory=$true)][string]$Provider,
+        [Parameter(Mandatory=$true)][int]$Index
+    )
+
+    if ($Provider -notin @('claude','codex')) {
+        throw "Invalid provider '$Provider'. Must be 'claude' or 'codex'."
+    }
+
+    $agentId = "$Provider-$Dimension-$Index"
+
+    $perspectiveHint = ''
+    if ($null -ne $Perspective) {
+        $parts = [System.Collections.Generic.List[string]]::new()
+        if ($Perspective.PSObject.Properties['model'] -and $Perspective.model) { [void]$parts.Add("model=$($Perspective.model)") }
+        if ($Perspective.PSObject.Properties['tier'] -and $Perspective.tier) { [void]$parts.Add("tier=$($Perspective.tier)") }
+        if ($parts.Count -gt 0) { $perspectiveHint = " (perspective: $($parts -join ', '))" }
+    }
+
+    $prompt = "You are a security and quality auditor. Audit ALL code files under the snapshot directory for the dimension: $Dimension$perspectiveHint.`n`nReturn STRICT JSON only - no markdown, no extra text before or after - a JSON ARRAY of finding objects. Each object MUST have EXACTLY these fields:`n- root_cause: string`n- file: string (path relative to snapshot root)`n- line: positive integer`n- evidence_snippet: string (short exact substring of the cited line)`n- severity: one of critical/high/medium/low/info`n- why: string`n- fix_sketch: string`n- confidence: number 0..1`n- dimension: `"$Dimension`"`n- agent_id: `"$agentId`"`n`nIf no findings, return: []"
+
+    return [pscustomobject]@{
+        dimension     = $Dimension
+        provider      = $Provider
+        index         = $Index
+        agent_id      = $agentId
+        prompt        = $prompt
+        snapshot_root = $SnapshotRoot
+    }
+}
+
+function Invoke-AuditFindStage {
+    param(
+        [Parameter(Mandatory=$true)][object]$Matrix,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot,
+        [int]$MaxFinders = 24,
+        [scriptblock]$JobRunner = $null
+    )
+
+    $matrixCells = @($Matrix)
+    $jobSpecs = [System.Collections.Generic.List[object]]::new()
+    $idx = 0
+    $capped = $false
+    foreach ($cell in $matrixCells) {
+        if ($jobSpecs.Count -ge $MaxFinders) {
+            $capped = $true
+            break
+        }
+        $provider = if ($idx % 2 -eq 0) { 'claude' } else { 'codex' }
+        $spec = Build-AuditFinderJobSpec -Dimension ([string]$cell.dimension) -Perspective $cell -SnapshotRoot $SnapshotRoot -Provider $provider -Index $idx
+        [void]$jobSpecs.Add($spec)
+        $idx++
+    }
+    if ($capped) {
+        Write-Warning "FIND stage: matrix has $($matrixCells.Count) cells but capped at $MaxFinders finders"
+    }
+
+    $specsArr = $jobSpecs.ToArray()
+    $outputs = [System.Collections.Generic.List[string]]::new()
+
+    if ($null -ne $JobRunner) {
+        $raw = & $JobRunner $specsArr
+        if ($null -ne $raw) {
+            foreach ($item in @($raw)) { [void]$outputs.Add([string]$item) }
+        }
+    } else {
+        if (-not (Get-Command -Name Start-ReadOnlyAuditJob -ErrorAction SilentlyContinue) -or
+            -not (Get-Command -Name Wait-ReadOnlyAuditPoolDrain -ErrorAction SilentlyContinue)) {
+            $parallelPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\lib\parallel.ps1'))
+            if (-not (Test-Path -LiteralPath $parallelPath -PathType Leaf)) {
+                throw "Missing lib/parallel.ps1 at $parallelPath"
+            }
+            . $parallelPath
+        }
+
+        $jobRecords = [System.Collections.Generic.List[object]]::new()
+        foreach ($spec in $specsArr) {
+            $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ("audit-finder-" + [guid]::NewGuid().ToString('N') + '.json')
+            $cliSpec = New-AuditCliJobSpec -Provider $spec.provider -SnapshotRoot $spec.snapshot_root -Prompt $spec.prompt -ResultPath $resultPath
+            $record = Start-ReadOnlyAuditJob `
+                -FilePath $cliSpec.filePath `
+                -ArgumentList $cliSpec.argumentList `
+                -WorkingDirectory $spec.snapshot_root `
+                -InputText $cliSpec.inputText `
+                -Metadata @{
+                    provider    = $spec.provider
+                    dimension   = $spec.dimension
+                    agent_id    = $spec.agent_id
+                    result_path = $resultPath
+                }
+            [void]$jobRecords.Add($record)
+        }
+
+        if ($jobRecords.Count -gt 0) {
+            Wait-ReadOnlyAuditPoolDrain
+        }
+
+        foreach ($record in $jobRecords) {
+            [void]$outputs.Add((Read-AuditJobOutput -Record $record))
+        }
+    }
+
+    $allFindings = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $specsArr.Count; $i++) {
+        $spec = $specsArr[$i]
+        $outputText = if ($i -lt $outputs.Count) { $outputs[$i] } else { '' }
+
+        # Raw JSON parse without schema filter (stamp happens here; orchestrator schema-filters after)
+        $candidates = [System.Collections.Generic.List[int]]::new()
+        for ($ci = 0; $ci -lt $outputText.Length; $ci++) {
+            $ch = $outputText[$ci]
+            if ($ch -eq '[' -or $ch -eq '{') { $candidates.Add($ci) }
+        }
+        $parsedItems = $null
+        foreach ($startIdx in $candidates) {
+            $isArr = ($outputText[$startIdx] -eq '[')
+            $openCh = if ($isArr) { '[' } else { '{' }
+            $closeCh = if ($isArr) { ']' } else { '}' }
+            $depth = 0; $endIdx = -1; $inStr = $false; $esc = $false
+            for ($j = $startIdx; $j -lt $outputText.Length; $j++) {
+                $ch2 = $outputText[$j]
+                if ($esc) { $esc = $false; continue }
+                if ($ch2 -eq '\' -and $inStr) { $esc = $true; continue }
+                if ($ch2 -eq '"') { $inStr = -not $inStr; continue }
+                if ($inStr) { continue }
+                if ($ch2 -eq $openCh) { $depth++ }
+                elseif ($ch2 -eq $closeCh) { $depth--; if ($depth -eq 0) { $endIdx = $j; break } }
+            }
+            if ($endIdx -lt 0) { continue }
+            $jsonStr2 = $outputText.Substring($startIdx, $endIdx - $startIdx + 1)
+            try {
+                $p = $jsonStr2 | ConvertFrom-Json -ErrorAction Stop
+                $parsedItems = if ($p -is [System.Array]) { $p } else { @($p) }
+                break
+            } catch { continue }
+        }
+
+        if ($null -ne $parsedItems) {
+            foreach ($finding in $parsedItems) {
+                if ($null -eq $finding) { continue }
+                $dimProp = $finding.PSObject.Properties['dimension']
+                if ($null -eq $dimProp -or [string]::IsNullOrWhiteSpace([string]$dimProp.Value)) {
+                    $finding | Add-Member -NotePropertyName 'dimension' -NotePropertyValue $spec.dimension -Force
+                }
+                $aidProp = $finding.PSObject.Properties['agent_id']
+                if ($null -eq $aidProp -or [string]::IsNullOrWhiteSpace([string]$aidProp.Value)) {
+                    $finding | Add-Member -NotePropertyName 'agent_id' -NotePropertyValue $spec.agent_id -Force
+                }
+                [void]$allFindings.Add($finding)
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        findings    = $allFindings.ToArray()
+        finder_jobs = $specsArr.Count
+    }
+}
+
 function Invoke-AuditVerifyStage {
     param(
         [Parameter(Mandatory=$true)][object[]]$Findings,
@@ -926,6 +1089,8 @@ function Invoke-AdversarialAudit {
         [int]$SkepticsPerFinding = 3,
         [int]$MinValidVotes = 2,
         [scriptblock]$FindRunner = $null,
+        [scriptblock]$FindJobRunner = $null,
+        [int]$MaxFinders = 24,
         [scriptblock]$VoteCollector = $null,
         [scriptblock]$Filer = $null,
         [string[]]$ExistingFingerprints = @(),
@@ -941,9 +1106,14 @@ function Invoke-AdversarialAudit {
     # c. FIND stage
     $rawFindings = @()
     $schemaRejected = 0
+    $finderJobsCount = 0
 
     if ($null -ne $FindRunner) {
         $rawFindings = @(& $FindRunner $matrix $SnapshotRoot)
+    } else {
+        $_findResult = Invoke-AuditFindStage -Matrix $matrix -SnapshotRoot $SnapshotRoot -MaxFinders $MaxFinders -JobRunner $FindJobRunner
+        $rawFindings = @($_findResult.findings)
+        $finderJobsCount = [int]$_findResult.finder_jobs
     }
 
     $validatedFindings = @($rawFindings | Where-Object {
@@ -1004,6 +1174,7 @@ function Invoke-AdversarialAudit {
         mode             = (Get-AuditMode $Trigger)
         phases           = [pscustomobject]@{
             find_raw           = $rawFindings.Count
+            finder_jobs        = $finderJobsCount
             schema_rejected    = $schemaRejected
             grounded           = (@($grounded | Where-Object { $_.state -eq 'grounded' }).Count)
             rejected_grounding = (@($grounded | Where-Object { $_.state -eq 'rejected_grounding' }).Count)
