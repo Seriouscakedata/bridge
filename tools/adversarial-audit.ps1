@@ -20,6 +20,22 @@ function Get-AuditFindingFingerprint {
     return Get-AuditFindingStructuralKey -Finding $Finding
 }
 
+function Get-AuditFindingDimensionPart {
+    param([Parameter(Mandatory=$true)][object]$Finding)
+
+    $dimProp = $Finding.PSObject.Properties['dimension']
+    if ($null -ne $dimProp -and -not [string]::IsNullOrWhiteSpace([string]$dimProp.Value)) {
+        return [string]$dimProp.Value
+    }
+
+    $catProp = $Finding.PSObject.Properties['category']
+    if ($null -ne $catProp -and -not [string]::IsNullOrWhiteSpace([string]$catProp.Value)) {
+        return [string]$catProp.Value
+    }
+
+    return ''
+}
+
 function Build-AuditFixAtom {
     param(
         [Parameter(Mandatory=$true)][object]$Finding,
@@ -28,7 +44,7 @@ function Build-AuditFixAtom {
 
     $fp       = Get-AuditFindingFingerprint -Finding $Finding
     $filePath = [string]$Finding.file
-    $category = [string]$Finding.category
+    $category = Get-AuditFindingDimensionPart -Finding $Finding
     $evidence = [string]$Finding.evidence_snippet
     $line     = [string]$Finding.line
     $sev      = [string]$Finding.severity
@@ -336,19 +352,16 @@ function Test-AuditFinderSchema {
     }
 
     $lineVal = $Obj.line
-    if (-not ($lineVal -is [int] -or $lineVal -is [long] -or $lineVal -is [double])) {
-        return [pscustomobject]@{ valid=$false; missing=@(); reason="line must be a number" }
-    }
-    if ([int]$lineVal -lt 1) {
+    $lineD = 0.0
+    $okLine = [double]::TryParse([string]$lineVal, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$lineD)
+    if (-not ($okLine -and $lineD -ge 1 -and $lineD -eq [math]::Floor($lineD))) {
         return [pscustomobject]@{ valid=$false; missing=@(); reason="line must be a positive integer" }
     }
 
     $confVal = $Obj.confidence
-    if (-not ($confVal -is [decimal] -or $confVal -is [double] -or $confVal -is [int])) {
-        return [pscustomobject]@{ valid=$false; missing=@(); reason="confidence must be a number" }
-    }
-    $confNum = [double]$confVal
-    if ($confNum -lt 0 -or $confNum -gt 1) {
+    $confD = 0.0
+    $okConf = [double]::TryParse([string]$confVal, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$confD)
+    if (-not ($okConf -and $confD -ge 0 -and $confD -le 1)) {
         return [pscustomobject]@{ valid=$false; missing=@(); reason="confidence must be 0..1" }
     }
 
@@ -525,6 +538,8 @@ function Invoke-AuditGroundingGate {
         if ([string]::IsNullOrWhiteSpace($existFid)) {
             $fCopy | Add-Member -NotePropertyName 'finding_id' -NotePropertyValue (Get-AuditFindingId -Finding $f) -Force
         }
+        $rawSev = ([string]$fCopy.severity).Trim().ToLower()
+        $fCopy | Add-Member -NotePropertyName 'severity' -NotePropertyValue $rawSev -Force
         $result += $fCopy
     }
     Write-Output -NoEnumerate $result
@@ -726,7 +741,7 @@ function Get-AuditFindingStructuralKey {
     param([Parameter(Mandatory=$true)][object]$Finding)
 
     $filePart = ([string]$Finding.file).ToLower()
-    $catPart  = [string]$Finding.category
+    $catPart  = Get-AuditFindingDimensionPart -Finding $Finding
 
     $raw = ([string]$Finding.evidence_snippet).Trim().ToLower()
     $normalized = [System.Text.RegularExpressions.Regex]::Replace($raw, '\s+', ' ')
@@ -804,7 +819,8 @@ function Invoke-AuditSynthesize {
     [void]$mdLines.Add("## Confirmed Findings (deduped)")
     [void]$mdLines.Add("")
     foreach ($f in $confirmedDeduped) {
-        [void]$mdLines.Add("### $($f.category) — $($f.file):$($f.line)")
+        $fCat = Get-AuditFindingDimensionPart -Finding $f
+        [void]$mdLines.Add("### $fCat — $($f.file):$($f.line)")
         [void]$mdLines.Add("- **Severity:** $($f.severity)")
         [void]$mdLines.Add("- **Evidence:** $($f.evidence_snippet)")
         [void]$mdLines.Add("")
@@ -895,7 +911,10 @@ function Invoke-AdversarialAudit {
         $rawFindings = @(& $FindRunner $matrix $SnapshotRoot)
     }
 
-    $validatedFindings = @($rawFindings | Where-Object { (Test-AuditFinderSchema -Obj $_).valid })
+    $validatedFindings = @($rawFindings | Where-Object {
+        $item = $_
+        try { (Test-AuditFinderSchema -Obj $item).valid } catch { $false }
+    })
     $schemaRejected = $rawFindings.Count - $validatedFindings.Count
 
     # d. GROUNDING stage — direct capture (NOT @()), Invoke-AuditGroundingGate uses Write-Output -NoEnumerate
