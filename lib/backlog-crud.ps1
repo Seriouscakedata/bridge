@@ -482,19 +482,28 @@ function Set-Idea {
 function Remove-Idea {
   param([string]$Id)
   if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
-  $items = @(Get-Backlog)
-  $found = $false
-  foreach ($i in $items) {
-    if ([string]$i.id -ne $Id) { continue }
-    $i | Add-Member -NotePropertyName status -NotePropertyValue 'rejected' -Force
-    $i | Add-Member -NotePropertyName rejected_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-    Ensure-BacklogCrudRejectedExtractableSeed -Item $i -Reason $null
-    $found = $true
-    break
-  }
-  if (-not $found) { return $false }
-  Save-Backlog $items
-  return $true
+  # H2 FIX mirror (2026-06-26 audit finding): the read-modify-write was NOT transactional --
+  # Get-Backlog (read) and Save-Backlog (write) each took the lock independently, so a concurrent
+  # Set-Idea / curator / packer / HTTP /api/backlog/delete landing between them caused a LOST UPDATE.
+  # Set-Idea was fixed for this; Remove-Idea was missed. Hold the lock across the WHOLE RMW
+  # (named mutex is re-entrant, so the nested Save-Backlog lock is safe).
+  $getBacklogFn = ${function:Get-Backlog}
+  $saveBacklogFn = ${function:Save-Backlog}
+  return (Invoke-BacklogLocked ({
+    $items = @(& $getBacklogFn)
+    $found = $false
+    foreach ($i in $items) {
+      if ([string]$i.id -ne $Id) { continue }
+      $i | Add-Member -NotePropertyName status -NotePropertyValue 'rejected' -Force
+      $i | Add-Member -NotePropertyName rejected_at -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+      Ensure-BacklogCrudRejectedExtractableSeed -Item $i -Reason $null
+      $found = $true
+      break
+    }
+    if (-not $found) { return $false }
+    & $saveBacklogFn $items
+    return $true
+  }.GetNewClosure()))
 }
 
 function Set-BacklogObjectProperty {
