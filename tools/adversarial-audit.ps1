@@ -521,6 +521,10 @@ function Invoke-AuditGroundingGate {
         $stateVal = if ($check.grounded) { 'grounded' } else { 'rejected_grounding' }
         $fCopy | Add-Member -NotePropertyName 'state' -NotePropertyValue $stateVal -Force
         $fCopy | Add-Member -NotePropertyName 'grounding_reason' -NotePropertyValue $check.reason -Force
+        $existFid = try { [string]$fCopy.finding_id } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($existFid)) {
+            $fCopy | Add-Member -NotePropertyName 'finding_id' -NotePropertyValue (Get-AuditFindingId -Finding $f) -Force
+        }
         $result += $fCopy
     }
     Write-Output -NoEnumerate $result
@@ -574,6 +578,10 @@ function Invoke-AuditVerifyStage {
 
     $allJobSpecs = @()
     foreach ($finding in $Findings) {
+        $existId = try { [string]$finding.finding_id } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($existId)) {
+            $finding | Add-Member -NotePropertyName 'finding_id' -NotePropertyValue (Get-AuditFindingId -Finding $finding) -Force
+        }
         if ([string]$finding.state -ne 'grounded') {
             continue
         }
@@ -674,7 +682,7 @@ function Invoke-AuditVerifyStage {
 
         $votesForF = @($allVotes | Where-Object { [string]$_.finding_id -eq [string]$f.finding_id })
         $resolved = Resolve-AuditFindingVerdict -Finding $f -Votes $votesForF -MinValidVotes $MinValidVotes
-        $validVotes = @($votesForF | Where-Object { (Test-AuditSkepticSchema -Obj $_).valid })
+        $validVotes = @($votesForF | Where-Object { (Test-AuditSkepticSchema -Obj $_).valid -and ([string]$_.vote) -ne 'abstain' })
         $refuteCount = @($validVotes | Where-Object { [string]$_.vote -eq 'refute' }).Count
         $supportCount = @($validVotes | Where-Object { [string]$_.vote -eq 'support' }).Count
 
@@ -700,6 +708,18 @@ function Get-AuditVerifySummary {
         unverified         = @($Findings | Where-Object { $_.verdict -eq 'unverified' }).Count
         rejected_grounding = @($Findings | Where-Object { $_.verdict -eq 'rejected_grounding' }).Count
     }
+}
+
+function Get-AuditFindingId {
+    param([Parameter(Mandatory=$true)][object]$Finding)
+    $raw = "$([string]$Finding.file)|$([string]$Finding.line)|$([string]$Finding.dimension)|$([string]$Finding.evidence_snippet)|$([string]$Finding.agent_id)"
+    $normalized = [System.Text.RegularExpressions.Regex]::Replace($raw.Trim(), '\s+', ' ')
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+    $sha1  = [System.Security.Cryptography.SHA1]::Create()
+    $hash  = $sha1.ComputeHash($bytes)
+    $sha1.Dispose()
+    $hashHex = ($hash | ForEach-Object { $_.ToString('x2') }) -join ''
+    return $hashHex.Substring(0, 16)
 }
 
 function Get-AuditFindingStructuralKey {
