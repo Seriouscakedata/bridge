@@ -228,3 +228,69 @@ function ConvertFrom-AuditFinderOutput {
     }
     Write-Output -NoEnumerate $valid
 }
+
+function Test-AuditFindingGrounded {
+    param(
+        [Parameter(Mandatory=$true)][object]$Finding,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot
+    )
+
+    $filePath = Join-Path $SnapshotRoot $Finding.file
+    if (-not (Test-Path $filePath -PathType Leaf)) {
+        return [pscustomobject]@{ grounded=$false; reason='file-missing' }
+    }
+
+    $lines = Get-Content -LiteralPath $filePath -Encoding UTF8
+    $lineCount = $lines.Count
+    $lineNum = [int]$Finding.line
+
+    if ($lineNum -lt 1 -or $lineNum -gt $lineCount) {
+        return [pscustomobject]@{ grounded=$false; reason='line-out-of-range' }
+    }
+
+    # Whitespace-normalize: collapse runs of whitespace, trim
+    function NormWs([string]$s) {
+        return ($s -replace '\s+', ' ').Trim()
+    }
+
+    $snippetNorm = NormWs $Finding.evidence_snippet
+
+    $low  = [Math]::Max(0, $lineNum - 1 - 3)
+    $high = [Math]::Min($lineCount - 1, $lineNum - 1 + 3)
+
+    for ($i = $low; $i -le $high; $i++) {
+        $lineNorm = NormWs $lines[$i]
+        if ($lineNorm.Contains($snippetNorm)) {
+            return [pscustomobject]@{ grounded=$true; reason='grounded' }
+        }
+    }
+
+    return [pscustomobject]@{ grounded=$false; reason='evidence-mismatch' }
+}
+
+function Invoke-AuditGroundingGate {
+    param(
+        [Parameter(Mandatory=$true)][object[]]$Findings,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot
+    )
+
+    $result = @()
+    foreach ($f in $Findings) {
+        $check = Test-AuditFindingGrounded -Finding $f -SnapshotRoot $SnapshotRoot
+        $fCopy = $f | Select-Object -Property *
+        $fCopy | Add-Member -NotePropertyName 'state' -NotePropertyValue (if ($check.grounded) { 'grounded' } else { 'rejected_grounding' }) -Force
+        $fCopy | Add-Member -NotePropertyName 'grounding_reason' -NotePropertyValue $check.reason -Force
+        $result += $fCopy
+    }
+    Write-Output -NoEnumerate $result
+}
+
+function Get-AuditGroundingSummary {
+    param(
+        [Parameter(Mandatory=$true)][object[]]$Findings
+    )
+
+    $grounded = ($Findings | Where-Object { $_.state -eq 'grounded' }).Count
+    $rejected = ($Findings | Where-Object { $_.state -eq 'rejected_grounding' }).Count
+    return @{ grounded = $grounded; rejected_grounding = $rejected }
+}
