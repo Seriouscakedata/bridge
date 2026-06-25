@@ -97,7 +97,13 @@ Canvas/vision режим для custom-drawn sticker panel. Проверяет �
 - после `incomplete/aborted` наблюдает заново и может попробовать следующий шаг;
 - не принимает `finish` без real evidence.
 
-Статус: planner loop, CLI/wrapper и concrete executor для `skill/uia/vision/keyboard` подключены, headless-тесты зеленые. `kind=uia` и `kind=vision` используют те же fail-closed gates, что и ядро ЛАПЫ; `kind=keyboard` намеренно возвращает `INCOMPLETE`, пока следующий observe не даст реальное доказательство. Live desktop acceptance для произвольной нестандартной задачи еще не проведена.
+Статус: planner loop, CLI/wrapper и concrete executor для `skill/uia/vision/keyboard` подключены, headless-тесты зеленые. `kind=uia` и `kind=vision` используют те же fail-closed gates, что и ядро ЛАПЫ; `kind=keyboard` намеренно возвращает `INCOMPLETE`, пока следующий observe не даст реальное доказательство. Live smoke 2026-06-25 проведен на задаче смены фона через Windows Settings: частично работает, но задачу до конца не завершил.
+
+Live smoke 2026-06-25, Windows Settings -> Персонализация -> Фон:
+
+- ЛАПА открыла/нашла окно настроек, закрыла внешний TeamViewer popup через canvas click, выбрала `Персонализация`, открыла `Фон`, раскрыла ComboBox `Персонализируйте фон` и выбрала `Сплошной цвет`.
+- Финальный выбор синего swatch не завершен: planner периодически возвращал невалидный/no JSON, а swatch-выбор требовал более надежного vision/UIA шага.
+- По итогам smoke добавлены: structured `observation.window_hwnd`, увеличенный UIA node cap до 180, один retry на невалидный planner JSON, mapping `open_app` params `app -> name`, reuse hwnd из `open_app` evidence, wrapper неожиданных UIA/vision exceptions в `ExecutionReport`, нормализация `ListItem/TabItem click -> select` и `ComboBox click -> expand`.
 
 ## 4. Безопасность
 
@@ -133,7 +139,10 @@ Canvas/vision режим для custom-drawn sticker panel. Проверяет �
 - `kind=keyboard` годится только для навигации между наблюдениями; сам по себе он никогда не доказывает завершение задачи.
 - Self-learning есть как opt-in Python API, но не включено автоматически в bridge skills.
 - Обычный `telegram-send` safety semantics нужно привести к документам: либо явно считать marker авторизацией, либо добавить confirm gate.
-- Live desktop acceptance для `operator-task` еще не проведена.
+- Live desktop acceptance для `operator-task` проведена частично: Settings flow дошел до `Сплошной цвет`, но не завершил выбор синего swatch.
+- Кириллические app names в отдельных путях PowerShell/Gemini могут превращаться в `?????????`; для live smoke временно использовался foreground-периметр.
+- `open_app('Настройки')` может запускать Settings, но live title окна бывает `Параметры`; observer умеет переиспользовать hwnd из `open_app` evidence, однако сам skill `open_app` для уже открытого Settings еще может не дождаться окна по title lookup.
+- Medium-risk canvas click без специфического verify остается `Unverifiable`; для визуальных low-risk swatch clicks planner должен явно объявлять `risk=low` или нужен typed verifier для таких настроек.
 - Gemini planner требует `LAPA_GEMINI_API_KEY` или `GEMINI_API_KEY` либо ключ в `~/.bridge-private/secrets.json`. Без ключа planner честно вернет no decision/incomplete.
 
 ## 7. Проверка
@@ -148,7 +157,7 @@ python -m compileall -q lapa tests conftest.py
 Текущий результат после подключения `operator-task`:
 
 ```text
-480 passed, 1 skipped
+486 passed, 1 skipped
 ```
 
 Из bridge root проверить wrapper:
@@ -175,7 +184,7 @@ type
 [[ЛАПА: operator-task | goal=Открой Блокнот и напечатай test | allowed_apps=Notepad | allowed_skills=open-app,type | forbidden_actions=delete,pay | max_steps=5]]
 ```
 
-2. Провести live smoke для `kind=uia`: открыть приложение, найти observed selector и выполнить low-risk `set_text`.
-3. Провести live smoke для `kind=vision`: low-risk click по custom-drawn элементу с screenshot proof.
+2. Доделать live swatch selection: устойчивый low-risk color-swatch executor/verify или planner recipe для Windows Settings color grid.
+3. Починить title/app-name mismatch для `open_app('Настройки')` -> live window `Параметры` без app-specific хрупкости.
 4. Подключить self-learning к operator failure path как opt-in.
 5. Исправить/уточнить safety contract обычного `telegram-send`.
