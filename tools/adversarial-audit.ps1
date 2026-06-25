@@ -255,6 +255,44 @@ function New-AuditCliJobSpec {
     }
 }
 
+function Read-AuditJobOutput {
+    param([Parameter(Mandatory=$true)][object]$Record)
+    $provider = ''
+    try { $provider = [string]$Record.metadata.provider } catch {}
+    $resultPath = ''
+    try { $resultPath = [string]$Record.metadata.result_path } catch {}
+    $outputPath = ''
+    try { $outputPath = [string]$Record.outputPath } catch {}
+
+    if ($provider -eq 'codex') {
+        # codex writes JSON to -o result file, not stdout
+        if ($resultPath -and (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            try {
+                $content = [System.IO.File]::ReadAllText($resultPath)
+                if (-not [string]::IsNullOrWhiteSpace($content)) { return $content }
+            } catch {}
+        }
+        # fallback: try stdout anyway
+        if ($outputPath -and (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            try { return [System.IO.File]::ReadAllText($outputPath) } catch {}
+        }
+        return ''
+    } else {
+        # claude and others: JSON is on stdout (-p flag)
+        if ($outputPath -and (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            try {
+                $content = [System.IO.File]::ReadAllText($outputPath)
+                if (-not [string]::IsNullOrWhiteSpace($content)) { return $content }
+            } catch {}
+        }
+        # fallback: result_path if present
+        if ($resultPath -and (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            try { return [System.IO.File]::ReadAllText($resultPath) } catch {}
+        }
+        return ''
+    }
+}
+
 function Get-AuditProviderErrorClass {
     param(
         [Parameter(Mandatory=$true)][int]$ExitCode,
@@ -648,9 +686,10 @@ function Invoke-AuditVerifyStage {
                 -WorkingDirectory $jobSpec.snapshot_root `
                 -InputText $cliSpec.inputText `
                 -Metadata @{
-                    finding_id = $jobSpec.finding_id
-                    provider   = $jobSpec.provider
-                    index      = $jobSpec.index
+                    finding_id  = $jobSpec.finding_id
+                    provider    = $jobSpec.provider
+                    index       = $jobSpec.index
+                    result_path = $resultPath
                 }
         }
 
@@ -659,14 +698,7 @@ function Invoke-AuditVerifyStage {
         }
 
         foreach ($record in $jobRecords) {
-            $stdout = ''
-            try {
-                if ($record.outputPath -and (Test-Path -LiteralPath $record.outputPath -PathType Leaf)) {
-                    $stdout = [System.IO.File]::ReadAllText($record.outputPath)
-                }
-            } catch {
-                $stdout = ''
-            }
+            $stdout = Read-AuditJobOutput -Record $record
 
             $parsedVotes = $null
             try {
