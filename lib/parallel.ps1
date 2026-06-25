@@ -3242,6 +3242,115 @@ function Test-ParallelDispatchQuarantineGiveupSelfCheck {
   return $true
 }
 
+function Invoke-ParallelDispatchSequentialRetry {
+  # After the parallel collect-commit phase: find zero-commit quarantined streams, log them as
+  # partial-failure, and re-run each one sequentially (single worker, fresh worktree from HEAD).
+  param(
+    [hashtable]$Result,
+    [object[]]$AllStreams,
+    [hashtable]$Context,
+    [string]$TaskHash,
+    [int]$TimeoutMin = 25,
+    [int]$PollSec = 10
+  )
+
+  $qIds = @()
+  try { $qIds = @($Result.quarantined_ids) } catch {}
+  if ($qIds.Count -eq 0) { return $Result }
+
+  # Identify zero-commit quarantined streams (produced no changes at all)
+  $zeroCommitIds = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($qid in $qIds) {
+    if ([string]::IsNullOrWhiteSpace($qid)) { continue }
+    $commits = 0
+    try {
+      if ($Context.completed.ContainsKey($qid)) {
+        $commits = @($Context.completed[$qid].commits).Count
+      }
+    } catch {}
+    if ($commits -eq 0) { [void]$zeroCommitIds.Add($qid) }
+  }
+
+  if ($zeroCommitIds.Count -eq 0) { return $Result }
+
+  $pf_ids = ($zeroCommitIds.ToArray() -join ', ')
+  try { Add-Message -From system -Text ("⚠️ partial-failure: потоки не создали коммитов: " + $pf_ids + " — последовательный перезапуск.") -Kind event | Out-Null } catch {}
+
+  # Get current HEAD as new base so retry worktrees branch from post-parallel state
+  $gitExe = [string]$Context.gitExe
+  $bridgeRoot = [string]$Context.bridgeRoot
+  $retryBase = ''
+  try { $retryBase = ([string](& $gitExe -C $bridgeRoot rev-parse HEAD 2>$null)).Trim() } catch {}
+  if ([string]::IsNullOrWhiteSpace($retryBase)) {
+    try { Add-Message -From system -Text "❌ partial-failure retry: не удалось определить HEAD — пропуск." -Kind event | Out-Null } catch {}
+    return $Result
+  }
+
+  # Update task_base_commit so Get-WorkerWorktree branches from current HEAD
+  try { Update-State { param($s) $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $retryBase -Force } | Out-Null } catch {}
+
+  $retryMergedIds = New-Object 'System.Collections.Generic.List[string]'
+
+  foreach ($qid in $zeroCommitIds) {
+    $stream = $null
+    foreach ($s in @($AllStreams)) { if ([string]$s.id -eq $qid) { $stream = $s; break } }
+    if (-not $stream) {
+      try { Add-Message -From system -Text ("⚠ Sequential retry: spec not found for " + $qid + " — пропуск.") -Kind event | Out-Null } catch {}
+      continue
+    }
+
+    try { Add-Message -From system -Text ("🔄 Sequential retry поток " + $qid + "...") -Kind event | Out-Null } catch {}
+
+    # Cleanup old worktree so the path is free for fresh branching from HEAD
+    try { Cleanup-WorkerWorktree -StreamId $qid -TaskHash $TaskHash } catch {}
+
+    # Spawn single worker (Get-WorkerWorktree now uses updated task_base_commit = HEAD)
+    $startRes = Start-ParallelDispatchWorker -Stream $stream -TaskHash $TaskHash -AlreadyUsedIds @()
+    if (-not $startRes.ok) {
+      try { Add-Message -From system -Text ("❌ Sequential retry spawn failed для " + $qid + ": " + $startRes.reason) -Kind event | Out-Null } catch {}
+      continue
+    }
+
+    $retryWorker = $startRes.worker
+    $retryCompleted = Wait-ParallelDispatchResults -Workers @($retryWorker) -TaskHash $TaskHash -TimeoutMin $TimeoutMin -PollSec $PollSec
+
+    $retryCtx = New-ParallelDispatchAggregationContext -Workers @($retryWorker) -Completed $retryCompleted -TaskHash $TaskHash
+    $retryCtx.baseCommit = $retryBase  # Guarantee correct base even if state update was delayed
+
+    Invoke-ParallelDispatchCollectPhase -Context $retryCtx
+    Commit-ParallelDispatchCollectedOutputs -Context $retryCtx
+    Invoke-ParallelDispatchMergePhase -Context $retryCtx
+    $retryRes = Complete-ParallelDispatchResult -Context $retryCtx
+
+    if ([bool]$retryRes.ok) {
+      [void]$retryMergedIds.Add($qid)
+      try { Add-Message -From system -Text ("✅ Sequential retry: поток " + $qid + " успешно доставлен.") -Kind event | Out-Null } catch {}
+    } else {
+      try { Add-Message -From system -Text ("❌ Sequential retry: поток " + $qid + " снова без коммитов (" + $retryRes.reason + ").") -Kind event | Out-Null } catch {}
+    }
+  }
+
+  if ($retryMergedIds.Count -eq 0) { return $Result }
+
+  # Move recovered streams from quarantined to merged in the result
+  $Result.merged += $retryMergedIds.Count
+  $recoveredSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($rid in $retryMergedIds) { [void]$recoveredSet.Add($rid) }
+  $newQIds = @(@($Result.quarantined_ids) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $recoveredSet.Contains([string]$_) })
+  $Result['quarantined'] = @($newQIds).Count
+  $Result['quarantined_ids'] = $newQIds
+  $prevMerged = @(); try { $prevMerged = @($Result['merged_ids']) } catch {}
+  $Result['merged_ids'] = @($prevMerged + @($retryMergedIds.ToArray()))
+
+  $qCount = [int]$Result['quarantined']
+  $totalStreams = [int]$Result['total']
+  $Result['clean'] = ($Result.merged -eq $totalStreams -and $qCount -eq 0 -and $totalStreams -gt 0)
+  $Result['ok'] = ($Result.merged -ge 1)
+  $Result['reason'] = if ($Result.clean) { 'all_delivered' } elseif ($Result.merged -ge 1) { 'partial' } else { 'all_failed' }
+
+  return $Result
+}
+
 function Invoke-ParallelDispatch {
   # End-to-end orchestration for a parallel split detected in planner reply.
   # FIX 2026-05-27 (manual implementation, replaces Codex's chunk-2 that state-wiped).
@@ -3291,6 +3400,13 @@ function Invoke-ParallelDispatch {
   $eagerContext = New-ParallelDispatchAggregationContext -Workers $workers -Completed @{} -TaskHash $taskHash
   $completed = Wait-ParallelDispatchResults -Workers $workers -TaskHash $taskHash -TimeoutMin $TimeoutMin -PollSec $PollSec -EagerContext $eagerContext
   $result = Complete-ParallelDispatchOutputs -Workers $workers -Completed $completed -TaskHash $taskHash -EagerContext $eagerContext
+  $result = Invoke-ParallelDispatchSequentialRetry `
+    -Result $result `
+    -AllStreams @($allStreams) `
+    -Context $eagerContext `
+    -TaskHash $taskHash `
+    -TimeoutMin $TimeoutMin `
+    -PollSec $PollSec
   $qState = Update-ParallelDispatchBatchQuarantineState -Streams @($allStreams) -Result $result -StreamToBacklogId $streamToBacklogId -TaskHash $taskHash
   try {
     $newGiveupCount = @($qState.new_giveup_ids).Count

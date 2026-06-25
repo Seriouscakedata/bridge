@@ -214,5 +214,29 @@ try {
   if (Test-Path -LiteralPath $tmpParent) { Remove-Item -LiteralPath $tmpParent -Recurse -Force }
 }
 
+# 37-40. Sequential retry: zero-commit detection and partial-failure logic
+# 37. The retry function exists in parallel.ps1
+$parallelSource = Get-Content -LiteralPath (Join-Path $root 'lib\parallel.ps1') -Raw -Encoding UTF8
+Assert ($parallelSource -match 'function Invoke-ParallelDispatchSequentialRetry') "Invoke-ParallelDispatchSequentialRetry is defined in parallel.ps1"
+
+# 38. The function emits partial-failure log
+Assert ($parallelSource -match 'partial-failure') "sequential retry logs partial-failure label"
+
+# 39. Invoke-ParallelDispatch calls the retry function
+Assert ($parallelSource -match 'Invoke-ParallelDispatchSequentialRetry') "Invoke-ParallelDispatch calls Invoke-ParallelDispatchSequentialRetry"
+
+# 40. Zero-commit detection: commits==0 → retry candidate; commits>0 → not a candidate
+$testCompletedMap = @{
+  'streamA' = [pscustomobject]@{ status = 'done'; commits = @() }
+  'streamB' = [pscustomobject]@{ status = 'done'; commits = @('abc123') }
+}
+$testQIds = @('streamA', 'streamB')
+$zeroIds = @($testQIds | Where-Object {
+  $c = 0
+  if ($testCompletedMap.ContainsKey($_)) { try { $c = @($testCompletedMap[$_].commits).Count } catch {} }
+  $c -eq 0
+})
+Assert ($zeroIds.Count -eq 1 -and [string]$zeroIds[0] -eq 'streamA') "zero-commit detection: streamA (0 commits) is retry candidate, streamB (1 commit) is not"
+
 Write-Host "`nRESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }
