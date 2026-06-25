@@ -650,7 +650,7 @@
                      },
     "radarEveryHours":  720,
     "synthesisMode":  {
-                          "enabled":  true,
+                          "enabled":  false,
                           "defaultDepth":  "smart",
                           "claudeModel":  "claude-opus-4-8",
                           "cheapModel":  "gemini-2.5-flash",
