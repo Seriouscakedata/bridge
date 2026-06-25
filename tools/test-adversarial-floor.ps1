@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
 # Dot-source dependencies
+. (Join-Path $root 'lib\common.ps1')
 . (Join-Path $root 'lib\parallel.ps1')
 . (Join-Path $root 'tools\adversarial-audit.ps1')
 
@@ -60,6 +61,7 @@ Write-Host "Pool stress: dispatching 20 dummy jobs..."
 
 Clear-ReadOnlyAuditPoolRegistry | Out-Null
 Reset-ReadOnlyAuditPoolTimeline
+$powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 
 $dummyScript = @"
 Start-Sleep -Milliseconds 300
@@ -70,7 +72,7 @@ Set-Content -Path $dummyPath -Value $dummyScript -Encoding UTF8
 $jobCount = 20
 for ($i = 0; $i -lt $jobCount; $i++) {
     Start-ReadOnlyAuditJob `
-        -FilePath 'powershell.exe' `
+        -FilePath $powershellExe `
         -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $dummyPath) `
         -WorkingDirectory ([System.IO.Path]::GetTempPath()) `
         -InputText $null `

@@ -55,7 +55,8 @@ $collector = {
     $allVotes
 }
 
-$results = @(Invoke-AuditVerifyStage -Findings $findings -SnapshotRoot 'C:\fake\snapshot' -SkepticsPerFinding 3 -MinValidVotes 2 -VoteCollector $collector)
+$_verifyResult = Invoke-AuditVerifyStage -Findings $findings -SnapshotRoot 'C:\fake\snapshot' -SkepticsPerFinding 3 -MinValidVotes 2 -VoteCollector $collector
+$results = @($_verifyResult.findings)
 
 Assert-Eq 'F1 verdict: refuted'            ($results | Where-Object { $_.finding_id -eq 'F1' } | Select-Object -First 1).verdict 'refuted'
 Assert-Eq 'F2 verdict: confirmed'          ($results | Where-Object { $_.finding_id -eq 'F2' } | Select-Object -First 1).verdict 'confirmed'

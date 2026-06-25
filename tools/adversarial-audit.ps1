@@ -1083,6 +1083,21 @@ function Invoke-AuditSynthesize {
     [void]$mdLines.Add("")
     [void]$mdLines.Add("**Verdict counts:** confirmed=$cntConfirmed, refuted=$cntRefuted, unverified=$cntUnverified, rejected_grounding=$cntRejected (after dedup: $($confirmedDeduped.Count))")
     [void]$mdLines.Add("")
+    [void]$mdLines.Add("## Telemetry")
+    [void]$mdLines.Add("")
+    foreach ($phaseName in @('find', 'verify')) {
+        $phaseTelem = $null
+        if ($null -ne $Telemetry) {
+            $phaseProp = $Telemetry.PSObject.Properties[$phaseName]
+            if ($null -ne $phaseProp) { $phaseTelem = $phaseProp.Value }
+        }
+        if ($null -ne $phaseTelem) {
+            [void]$mdLines.Add("- **${phaseName}:** peak_concurrency=$($phaseTelem.peak_concurrency), floor_met=$($phaseTelem.floor_met), jobs_dispatched=$($phaseTelem.jobs_dispatched), concurrency_floor=$($phaseTelem.concurrency_floor)")
+        } else {
+            [void]$mdLines.Add("- **${phaseName}:** peak_concurrency=0, floor_met=$true, jobs_dispatched=0, concurrency_floor=$(Get-AuditConcurrencyFloor)")
+        }
+    }
+    [void]$mdLines.Add("")
     [void]$mdLines.Add("## Confirmed Findings (deduped)")
     [void]$mdLines.Add("")
     foreach ($f in $confirmedDeduped) {

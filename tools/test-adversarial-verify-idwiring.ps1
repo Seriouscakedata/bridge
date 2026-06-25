@@ -113,7 +113,8 @@ $collector = {
     return $votes
 }
 
-$results = Invoke-AuditVerifyStage -Findings @($g1,$g2) -SnapshotRoot $tmpDir -VoteCollector $collector -SkepticsPerFinding 3 -MinValidVotes 2
+$_verifyResult = Invoke-AuditVerifyStage -Findings @($g1,$g2) -SnapshotRoot $tmpDir -VoteCollector $collector -SkepticsPerFinding 3 -MinValidVotes 2
+$results = @($_verifyResult.findings)
 
 $r1 = $results | Where-Object { [string]$_.finding_id -eq $id1 }
 $r2 = $results | Where-Object { [string]$_.finding_id -eq $id2 }
@@ -134,7 +135,8 @@ $collectorAbstain = {
     return $votes
 }
 
-$absResults = Invoke-AuditVerifyStage -Findings @($g3) -SnapshotRoot $tmpDir -VoteCollector $collectorAbstain -SkepticsPerFinding 3 -MinValidVotes 2
+$_absVerifyResult = Invoke-AuditVerifyStage -Findings @($g3) -SnapshotRoot $tmpDir -VoteCollector $collectorAbstain -SkepticsPerFinding 3 -MinValidVotes 2
+$absResults = @($_absVerifyResult.findings)
 
 $r3 = $absResults | Where-Object { [string]$_.finding_id -eq $id3 }
 Assert-Equal 'f3 verdict is unverified (abstains dont count)' ([string]$r3.verdict) 'unverified'
