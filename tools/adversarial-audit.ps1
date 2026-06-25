@@ -11,6 +11,105 @@
     }
 }
 
+# ---------------------------------------------------------------------------
+# Phase 5 — Idempotent confirmed-only backlog filing
+# ---------------------------------------------------------------------------
+
+function Get-AuditFindingFingerprint {
+    param([Parameter(Mandatory=$true)][object]$Finding)
+    return Get-AuditFindingStructuralKey -Finding $Finding
+}
+
+function Build-AuditFixAtom {
+    param(
+        [Parameter(Mandatory=$true)][object]$Finding,
+        [Parameter(Mandatory=$true)][string]$RunId
+    )
+
+    $fp       = Get-AuditFindingFingerprint -Finding $Finding
+    $filePath = [string]$Finding.file
+    $category = [string]$Finding.category
+    $evidence = [string]$Finding.evidence_snippet
+    $line     = [string]$Finding.line
+    $sev      = [string]$Finding.severity
+
+    $text = "Fix [$category] at $($filePath):$line -- $evidence (severity: $sev; run: $RunId)"
+
+    $tags = [System.Collections.Generic.List[string]]::new()
+    [void]$tags.Add('audit')
+    [void]$tags.Add('adversarial-confirmed')
+
+    $cpPattern = 'driver|supervisor|watchdog|circuit|secret|server\.ps1|backlog[^/\\]*\.ps1|parallel\.ps1'
+    $requiresAdmission = $false
+    if ($filePath -match $cpPattern) {
+        $requiresAdmission = $true
+        [void]$tags.Add('operator')
+    }
+
+    return [pscustomobject]@{
+        text               = $text
+        tags               = $tags.ToArray()
+        audit_fingerprint  = $fp
+        run_id             = $RunId
+        severity           = $sev
+        file               = $filePath
+        line               = $line
+        requires_admission = $requiresAdmission
+    }
+}
+
+function Invoke-AuditFileConfirmed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][object[]]$ConfirmedFindings,
+        [Parameter(Mandatory=$true)][string]$RunId,
+        [AllowEmptyCollection()][string[]]$ExistingFingerprints = @(),
+        [scriptblock]$Filer = $null
+    )
+
+    $filed   = [System.Collections.Generic.List[object]]::new()
+    $skipped = [System.Collections.Generic.List[object]]::new()
+
+    $fpSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($fp in $ExistingFingerprints) { [void]$fpSet.Add($fp) }
+
+    foreach ($finding in $ConfirmedFindings) {
+        if ($null -eq $finding) { continue }
+        $fp = Get-AuditFindingFingerprint -Finding $finding
+        if ($fpSet.Contains($fp)) {
+            [void]$skipped.Add($finding)
+            continue
+        }
+        $atom = Build-AuditFixAtom -Finding $finding -RunId $RunId
+        if ($null -ne $Filer) {
+            & $Filer $atom
+        } else {
+            if (Get-Command Add-Idea -ErrorAction SilentlyContinue) {
+                [void](Add-Idea -Text $atom.text -Tags $atom.tags -From 'adversarial-audit' -SkipCurator)
+            }
+        }
+        [void]$filed.Add($atom)
+    }
+
+    return [pscustomobject]@{
+        filed            = $filed.ToArray()
+        skipped_existing = $skipped.ToArray()
+        counts           = [pscustomobject]@{
+            filed   = $filed.Count
+            skipped = $skipped.Count
+        }
+    }
+}
+
+# TODO Phase 6: Neutralize Add-DeepAuditFindingsToBacklog in tools/audit.ps1:1441.
+# That function files un-verified deep findings directly to the backlog, bypassing
+# the confirmed-only gate. It must be converted to route ONLY confirmed_deduped output
+# from Invoke-AuditSynthesize through Invoke-AuditFileConfirmed.
+function Assert-NoDirectDeepFiling {
+    param([string]$Caller = 'unknown')
+    throw "POLICY VIOLATION: Direct deep-audit filing is prohibited. Use Invoke-AuditFileConfirmed with confirmed-only findings from Invoke-AuditSynthesize. Caller: $Caller"
+}
+
 function Test-AuditSkepticSchema {
     param(
         [Parameter(Mandatory=$true)][object]$Obj
