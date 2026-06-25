@@ -7,6 +7,8 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 # --- Setup temp snapshot ---
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "audit-grounding-test-$([System.Diagnostics.Stopwatch]::GetTimestamp())"
 New-Item -ItemType Directory -Path $tmpRoot | Out-Null
+$outsideFile = Join-Path (Split-Path -Parent $tmpRoot) "outside-audit-grounding-$([System.Diagnostics.Stopwatch]::GetTimestamp()).txt"
+Set-Content -Path $outsideFile -Value @('external secret marker') -Encoding UTF8
 
 $subDir = Join-Path $tmpRoot 'src'
 New-Item -ItemType Directory -Path $subDir | Out-Null
@@ -81,8 +83,35 @@ $summary = Get-AuditGroundingSummary -Findings $tagged
 Assert ($summary.grounded -eq 1)           'summary: grounded=1'
 Assert ($summary.rejected_grounding -eq 3) 'summary: rejected_grounding=3'
 
+# Critic regressions: do not escape snapshot root and do not throw on malformed fields.
+$outsideRelative = '..\' + (Split-Path -Leaf $outsideFile)
+$pathTraversal = Test-AuditFindingGrounded -Finding ([pscustomobject]@{
+    file             = $outsideRelative
+    line             = 1
+    evidence_snippet = 'external secret marker'
+}) -SnapshotRoot $tmpRoot
+Assert (-not $pathTraversal.grounded)              'path traversal outside snapshot -> grounded=false'
+Assert ($pathTraversal.reason -eq 'file-missing')  'path traversal outside snapshot -> reason=file-missing'
+
+$badLine = Test-AuditFindingGrounded -Finding ([pscustomobject]@{
+    file             = 'src/sample.ps1'
+    line             = 'not-an-int'
+    evidence_snippet = 'hello world'
+}) -SnapshotRoot $tmpRoot
+Assert (-not $badLine.grounded)                         'non-integer line -> grounded=false'
+Assert ($badLine.reason -eq 'line-out-of-range')         'non-integer line -> reason=line-out-of-range'
+
+$nullSnippet = Test-AuditFindingGrounded -Finding ([pscustomobject]@{
+    file             = 'src/sample.ps1'
+    line             = 2
+    evidence_snippet = $null
+}) -SnapshotRoot $tmpRoot
+Assert (-not $nullSnippet.grounded)                      'null evidence_snippet -> grounded=false'
+Assert ($nullSnippet.reason -eq 'evidence-mismatch')     'null evidence_snippet -> reason=evidence-mismatch'
+
 # Cleanup
 Remove-Item -Recurse -Force $tmpRoot
+Remove-Item -Force $outsideFile
 
 Write-Host ""
 if ($fail -eq 0) {

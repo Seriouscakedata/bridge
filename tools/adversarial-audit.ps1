@@ -235,25 +235,67 @@ function Test-AuditFindingGrounded {
         [Parameter(Mandatory=$true)][string]$SnapshotRoot
     )
 
-    $filePath = Join-Path $SnapshotRoot $Finding.file
-    if (-not (Test-Path $filePath -PathType Leaf)) {
+    $findingFile = if ($null -eq $Finding.file) { '' } else { [string]$Finding.file }
+    if ([string]::IsNullOrWhiteSpace($findingFile)) {
         return [pscustomobject]@{ grounded=$false; reason='file-missing' }
     }
 
-    $lines = Get-Content -LiteralPath $filePath -Encoding UTF8
+    try {
+        $rootFull = [System.IO.Path]::GetFullPath($SnapshotRoot)
+        $rootPath = [System.IO.Path]::GetPathRoot($rootFull)
+        if ($rootPath -and $rootFull.Length -gt $rootPath.Length) {
+            $rootFull = $rootFull.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        }
+        $filePath = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($rootFull, $findingFile))
+    } catch {
+        return [pscustomobject]@{ grounded=$false; reason='file-missing' }
+    }
+
+    $dirSep = [string][System.IO.Path]::DirectorySeparatorChar
+    $altSep = [string][System.IO.Path]::AltDirectorySeparatorChar
+    $rootPrefix = $rootFull
+    if (-not ($rootPrefix.EndsWith($dirSep) -or $rootPrefix.EndsWith($altSep))) {
+        $rootPrefix = $rootPrefix + $dirSep
+    }
+    if (-not $filePath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ grounded=$false; reason='file-missing' }
+    }
+
+    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+        return [pscustomobject]@{ grounded=$false; reason='file-missing' }
+    }
+
+    try {
+        $resolvedFile = (Resolve-Path -LiteralPath $filePath -ErrorAction Stop).ProviderPath
+    } catch {
+        return [pscustomobject]@{ grounded=$false; reason='file-missing' }
+    }
+    if (-not $resolvedFile.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ grounded=$false; reason='file-missing' }
+    }
+
+    $lines = @(Get-Content -LiteralPath $resolvedFile -Encoding UTF8)
     $lineCount = $lines.Count
-    $lineNum = [int]$Finding.line
+    $lineNum = 0
+    $lineText = if ($null -eq $Finding.line) { '' } else { ([string]$Finding.line).Trim() }
+    if (-not [int]::TryParse($lineText, [ref]$lineNum)) {
+        return [pscustomobject]@{ grounded=$false; reason='line-out-of-range' }
+    }
 
     if ($lineNum -lt 1 -or $lineNum -gt $lineCount) {
         return [pscustomobject]@{ grounded=$false; reason='line-out-of-range' }
     }
 
     # Whitespace-normalize: collapse runs of whitespace, trim
-    function NormWs([string]$s) {
-        return ($s -replace '\s+', ' ').Trim()
+    function NormWs([AllowNull()][object]$s) {
+        if ($null -eq $s) { return '' }
+        return (([string]$s) -replace '\s+', ' ').Trim()
     }
 
     $snippetNorm = NormWs $Finding.evidence_snippet
+    if ([string]::IsNullOrWhiteSpace($snippetNorm)) {
+        return [pscustomobject]@{ grounded=$false; reason='evidence-mismatch' }
+    }
 
     $low  = [Math]::Max(0, $lineNum - 1 - 3)
     $high = [Math]::Min($lineCount - 1, $lineNum - 1 + 3)
