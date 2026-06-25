@@ -929,6 +929,15 @@ function Get-ParallelTaskBaseCommit {
   return $baseText.Trim()
 }
 
+function Get-ParallelDispatchBranchName {
+  param([string]$StreamId, [string]$TaskHash)
+
+  $sid = Normalize-ParallelId $StreamId
+  $hash = Normalize-ParallelId $TaskHash
+  if ([string]::IsNullOrWhiteSpace($sid) -or [string]::IsNullOrWhiteSpace($hash)) { return '' }
+  return "wip/parallel/$hash/$sid"
+}
+
 function Get-WorkerWorktree {
   param([string]$StreamId, [string]$TaskHash)
   $ErrorActionPreference = 'Continue'
@@ -939,7 +948,7 @@ function Get-WorkerWorktree {
   if (Test-Path -LiteralPath $path) { return [System.IO.Path]::GetFullPath($path) }
 
   if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
-  $branch = "wip/parallel/$hash/$sid"
+  $branch = Get-ParallelDispatchBranchName -StreamId $StreamId -TaskHash $TaskHash
   $base = Get-ParallelTaskBaseCommit
   if ([string]::IsNullOrWhiteSpace($base)) { throw 'parallel: cannot resolve task_base_commit or HEAD' }
   $git = Get-GitExe
@@ -1681,7 +1690,7 @@ function Start-ParallelDispatchWorker {
     return @{ ok=$false; worker=$null; workerSpec=$null; reason='no worker pool' }
   }
 
-  $branch = "wip/parallel/$TaskHash/$($Stream.id)"
+  $branch = Get-ParallelDispatchBranchName -StreamId ([string]$Stream.id) -TaskHash $TaskHash
   try {
     $worktree = Get-WorkerWorktree -StreamId $Stream.id -TaskHash $TaskHash
     $worker = Spawn-Worker -StreamId $Stream.id -Body $Stream.body -Worktree $worktree -BranchName $branch -WorkerSpec $spec
@@ -2664,11 +2673,24 @@ function Commit-ParallelDispatchCollectedOutputs {
       $commitExitCode = [int]$commitResultObj.ExitCode
     } catch {}
     if ($commitExitCode -eq 0) {
+      $hostCommit = ''
+      try { $hostCommit = ([string](& $Context.gitExe -C $Context.bridgeRoot rev-parse HEAD 2>$null | Select-Object -First 1)).Trim() } catch {}
       $Context.merged += $Context.collectedStreams
       foreach ($cw in $Context.workers) {
         if (-not $Context.completed.ContainsKey($cw.id)) { continue }
         $cres = $Context.completed[$cw.id]
         if (($cres.PSObject.Properties.Name -contains '_collected') -and $cres._collected) {
+          if (-not [string]::IsNullOrWhiteSpace($hostCommit)) {
+            $deliveredCommits = New-Object 'System.Collections.Generic.List[string]'
+            try {
+              foreach ($c in @($cres.commits)) {
+                $cs = ([string]$c).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($cs) -and -not $deliveredCommits.Contains($cs)) { [void]$deliveredCommits.Add($cs) }
+              }
+            } catch {}
+            if (-not $deliveredCommits.Contains($hostCommit)) { [void]$deliveredCommits.Add($hostCommit) }
+            try { $cres | Add-Member -NotePropertyName commits -NotePropertyValue @($deliveredCommits.ToArray()) -Force } catch {}
+          }
           [void]$Context.mergedStreams.Add([string]$cw.id)
         }
       }
@@ -3242,6 +3264,39 @@ function Test-ParallelDispatchQuarantineGiveupSelfCheck {
   return $true
 }
 
+function Reset-ParallelDispatchWorkerBranchToBase {
+  param(
+    [string]$StreamId,
+    [string]$TaskHash,
+    [string]$BaseCommit,
+    [string]$GitExe = '',
+    [string]$RepoRoot = ''
+  )
+
+  $branch = Get-ParallelDispatchBranchName -StreamId $StreamId -TaskHash $TaskHash
+  if ([string]::IsNullOrWhiteSpace($branch)) { return @{ ok=$false; branch=''; reason='empty branch name' } }
+  if ([string]::IsNullOrWhiteSpace($BaseCommit)) { return @{ ok=$false; branch=$branch; reason='empty base commit' } }
+  if ([string]::IsNullOrWhiteSpace($GitExe)) {
+    try { $GitExe = Get-GitExe } catch { $GitExe = 'git' }
+  }
+  if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = Get-ParallelRepoRoot }
+
+  $baseCheck = Invoke-ParallelDispatchGitProcess -RepoRoot $RepoRoot -GitExe $GitExe -GitArgs @('cat-file','-e',($BaseCommit + '^{commit}'))
+  if ([int]$baseCheck.ExitCode -ne 0) {
+    return @{ ok=$false; branch=$branch; reason='base commit not found' }
+  }
+
+  $reset = Invoke-ParallelDispatchGitProcess -RepoRoot $RepoRoot -GitExe $GitExe -GitArgs @('branch','-f',$branch,$BaseCommit)
+  if ([int]$reset.ExitCode -ne 0) {
+    $tail = ''
+    try { $tail = (@($reset.Output) | Select-Object -Last 2) -join ' | ' } catch {}
+    if ([string]::IsNullOrWhiteSpace($tail)) { $tail = 'git branch -f failed' }
+    return @{ ok=$false; branch=$branch; reason=$tail }
+  }
+
+  return @{ ok=$true; branch=$branch; reason='' }
+}
+
 function Invoke-ParallelDispatchSequentialRetry {
   # After the parallel collect-commit phase: find zero-commit quarantined streams, log them as
   # partial-failure, and re-run each one sequentially (single worker, fresh worktree from HEAD).
@@ -3286,6 +3341,9 @@ function Invoke-ParallelDispatchSequentialRetry {
     return $Result
   }
 
+  $previousBase = ''
+  try { $previousBase = Get-ParallelTaskBaseCommit } catch {}
+
   # Update task_base_commit so Get-WorkerWorktree branches from current HEAD
   try { Update-State { param($s) $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $retryBase -Force } | Out-Null } catch {}
 
@@ -3303,6 +3361,12 @@ function Invoke-ParallelDispatchSequentialRetry {
 
     # Cleanup old worktree so the path is free for fresh branching from HEAD
     try { Cleanup-WorkerWorktree -StreamId $qid -TaskHash $TaskHash } catch {}
+
+    $resetRes = Reset-ParallelDispatchWorkerBranchToBase -StreamId $qid -TaskHash $TaskHash -BaseCommit $retryBase -GitExe $gitExe -RepoRoot $bridgeRoot
+    if (-not [bool]$resetRes.ok) {
+      try { Add-Message -From system -Text ("❌ Sequential retry branch reset failed для " + $qid + ": " + [string]$resetRes.reason) -Kind event | Out-Null } catch {}
+      continue
+    }
 
     # Spawn single worker (Get-WorkerWorktree now uses updated task_base_commit = HEAD)
     $startRes = Start-ParallelDispatchWorker -Stream $stream -TaskHash $TaskHash -AlreadyUsedIds @()
@@ -3330,7 +3394,12 @@ function Invoke-ParallelDispatchSequentialRetry {
     }
   }
 
-  if ($retryMergedIds.Count -eq 0) { return $Result }
+  if ($retryMergedIds.Count -eq 0) {
+    if (-not [string]::IsNullOrWhiteSpace($previousBase) -and $previousBase -ne $retryBase) {
+      try { Update-State { param($s) $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $previousBase -Force } | Out-Null } catch {}
+    }
+    return $Result
+  }
 
   # Move recovered streams from quarantined to merged in the result
   $Result.merged += $retryMergedIds.Count
@@ -3348,6 +3417,9 @@ function Invoke-ParallelDispatchSequentialRetry {
   $Result['ok'] = ($Result.merged -ge 1)
   $Result['reason'] = if ($Result.clean) { 'all_delivered' } elseif ($Result.merged -ge 1) { 'partial' } else { 'all_failed' }
 
+  if (-not [string]::IsNullOrWhiteSpace($previousBase) -and $previousBase -ne $retryBase) {
+    try { Update-State { param($s) $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $previousBase -Force } | Out-Null } catch {}
+  }
   return $Result
 }
 

@@ -214,7 +214,7 @@ try {
   if (Test-Path -LiteralPath $tmpParent) { Remove-Item -LiteralPath $tmpParent -Recurse -Force }
 }
 
-# 37-40. Sequential retry: zero-commit detection and partial-failure logic
+# 37-42. Sequential retry: zero-commit detection, partial-failure logic, and retry branch freshness
 # 37. The retry function exists in parallel.ps1
 $parallelSource = Get-Content -LiteralPath (Join-Path $root 'lib\parallel.ps1') -Raw -Encoding UTF8
 Assert ($parallelSource -match 'function Invoke-ParallelDispatchSequentialRetry') "Invoke-ParallelDispatchSequentialRetry is defined in parallel.ps1"
@@ -237,6 +237,62 @@ $zeroIds = @($testQIds | Where-Object {
   $c -eq 0
 })
 Assert ($zeroIds.Count -eq 1 -and [string]$zeroIds[0] -eq 'streamA') "zero-commit detection: streamA (0 commits) is retry candidate, streamB (1 commit) is not"
+
+# 41. Retry branch reset points stale worker branches at the post-parallel HEAD.
+$tmpRetry = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-parallel-retry-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpRetry -Force | Out-Null
+try {
+  & $gitExe -C $tmpRetry init | Out-Null
+  & $gitExe -C $tmpRetry config user.email 'bridge-test@example.invalid' | Out-Null
+  & $gitExe -C $tmpRetry config user.name 'Bridge Test' | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $tmpRetry 'base.txt'), "base`n", [System.Text.Encoding]::UTF8)
+  & $gitExe -C $tmpRetry add base.txt | Out-Null
+  & $gitExe -C $tmpRetry commit -m 'base' | Out-Null
+  $retryOldBase = ((& $gitExe -C $tmpRetry rev-parse HEAD) | Select-Object -First 1).Trim()
+  [System.IO.File]::WriteAllText((Join-Path $tmpRetry 'main.txt'), "main`n", [System.Text.Encoding]::UTF8)
+  & $gitExe -C $tmpRetry add main.txt | Out-Null
+  & $gitExe -C $tmpRetry commit -m 'main advance' | Out-Null
+  $retryHead = ((& $gitExe -C $tmpRetry rev-parse HEAD) | Select-Object -First 1).Trim()
+  $retryBranch = Get-ParallelDispatchBranchName -StreamId 'streamA' -TaskHash 'unit'
+  & $gitExe -C $tmpRetry branch -f $retryBranch $retryOldBase | Out-Null
+  $retryReset = Reset-ParallelDispatchWorkerBranchToBase -StreamId 'streamA' -TaskHash 'unit' -BaseCommit $retryHead -GitExe $gitExe -RepoRoot $tmpRetry
+  $retryBranchHead = ((& $gitExe -C $tmpRetry rev-parse $retryBranch) | Select-Object -First 1).Trim()
+  Assert ([bool]$retryReset.ok -and $retryBranchHead -eq $retryHead) "sequential retry resets stale branch to post-parallel HEAD"
+} finally {
+  if (Test-Path -LiteralPath $tmpRetry) { Remove-Item -LiteralPath $tmpRetry -Recurse -Force }
+}
+
+# 42. Host collect commit is written back as per-stream commit evidence.
+$tmpCollect = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-parallel-collect-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpCollect -Force | Out-Null
+try {
+  & $gitExe -C $tmpCollect init | Out-Null
+  & $gitExe -C $tmpCollect config user.email 'bridge-test@example.invalid' | Out-Null
+  & $gitExe -C $tmpCollect config user.name 'Bridge Test' | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $tmpCollect 'delivered.txt'), "base`n", [System.Text.Encoding]::UTF8)
+  & $gitExe -C $tmpCollect add delivered.txt | Out-Null
+  & $gitExe -C $tmpCollect commit -m 'base' | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $tmpCollect 'delivered.txt'), "changed`n", [System.Text.Encoding]::UTF8)
+  $deliveredPaths = New-Object 'System.Collections.Generic.List[string]'
+  [void]$deliveredPaths.Add('delivered.txt')
+  $mergedStreams = New-Object 'System.Collections.Generic.List[string]'
+  $collectCtx = @{
+    collectedStreams = 1
+    deliveredPaths = $deliveredPaths
+    bridgeRoot = $tmpCollect
+    gitExe = $gitExe
+    merged = 0
+    workers = @([pscustomobject]@{ id = 'streamA' })
+    completed = @{ streamA = [pscustomobject]@{ status = 'paused-for-restart'; commits = @(); _collected = $true; _deliveredPaths = @('delivered.txt') } }
+    mergedStreams = $mergedStreams
+  }
+  Commit-ParallelDispatchCollectedOutputs -Context $collectCtx
+  $collectHead = ((& $gitExe -C $tmpCollect rev-parse HEAD) | Select-Object -First 1).Trim()
+  $collectCommits = @($collectCtx.completed['streamA'].commits)
+  Assert ([int]$collectCtx.merged -eq 1 -and $collectCtx.mergedStreams.Contains('streamA') -and $collectCommits.Count -eq 1 -and [string]$collectCommits[0] -eq $collectHead) "host collect commit annotates stream commits evidence"
+} finally {
+  if (Test-Path -LiteralPath $tmpCollect) { Remove-Item -LiteralPath $tmpCollect -Recurse -Force }
+}
 
 Write-Host "`nRESULT: $pass PASS, $fail FAIL"
 if ($fail -gt 0) { exit 1 }
