@@ -29,7 +29,7 @@ function New-AuditCliJobSpec {
         $argList = @('exec', '--color', 'never', '-s', 'read-only', '-C', $SnapshotRoot, '-o', $ResultPath, '-')
     } else {
         $filePath = 'claude'
-        $argList = @('-p', '--add-dir', $SnapshotRoot, '--allowedTools', 'Read,Grep,Glob', '--model', $Model)
+        $argList = @('--add-dir', $SnapshotRoot, '--allowedTools', 'Read,Grep,Glob', '--model', $Model)
     }
 
     [pscustomobject]@{
