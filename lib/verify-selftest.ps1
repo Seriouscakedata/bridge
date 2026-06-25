@@ -416,6 +416,63 @@ function Get-GateRegressionTestSelection {
   return @($selected | ForEach-Object { [string]$_ })
 }
 
+function Test-VerifySelftestBackgroundJobContext {
+  try {
+    return ($null -ne (Get-Variable -Name PSSenderInfo -ErrorAction SilentlyContinue))
+  } catch {
+    return $false
+  }
+}
+
+function Invoke-VerifySelftestProcessNoRedirect {
+  param(
+    [Parameter(Mandatory=$true)][string]$FilePath,
+    [string[]]$Arguments = @(),
+    [string]$WorkingDirectory = (Get-VerifySelftestRoot),
+    [int]$TimeoutSec = 120
+  )
+
+  $timeout = [Math]::Max(1, [int]$TimeoutSec)
+  $output = @()
+  $exitCode = 1
+  $timedOut = $false
+
+  try {
+    $argLine = (@($Arguments) | ForEach-Object { ConvertTo-VerifySelftestProcessArgument ([string]$_) }) -join ' '
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = $argLine
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError = $false
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc.WaitForExit($timeout * 1000)) {
+      $timedOut = $true
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit(3000) | Out-Null } catch {}
+      $exitCode = 124
+    } else {
+      $exitCode = [int]$proc.ExitCode
+    }
+  } catch {
+    $output += $_.Exception.Message
+    $exitCode = 1
+  }
+
+  if ($timedOut) { $output += ("TIMEOUT after {0}s" -f $timeout) }
+  if ($exitCode -ne 0 -and $output.Count -eq 0) {
+    $output += 'process output not captured in background-job no-redirect mode'
+  }
+  return [pscustomobject][ordered]@{
+    ExitCode = $exitCode
+    TimedOut = [bool]$timedOut
+    Output = @($output | ForEach-Object { [string]$_ })
+  }
+}
+
 function Invoke-GateRegressionSuite {
   param(
     [string]$BridgeRoot = (Get-VerifySelftestRoot),
@@ -465,9 +522,18 @@ function Invoke-GateRegressionSuite {
   }
 
   $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-  $run = Invoke-VerifySelftestProcess -FilePath $powerShellExe `
-    -Arguments $runArgs `
-    -WorkingDirectory $root -TimeoutSec $wrapperTimeout
+  if (Test-VerifySelftestBackgroundJobContext) {
+    # Windows PowerShell background jobs can deadlock a nested snapshot run when stdout/stderr
+    # are redirected through ProcessStartInfo. The DONE-gate gate-regression job already runs
+    # inside Start-Job, so use no-redirect execution there and keep the same hard timeout.
+    $run = Invoke-VerifySelftestProcessNoRedirect -FilePath $powerShellExe `
+      -Arguments $runArgs `
+      -WorkingDirectory $root -TimeoutSec $wrapperTimeout
+  } else {
+    $run = Invoke-VerifySelftestProcess -FilePath $powerShellExe `
+      -Arguments $runArgs `
+      -WorkingDirectory $root -TimeoutSec $wrapperTimeout
+  }
   $stopwatch.Stop()
 
   return [pscustomobject][ordered]@{

@@ -75,6 +75,37 @@ try {
   Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$tmpJobRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-grtt-job-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+$job = $null
+try {
+  New-Item -ItemType Directory -Path (Join-Path $tmpJobRoot 'tools') -Force | Out-Null
+  New-Item -ItemType Directory -Path (Join-Path $tmpJobRoot 'lib') -Force | Out-Null
+  Copy-Item -LiteralPath $runTests -Destination (Join-Path $tmpJobRoot 'tools\run-tests.ps1') -Force
+  Copy-Item -LiteralPath $verifySelftest -Destination (Join-Path $tmpJobRoot 'lib\verify-selftest.ps1') -Force
+  [System.IO.File]::WriteAllText((Join-Path $tmpJobRoot 'tools\test-job-snapshot-pass.ps1'), "Write-Host 'job ok'; exit 0`n", (New-Object System.Text.UTF8Encoding($false)))
+  & git -C $tmpJobRoot init | Out-Null
+  & git -C $tmpJobRoot -c user.name=bridge-test -c user.email=bridge-test@example.invalid add . | Out-Null
+  & git -C $tmpJobRoot -c user.name=bridge-test -c user.email=bridge-test@example.invalid commit -m init | Out-Null
+
+  $job = Start-Job -ScriptBlock {
+    param([string]$Root)
+    . (Join-Path $Root 'lib\verify-selftest.ps1')
+    Invoke-GateRegressionSuite -BridgeRoot $Root -TimeoutSec 30 -ChangedPaths @('tools/test-job-snapshot-pass.ps1')
+  } -ArgumentList $tmpJobRoot
+  $done = Wait-Job -Job $job -Timeout 45
+  $jobResult = $null
+  if ($done) {
+    $received = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+    if ($received.Count -gt 0) { $jobResult = $received[$received.Count - 1] }
+  }
+
+  Assert 'background job snapshot suite completes' ($done -and $jobResult -and [bool]$jobResult.Ok) $(if($jobResult){ "exit=$($jobResult.ExitCode) timedOut=$($jobResult.TimedOut)" } else { 'no result' })
+  Assert 'background job snapshot suite keeps scoped selection' ($jobResult -and @($jobResult.SelectedTests) -contains 'test-job-snapshot-pass.ps1') $(if($jobResult){ ($jobResult.SelectedTests -join ',') } else { 'no result' })
+} finally {
+  if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+  Remove-Item -LiteralPath $tmpJobRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host ''
 Write-Host "gate-regression-timeout-tolerance: $Pass PASS, $Fail FAIL"
 if ($Fail -gt 0) { exit 1 }
