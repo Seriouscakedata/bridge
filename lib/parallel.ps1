@@ -1599,6 +1599,7 @@ function Invoke-TrivialFallbackWorker {
 function Get-ParallelDispatchTaskHash {
   # Stable task hash from current_task text so worktree paths are reproducible across restarts.
   $taskHash = 'task'
+  $sha = $null
   try {
     $st = Read-State
     $taskText = if ($st -and $st.current_task) { [string]$st.current_task } else { 'task' }
@@ -1606,7 +1607,7 @@ function Get-ParallelDispatchTaskHash {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($taskText)
     $hash = $sha.ComputeHash($bytes)
     $taskHash = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0,12)
-  } catch {}
+  } catch {} finally { if ($null -ne $sha) { try { $sha.Dispose() } catch {} } }   # audit: dispose native crypto handle (was leaked each dispatch wave)
   return $taskHash
 }
 
