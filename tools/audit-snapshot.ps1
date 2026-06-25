@@ -108,7 +108,7 @@ function Copy-AuditSnapshotGitBlob {
 
 function Get-AuditSnapshotDirtyFiles {
     param(
-        [Parameter(Mandatory = $true)][string[]]$StatusLines
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$StatusLines
     )
 
     $dirty = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
@@ -126,7 +126,28 @@ function Get-AuditSnapshotDirtyFiles {
         }
     }
 
-    return $dirty
+    return ,$dirty
+}
+
+function Test-AuditSnapshotRunId {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RunId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RunId)) {
+        return $false
+    }
+    if (($RunId -eq ".") -or ($RunId -eq "..") -or ($RunId -match '[\\/]')) {
+        return $false
+    }
+
+    foreach ($ch in [System.IO.Path]::GetInvalidFileNameChars()) {
+        if ($RunId.IndexOf($ch) -ge 0) {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 function New-AuditSnapshot {
@@ -157,12 +178,46 @@ function New-AuditSnapshot {
         }
     }
 
-    if ([string]::IsNullOrWhiteSpace($RunId)) {
+    $runIdWasSupplied = -not [string]::IsNullOrWhiteSpace($RunId)
+    if (-not $runIdWasSupplied) {
         $utc = (Get-Date).ToUniversalTime()
         $RunId = "audit_$($utc.ToString('yyyyMMddTHHmmss'))Z"
     }
+    if (-not (Test-AuditSnapshotRunId -RunId $RunId)) {
+        return [pscustomobject]@{
+            ok     = $false
+            reason = "invalid-run-id"
+            run_id = $RunId
+        }
+    }
 
     $runDir = Join-Path $rootPath (Join-Path "audit\runs" $RunId)
+    if (Test-Path -LiteralPath $runDir) {
+        if ($runIdWasSupplied) {
+            return [pscustomobject]@{
+                ok      = $false
+                reason  = "snapshot-exists"
+                run_id  = $RunId
+                run_dir = $runDir
+            }
+        }
+
+        $baseRunId = $RunId
+        for ($i = 1; $i -le 99; $i++) {
+            $candidateRunId = "{0}-{1}" -f $baseRunId, $i
+            $candidateRunDir = Join-Path $rootPath (Join-Path "audit\runs" $candidateRunId)
+            if (-not (Test-Path -LiteralPath $candidateRunDir)) {
+                $RunId = $candidateRunId
+                $runDir = $candidateRunDir
+                break
+            }
+        }
+
+        if (Test-Path -LiteralPath $runDir) {
+            throw "Unable to allocate a unique audit snapshot run directory for $baseRunId"
+        }
+    }
+
     $snapshotDir = Join-Path $runDir "snapshot"
     New-Item -ItemType Directory -Force -Path $snapshotDir | Out-Null
 

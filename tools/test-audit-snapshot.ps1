@@ -47,11 +47,28 @@ try {
     Invoke-TestGit -Root $tmpRoot -Arguments @("config", "user.email", "test@test.local")
     Invoke-TestGit -Root $tmpRoot -Arguments @("config", "user.name", "Test")
     Invoke-TestGit -Root $tmpRoot -Arguments @("config", "core.autocrlf", "false")
+    $excludePath = Join-Path (Join-Path (Join-Path $tmpRoot ".git") "info") "exclude"
+    Add-Content -LiteralPath $excludePath -Value "audit/"
 
     [System.IO.File]::WriteAllText((Join-Path $tmpRoot "file_a.txt"), "hello`n", [System.Text.Encoding]::UTF8)
     [System.IO.File]::WriteAllText((Join-Path $tmpRoot "file_b.txt"), "world`n", [System.Text.Encoding]::UTF8)
     Invoke-TestGit -Root $tmpRoot -Arguments @("add", "-A")
     Invoke-TestGit -Root $tmpRoot -Arguments @("commit", "-m", "init")
+
+    $cleanInclude = New-AuditSnapshot -TargetRoot $tmpRoot -RunId "clean_include" -IncludeUncommitted
+    Assert-AuditSnapshot -Condition ([bool]$cleanInclude.ok) -Message "include-uncommitted on clean repo did not return ok=true"
+    Assert-AuditSnapshot -Condition ([int]$cleanInclude.file_count -eq 2) -Message "include-uncommitted clean file_count should be 2"
+    $cleanIncludeMeta = Get-AuditSnapshotMeta -RunDir (Split-Path -Path $cleanInclude.snapshot_root -Parent)
+    Assert-AuditSnapshot -Condition ([string]$cleanIncludeMeta.snapshot_policy -eq "include-uncommitted") -Message "include-uncommitted clean policy mismatch"
+    Assert-AuditSnapshot -Condition ([string]::IsNullOrWhiteSpace([string]$cleanIncludeMeta.git_status_short)) -Message "include-uncommitted clean status should be empty"
+
+    $duplicateRun = New-AuditSnapshot -TargetRoot $tmpRoot -RunId "clean_include" -IncludeUncommitted
+    Assert-AuditSnapshot -Condition (-not [bool]$duplicateRun.ok) -Message "duplicate RunId should return ok=false"
+    Assert-AuditSnapshot -Condition ([string]$duplicateRun.reason -eq "snapshot-exists") -Message "duplicate RunId reason should be snapshot-exists"
+
+    $invalidRun = New-AuditSnapshot -TargetRoot $tmpRoot -RunId "..\escape"
+    Assert-AuditSnapshot -Condition (-not [bool]$invalidRun.ok) -Message "invalid RunId should return ok=false"
+    Assert-AuditSnapshot -Condition ([string]$invalidRun.reason -eq "invalid-run-id") -Message "invalid RunId reason should be invalid-run-id"
 
     $clean = New-AuditSnapshot -TargetRoot $tmpRoot
     Assert-AuditSnapshot -Condition ([bool]$clean.ok) -Message "clean snapshot did not return ok=true"
