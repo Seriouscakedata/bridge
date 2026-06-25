@@ -555,6 +555,24 @@ function Get-AuditGroundingSummary {
     return @{ grounded = $grounded; rejected_grounding = $rejected }
 }
 
+function Resolve-AuditJobVote {
+    param(
+        [object]$Parsed,
+        [Parameter(Mandatory=$true)][string]$FindingId
+    )
+    $arr = @($Parsed | Where-Object { $_ -ne $null })
+    if ($arr.Count -ge 1) {
+        return $arr[0]
+    }
+    return [pscustomobject]@{
+        finding_id = $FindingId
+        vote       = 'abstain'
+        reason     = 'stdout-json-parse-failed'
+        file       = ''
+        line       = 0
+    }
+}
+
 function Build-AuditSkepticJobSpec {
     param(
         [Parameter(Mandatory=$true)][object]$Finding,
@@ -570,7 +588,7 @@ function Build-AuditSkepticJobSpec {
     $fid = $Finding.finding_id
     $file = $Finding.file
     $line = $Finding.line
-    $desc = $Finding.description
+    $desc = @(([string]$Finding.root_cause), ([string]$Finding.why), ([string]$Finding.evidence_snippet)) | Where-Object { $_ } | Select-Object -First 1
     $prompt = "You are an independent skeptic reviewing a security/quality finding. Check the finding against the cited file and line in the snapshot. Return STRICT JSON only (no extra text): { `"finding_id`": `"$fid`", `"vote`": `"refute|support|abstain`", `"reason`": `"...`", `"file`": `"...`", `"line`": <int> }. Finding: id=$fid file=$file line=$line description=$desc. Snapshot root: $SnapshotRoot"
 
     return [pscustomobject]@{
@@ -653,28 +671,16 @@ function Invoke-AuditVerifyStage {
                 $stdout = ''
             }
 
-            $parsedVotes = @()
+            $parsedVotes = $null
             try {
                 if (-not [string]::IsNullOrWhiteSpace($stdout)) {
-                    $parsed = $stdout | ConvertFrom-Json -ErrorAction Stop
-                    $parsedVotes = @($parsed)
+                    $parsedVotes = $stdout | ConvertFrom-Json -ErrorAction Stop
                 }
             } catch {
-                $parsedVotes = @()
+                $parsedVotes = $null
             }
 
-            if ($parsedVotes.Count -eq 0) {
-                $allVotes += [pscustomobject]@{
-                    finding_id = [string]$record.metadata.finding_id
-                    vote       = 'abstain'
-                    reason     = 'stdout-json-parse-failed'
-                    file       = ''
-                    line       = 0
-                }
-                continue
-            }
-
-            $allVotes += $parsedVotes
+            $allVotes += (Resolve-AuditJobVote -Parsed $parsedVotes -FindingId ([string]$record.metadata.finding_id))
         }
     }
 
@@ -923,6 +929,7 @@ function Invoke-AdversarialAudit {
     } else {
         ,@()
     }
+    $grounded = @($grounded)
 
     # e. VERIFY stage
     $verified = if ($grounded.Count -gt 0) {
@@ -932,6 +939,7 @@ function Invoke-AdversarialAudit {
     } else {
         ,@()
     }
+    $verified = @($verified)
 
     # f. SYNTHESIZE stage
     $synth = if ($verified.Count -gt 0) {
