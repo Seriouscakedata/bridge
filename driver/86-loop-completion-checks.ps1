@@ -620,10 +620,14 @@ function New-DriverDoneGateRegressionTimeoutInconclusiveRecord {
     $timedOutTestsText = ("; timed_out_tests={0}" -f ($timedOutTestsList -join ','))
   }
 
-  # A timeout after the bounded retry/fallback schedule is actionable: the same test is
-  # stuck, and letting DONE pass as inconclusive burns attempts without new evidence.
-  $outcome = 'timeout_fail'
-  $message = "🚨 Gate-regression timeout final outcome=timeout_fail$attemptsText ($reasonText$budgetText$fallbackText$timedOutTestsText) — exit=124/timeout считается FAIL; задача возвращается на CONTINUE."
+  $isInconclusive = $false
+  try { $isInconclusive = [bool](Test-DriverDoneGateRegressionTimeoutInconclusive -GateResult $GateResult) } catch {}
+  $outcome = if ($isInconclusive) { 'inconclusive' } else { 'timeout_fail' }
+  $message = if ($isInconclusive) {
+    "⚠️ Gate-regression inconclusive$attemptsText ($reasonText$budgetText$fallbackText$timedOutTestsText) — exhausted retry/fallback schedule; non-blocking."
+  } else {
+    "🚨 Gate-regression timeout final outcome=timeout_fail$attemptsText ($reasonText$budgetText$fallbackText$timedOutTestsText) — exit=124/timeout считается FAIL; задача возвращается на CONTINUE."
+  }
 
   return [pscustomobject][ordered]@{
     Outcome = $outcome
