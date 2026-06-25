@@ -1438,6 +1438,15 @@ function Initialize-AuditBacklogHelpers {
   return [bool]$addIdeaAvailable
 }
 
+function Test-AuditDirectDeepFilingDisabled {
+  param([object]$Config = $null)
+  # Default-disabled: the old direct deep filing is retired in favor of the adversarial VERIFY pipeline.
+  if ($null -ne $Config -and $null -ne $Config.PSObject.Properties['directDeepFilingDisabled']) {
+    return [bool]$Config.directDeepFilingDisabled
+  }
+  return $true
+}
+
 function Add-DeepAuditFindingsToBacklog {
   param(
     [string]$Root,
@@ -1453,6 +1462,10 @@ function Add-DeepAuditFindingsToBacklog {
   $deepClaudeCount = 0
   $deepModelAgentCount = 0
   $deepBacklogHelperWarned = $false
+  if (Test-AuditDirectDeepFilingDisabled) {
+    try { Write-AuditLog -BridgePath $Root -Message 'deep-audit direct filing disabled -- deep findings now route through adversarial VERIFY (Invoke-AuditFileConfirmed in tools/adversarial-audit.ps1)' } catch {}
+    return [pscustomobject]@{ deepFiled = 0; deepCodexCount = 0; deepClaudeCount = 0; deepModelAgentCount = 0 }
+  }
     # Bridge deep-audit findings are pre-validated and go in approved. Project
     # deep-audit findings go in held so an external codebase is never changed
     # just because a tab-level audit found something.

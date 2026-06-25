@@ -110,10 +110,10 @@ function Invoke-AuditFileConfirmed {
     }
 }
 
-# TODO Phase 6: Neutralize Add-DeepAuditFindingsToBacklog in tools/audit.ps1:1441.
-# That function files un-verified deep findings directly to the backlog, bypassing
-# the confirmed-only gate. It must be converted to route ONLY confirmed_deduped output
-# from Invoke-AuditSynthesize through Invoke-AuditFileConfirmed.
+# DONE Phase 6: Add-DeepAuditFindingsToBacklog in tools/audit.ps1:1441 has been neutralized.
+# Direct deep-filing is now disabled via Test-AuditDirectDeepFilingDisabled (default=true).
+# Deep findings now route through the adversarial VERIFY pipeline (Invoke-AuditFileConfirmed).
+# Reversible: set Config.directDeepFilingDisabled=$false to re-enable.
 function Assert-NoDirectDeepFiling {
     param([string]$Caller = 'unknown')
     throw "POLICY VIOLATION: Direct deep-audit filing is prohibited. Use Invoke-AuditFileConfirmed with confirmed-only findings from Invoke-AuditSynthesize. Caller: $Caller"
