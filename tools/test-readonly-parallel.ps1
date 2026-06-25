@@ -88,3 +88,113 @@ try {
   }
   try { Clear-ReadOnlyAuditPoolRegistry -DeleteFiles | Out-Null } catch {}
 }
+
+# === Phase: floor test (peak >= 15 of 20 dummy jobs) ===
+Write-Host "=== Floor test: 20 dummy jobs, expect peak_active >= 15 ==="
+
+# Warm-up spawn to pre-load powershell.exe process creation.
+$warmup = $null
+try {
+  $warmup = Start-Process -FilePath $powershellExe -ArgumentList @('-NoProfile', '-Command', 'exit 0') `
+    -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+  if ($warmup) { $warmup.WaitForExit(3000) | Out-Null }
+} catch {}
+
+Clear-ReadOnlyAuditPoolRegistry | Out-Null
+Reset-ReadOnlyAuditPoolTimeline
+
+$floorJobs = @()
+for ($i = 0; $i -lt 20; $i++) {
+  $floorJobs += Start-ReadOnlyAuditJob -FilePath $powershellExe -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'Start-Sleep -Milliseconds 1500'
+  )
+}
+
+$fsw = [System.Diagnostics.Stopwatch]::StartNew()
+while ($fsw.Elapsed.TotalSeconds -lt 3.5) {
+  Add-ReadOnlyAuditTimelineSample
+  Start-Sleep -Milliseconds 50
+}
+while ((Get-ReadOnlyAuditPoolStatus).active -gt 0 -and $fsw.Elapsed.TotalSeconds -lt 10) {
+  Start-Sleep -Milliseconds 100
+}
+
+$floorTimeline = Get-ReadOnlyAuditPoolTimeline
+$floorPeak    = [int]$floorTimeline.peak
+$floorSamples = [int]$floorTimeline.count
+Write-Host ("Floor test: peak_active={0}, samples={1}" -f $floorPeak, $floorSamples)
+if ($floorPeak -lt 15) {
+  throw ("Floor test FAIL: expected peak_active >= 15, got {0} (samples={1})" -f $floorPeak, $floorSamples)
+}
+Write-Host ("Floor test PASS peak_active={0}" -f $floorPeak)
+
+# === Phase: fault-isolation (4 jobs: 1 fail, 1 hang/kill, 2 normal) ===
+Write-Host "=== Fault-isolation test ==="
+
+# Wait until all floor jobs have exited before clearing.
+$fsw2 = [System.Diagnostics.Stopwatch]::StartNew()
+while ((Get-ReadOnlyAuditPoolStatus).active -gt 0 -and $fsw2.Elapsed.TotalSeconds -lt 8) {
+  Start-Sleep -Milliseconds 100
+}
+Clear-ReadOnlyAuditPoolRegistry | Out-Null
+Reset-ReadOnlyAuditPoolTimeline
+
+$fiJobs = @()
+# job 0: exits immediately with code 1
+$fiJobs += Start-ReadOnlyAuditJob -FilePath $powershellExe -ArgumentList @(
+  '-NoProfile', '-Command', 'exit 1'
+)
+# job 1: hangs ~30s, will be killed explicitly
+$fiJobs += Start-ReadOnlyAuditJob -FilePath $powershellExe -ArgumentList @(
+  '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'Start-Sleep -Seconds 30'
+)
+# job 2: normal
+$fiJobs += Start-ReadOnlyAuditJob -FilePath $powershellExe -ArgumentList @(
+  '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'Start-Sleep -Milliseconds 500'
+)
+# job 3: normal
+$fiJobs += Start-ReadOnlyAuditJob -FilePath $powershellExe -ArgumentList @(
+  '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'Start-Sleep -Milliseconds 500'
+)
+
+# Give exit-1 and normal jobs a moment to settle.
+Start-Sleep -Milliseconds 1200
+
+# Explicitly kill the hang job.
+$hangRec = $fiJobs[1]
+Stop-ReadOnlyAuditJob -Record $hangRec -TimeoutSec 5
+
+# Drain pool.
+Wait-ReadOnlyAuditPoolDrain -TimeoutSec 10
+
+$fiStatus = Get-ReadOnlyAuditPoolStatus
+
+Assert-ReadonlyParallel ([int]$fiStatus.active -eq 0) `
+  ("fault-isolation: expected active=0, got {0}" -f $fiStatus.active)
+Assert-ReadonlyParallel ([int]$fiStatus.total -eq 4) `
+  ("fault-isolation: expected total=4, got {0}" -f $fiStatus.total)
+
+# Normal jobs should have completedAt.
+$norm1Rec = if ($null -ne $fiJobs[2].pid) { $script:ReadOnlyAuditRegistry[[string]$fiJobs[2].pid] } else { $null }
+$norm2Rec = if ($null -ne $fiJobs[3].pid) { $script:ReadOnlyAuditRegistry[[string]$fiJobs[3].pid] } else { $null }
+Assert-ReadonlyParallel ($null -ne $norm1Rec -and $null -ne $norm1Rec.completedAt) `
+  "fault-isolation: normal job 2 missing completedAt"
+Assert-ReadonlyParallel ($null -ne $norm2Rec -and $null -ne $norm2Rec.completedAt) `
+  "fault-isolation: normal job 3 missing completedAt"
+
+# Fail job should be recorded with non-null completedAt and non-zero exit code.
+$failKey = if ($null -ne $fiJobs[0].pid) { [string]$fiJobs[0].pid } else { 'failed:' + $fiJobs[0].jobId }
+$failRec = $script:ReadOnlyAuditRegistry[$failKey]
+Assert-ReadonlyParallel ($null -ne $failRec) "fault-isolation: fail job not in registry"
+Assert-ReadonlyParallel ($null -ne $failRec.completedAt) "fault-isolation: fail job missing completedAt"
+if ($failRec.proc) {
+  Assert-ReadonlyParallel ([int]$failRec.proc.ExitCode -ne 0) `
+    ("fault-isolation: fail job exit code should be non-zero, got {0}" -f $failRec.proc.ExitCode)
+}
+
+# Status should not throw.
+$statusOk = $true
+try { Get-ReadOnlyAuditPoolStatus | Out-Null } catch { $statusOk = $false }
+Assert-ReadonlyParallel $statusOk "fault-isolation: Get-ReadOnlyAuditPoolStatus threw unexpectedly"
+
+Write-Host "PASS fault-isolation"

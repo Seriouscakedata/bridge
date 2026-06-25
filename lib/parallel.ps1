@@ -466,6 +466,7 @@ function Get-ParallelJobsDir {
 
 # === Read-Only Audit Pool (BEGIN) ===
 $script:ReadOnlyAuditRegistry = @{}
+$script:ReadOnlyAuditTimeline = New-Object System.Collections.Generic.List[object]
 
 function Start-ReadOnlyAuditJob {
   param(
@@ -603,6 +604,118 @@ function Clear-ReadOnlyAuditPoolRegistry {
     $removed++
   }
   return $removed
+}
+
+function Add-ReadOnlyAuditTimelineSample {
+  if ($null -eq $script:ReadOnlyAuditTimeline) {
+    $script:ReadOnlyAuditTimeline = New-Object System.Collections.Generic.List[object]
+  }
+  $status = Get-ReadOnlyAuditPoolStatus
+  $script:ReadOnlyAuditTimeline.Add([pscustomobject]@{
+    ts     = (Get-Date).ToString('o')
+    active = [int]$status.active
+  })
+}
+
+function Reset-ReadOnlyAuditPoolTimeline {
+  $script:ReadOnlyAuditTimeline = New-Object System.Collections.Generic.List[object]
+}
+
+function Get-ReadOnlyAuditPoolTimeline {
+  if ($null -eq $script:ReadOnlyAuditTimeline) {
+    $script:ReadOnlyAuditTimeline = New-Object System.Collections.Generic.List[object]
+  }
+  $samples = @($script:ReadOnlyAuditTimeline.ToArray())
+  $peak = 0
+  foreach ($s in $samples) {
+    if ([int]$s.active -gt $peak) { $peak = [int]$s.active }
+  }
+  return [pscustomobject]@{
+    samples = $samples
+    count   = [int]$samples.Count
+    peak    = [int]$peak
+  }
+}
+
+function Stop-ReadOnlyAuditJob {
+  param(
+    [Parameter(Mandatory=$true)][pscustomobject]$Record,
+    [int]$TimeoutSec = 10
+  )
+  if ($null -eq $Record) { return }
+  if ($Record.active -eq $false -and $null -ne $Record.completedAt) { return }
+
+  $targetPid = $Record.pid
+  if ($null -eq $targetPid) {
+    $Record.active = $false
+    if ($null -eq $Record.completedAt) { $Record.completedAt = (Get-Date).ToString('o') }
+    return
+  }
+
+  $alreadyExited = $false
+  if ($Record.proc) {
+    try { $alreadyExited = [bool]$Record.proc.HasExited } catch { $alreadyExited = $true }
+  }
+
+  if (-not $alreadyExited) {
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    $tmpErr = [System.IO.Path]::GetTempFileName()
+    $taskkillSucceeded = $false
+    try {
+      $killProc = Start-Process -FilePath 'taskkill.exe' `
+        -ArgumentList @('/PID', [string]$targetPid, '/T', '/F') `
+        -Wait -PassThru `
+        -RedirectStandardOutput $tmpOut `
+        -RedirectStandardError $tmpErr `
+        -NoNewWindow `
+        -ErrorAction Stop
+      $killExit = [int]$killProc.ExitCode
+      if ($killExit -eq 0 -or $killExit -eq 128) {
+        $taskkillSucceeded = $true
+      } elseif ($killExit -ne 0) {
+        $capturedErr = ''
+        try { $capturedErr = [System.IO.File]::ReadAllText($tmpErr) } catch {}
+        Write-Warning ("Stop-ReadOnlyAuditJob: taskkill PID {0} exit {1}; stderr: {2}" -f $targetPid, $killExit, $capturedErr)
+      }
+    } catch {
+      Write-Warning ("Stop-ReadOnlyAuditJob: taskkill threw for PID {0}: {1}" -f $targetPid, $_.Exception.Message)
+    } finally {
+      try { Remove-Item -LiteralPath $tmpOut -Force -ErrorAction SilentlyContinue } catch {}
+      try { Remove-Item -LiteralPath $tmpErr -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if (-not $taskkillSucceeded -and $Record.proc) {
+      $stillRunning = $false
+      try { $stillRunning = -not $Record.proc.HasExited } catch { $stillRunning = $false }
+      if ($stillRunning) {
+        try {
+          $Record.proc.Kill()
+          $waitMs = [Math]::Max(1000, [Math]::Min(30000, $TimeoutSec * 1000))
+          $Record.proc.WaitForExit($waitMs) | Out-Null
+        } catch {
+          Write-Warning ("Stop-ReadOnlyAuditJob: fallback proc.Kill failed for PID {0}: {1}" -f $targetPid, $_.Exception.Message)
+        }
+      }
+    }
+  }
+
+  $Record.active = $false
+  if ($null -eq $Record.completedAt) { $Record.completedAt = (Get-Date).ToString('o') }
+}
+
+function Wait-ReadOnlyAuditPoolDrain {
+  param([int]$TimeoutSec = 60)
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+    Add-ReadOnlyAuditTimelineSample
+    $status = Get-ReadOnlyAuditPoolStatus
+    if ([int]$status.active -eq 0) { return }
+    Start-Sleep -Milliseconds 150
+  }
+  foreach ($entry in @($script:ReadOnlyAuditRegistry.GetEnumerator())) {
+    $rec = $entry.Value
+    if ($rec -and $rec.active) { Stop-ReadOnlyAuditJob -Record $rec }
+  }
+  Add-ReadOnlyAuditTimelineSample
 }
 # === Read-Only Audit Pool (END) ===
 
