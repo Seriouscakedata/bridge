@@ -799,3 +799,46 @@ function Invoke-AuditSynthesize {
         counts            = $counts
     }
 }
+
+# Mode / Trigger gate (Phase 6)
+
+$Script:_AdversarialAllowedTriggers = @('operator', 'milestone-pretraining', 'milestone-postpipeline')
+$Script:_AdversarialDeniedTriggers = @('nightly_cron', 'static_daily')
+
+function Test-AuditAdversarialTriggerAllowed {
+    param([string]$Trigger)
+
+    if ([string]::IsNullOrWhiteSpace($Trigger)) {
+        return [pscustomobject]@{ allowed = $false; reason = 'denied:empty-trigger-cannot-start-adversarial' }
+    }
+
+    if ($Script:_AdversarialAllowedTriggers -contains $Trigger) {
+        return [pscustomobject]@{ allowed = $true; reason = 'operator-trigger-ok' }
+    }
+
+    if ($Script:_AdversarialDeniedTriggers -contains $Trigger) {
+        $reasonTrigger = $Trigger -replace '_', '-'
+        return [pscustomobject]@{ allowed = $false; reason = "denied:$reasonTrigger-cannot-start-adversarial" }
+    }
+
+    return [pscustomobject]@{ allowed = $false; reason = 'denied:unknown-trigger-cannot-start-adversarial' }
+}
+
+function Assert-AuditAdversarialAllowed {
+    param([string]$Trigger)
+
+    $r = Test-AuditAdversarialTriggerAllowed -Trigger $Trigger
+    if (-not $r.allowed) {
+        throw "adversarial audit blocked for trigger '$Trigger': $($r.reason)"
+    }
+}
+
+function Get-AuditMode {
+    param([string]$Trigger)
+
+    if ($Script:_AdversarialAllowedTriggers -contains $Trigger) {
+        return 'adversarial_milestone'
+    }
+
+    return 'static_daily'
+}
