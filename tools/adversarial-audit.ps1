@@ -226,5 +226,5 @@ function ConvertFrom-AuditFinderOutput {
             $valid += $item
         }
     }
-    return $valid
+    Write-Output -NoEnumerate $valid
 }
