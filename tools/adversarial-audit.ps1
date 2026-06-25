@@ -842,3 +842,100 @@ function Get-AuditMode {
 
     return 'static_daily'
 }
+
+function Invoke-AdversarialAudit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Trigger,
+        [Parameter(Mandatory=$true)][string]$SnapshotRoot,
+        [Parameter(Mandatory=$true)][string]$RunId,
+        [Parameter(Mandatory=$true)][string]$OutRoot,
+        [string[]]$Dimensions = $null,
+        [object[]]$Perspectives = $null,
+        [int]$SkepticsPerFinding = 3,
+        [int]$MinValidVotes = 2,
+        [scriptblock]$FindRunner = $null,
+        [scriptblock]$VoteCollector = $null,
+        [scriptblock]$Filer = $null,
+        [string[]]$ExistingFingerprints = @(),
+        [object]$Telemetry = $null
+    )
+
+    # a. Gate: throws if trigger is not allowed
+    Assert-AuditAdversarialAllowed -Trigger $Trigger
+
+    # b. Build find matrix
+    $matrix = Get-AuditFindMatrix -Dimensions $Dimensions -Perspectives $Perspectives
+
+    # c. FIND stage
+    $rawFindings = @()
+    $schemaRejected = 0
+
+    if ($null -ne $FindRunner) {
+        $rawFindings = @(& $FindRunner $matrix $SnapshotRoot)
+    }
+
+    $validatedFindings = @($rawFindings | Where-Object { (Test-AuditFinderSchema -Obj $_).valid })
+    $schemaRejected = $rawFindings.Count - $validatedFindings.Count
+
+    # d. GROUNDING stage — direct capture (NOT @()), Invoke-AuditGroundingGate uses Write-Output -NoEnumerate
+    $grounded = if ($validatedFindings.Count -gt 0) {
+        Invoke-AuditGroundingGate -Findings $validatedFindings -SnapshotRoot $SnapshotRoot
+    } else {
+        ,@()
+    }
+
+    # e. VERIFY stage
+    $verified = if ($grounded.Count -gt 0) {
+        Invoke-AuditVerifyStage -Findings $grounded -SnapshotRoot $SnapshotRoot `
+            -SkepticsPerFinding $SkepticsPerFinding -MinValidVotes $MinValidVotes `
+            -VoteCollector $VoteCollector
+    } else {
+        ,@()
+    }
+
+    # f. SYNTHESIZE stage
+    $synth = if ($verified.Count -gt 0) {
+        Invoke-AuditSynthesize -Findings $verified -RunId $RunId -OutRoot $OutRoot -Telemetry $Telemetry
+    } else {
+        [pscustomobject]@{
+            confirmed_deduped = @()
+            report_json_path  = $null
+            report_md_path    = $null
+            counts            = [pscustomobject]@{
+                confirmed             = 0
+                refuted               = 0
+                unverified            = 0
+                rejected_grounding    = 0
+                confirmed_after_dedup = 0
+            }
+        }
+    }
+
+    # g. FILE CONFIRMED stage
+    $filed = Invoke-AuditFileConfirmed -ConfirmedFindings $synth.confirmed_deduped `
+        -RunId $RunId -ExistingFingerprints $ExistingFingerprints -Filer $Filer
+
+    # Verify summary (guard empty — Invoke-AuditVerifyStage param is Mandatory without AllowEmptyCollection)
+    $verifySummary = if ($verified.Count -gt 0) {
+        Get-AuditVerifySummary -Findings $verified
+    } else {
+        @{ confirmed = 0; refuted = 0; unverified = 0; rejected_grounding = 0 }
+    }
+
+    return [pscustomobject]@{
+        trigger          = $Trigger
+        mode             = (Get-AuditMode $Trigger)
+        phases           = [pscustomobject]@{
+            find_raw           = $rawFindings.Count
+            schema_rejected    = $schemaRejected
+            grounded           = (@($grounded | Where-Object { $_.state -eq 'grounded' }).Count)
+            rejected_grounding = (@($grounded | Where-Object { $_.state -eq 'rejected_grounding' }).Count)
+            verify             = $verifySummary
+            synth              = $synth.counts
+            filed              = $filed.counts
+        }
+        report_json_path = $synth.report_json_path
+        report_md_path   = $synth.report_md_path
+    }
+}
