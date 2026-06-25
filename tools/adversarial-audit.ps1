@@ -593,3 +593,101 @@ function Get-AuditVerifySummary {
         rejected_grounding = @($Findings | Where-Object { $_.verdict -eq 'rejected_grounding' }).Count
     }
 }
+
+function Get-AuditFindingStructuralKey {
+    param([Parameter(Mandatory=$true)][object]$Finding)
+
+    $filePart = ([string]$Finding.file).ToLower()
+    $catPart  = [string]$Finding.category
+
+    $raw = ([string]$Finding.evidence_snippet).Trim().ToLower()
+    $normalized = [System.Text.RegularExpressions.Regex]::Replace($raw, '\s+', ' ')
+
+    $bytes  = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+    $sha1   = [System.Security.Cryptography.SHA1]::Create()
+    $hash   = $sha1.ComputeHash($bytes)
+    $sha1.Dispose()
+    $hashHex = ($hash | ForEach-Object { $_.ToString('x2') }) -join ''
+
+    return "$filePart|$catPart|$hashHex"
+}
+
+function Invoke-AuditSynthesize {
+    param(
+        [Parameter(Mandatory=$true)][object[]]$Findings,
+        [Parameter(Mandatory=$true)][string]$RunId,
+        [Parameter(Mandatory=$true)][string]$OutRoot,
+        [object]$Telemetry = $null
+    )
+
+    $severityOrder = @{ 'critical' = 4; 'high' = 3; 'medium' = 2; 'low' = 1 }
+
+    $cntConfirmed   = @($Findings | Where-Object { $_.verdict -eq 'confirmed' }).Count
+    $cntRefuted     = @($Findings | Where-Object { $_.verdict -eq 'refuted' }).Count
+    $cntUnverified  = @($Findings | Where-Object { $_.verdict -eq 'unverified' }).Count
+    $cntRejected    = @($Findings | Where-Object { $_.verdict -eq 'rejected_grounding' }).Count
+
+    # Dedup confirmed by structural key; on collision keep highest severity (tie → first)
+    $confirmedList = @($Findings | Where-Object { $_.verdict -eq 'confirmed' })
+    $dedupMap = @{}
+    foreach ($f in $confirmedList) {
+        $key = Get-AuditFindingStructuralKey -Finding $f
+        if (-not $dedupMap.ContainsKey($key)) {
+            $dedupMap[$key] = $f
+        } else {
+            $existSev = $severityOrder[[string]$dedupMap[$key].severity]
+            if ($null -eq $existSev) { $existSev = 0 }
+            $newSev = $severityOrder[[string]$f.severity]
+            if ($null -eq $newSev) { $newSev = 0 }
+            if ($newSev -gt $existSev) { $dedupMap[$key] = $f }
+        }
+    }
+    $confirmedDeduped = @($dedupMap.Values)
+
+    $outDir = Join-Path $OutRoot $RunId
+    if (-not (Test-Path -LiteralPath $outDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+    }
+
+    $counts = [pscustomobject]@{
+        confirmed             = $cntConfirmed
+        refuted               = $cntRefuted
+        unverified            = $cntUnverified
+        rejected_grounding    = $cntRejected
+        confirmed_after_dedup = $confirmedDeduped.Count
+    }
+
+    $reportObj = [pscustomobject]@{
+        run_id            = $RunId
+        counts            = $counts
+        telemetry         = $Telemetry
+        all_findings      = $Findings
+        confirmed_deduped = $confirmedDeduped
+    }
+
+    $jsonPath = Join-Path $outDir 'report.json'
+    $reportObj | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonPath -Encoding UTF8
+
+    $mdLines = [System.Collections.Generic.List[string]]::new()
+    [void]$mdLines.Add("# Audit Report: $RunId")
+    [void]$mdLines.Add("")
+    [void]$mdLines.Add("**Verdict counts:** confirmed=$cntConfirmed, refuted=$cntRefuted, unverified=$cntUnverified, rejected_grounding=$cntRejected (after dedup: $($confirmedDeduped.Count))")
+    [void]$mdLines.Add("")
+    [void]$mdLines.Add("## Confirmed Findings (deduped)")
+    [void]$mdLines.Add("")
+    foreach ($f in $confirmedDeduped) {
+        [void]$mdLines.Add("### $($f.category) — $($f.file):$($f.line)")
+        [void]$mdLines.Add("- **Severity:** $($f.severity)")
+        [void]$mdLines.Add("- **Evidence:** $($f.evidence_snippet)")
+        [void]$mdLines.Add("")
+    }
+    ($mdLines -join "`n") | Set-Content -Path (Join-Path $outDir 'report.md') -Encoding UTF8
+    $mdPath = Join-Path $outDir 'report.md'
+
+    return [pscustomobject]@{
+        confirmed_deduped = $confirmedDeduped
+        report_json_path  = $jsonPath
+        report_md_path    = $mdPath
+        counts            = $counts
+    }
+}
