@@ -23,11 +23,18 @@ function Invoke-ParallelWorkers {
     $out = Join-Path $jobsDir ('par_' + ($wt.branch -replace '[\\/]','_') + '.log')
     $cmdF = "$out.cmd"; [System.IO.File]::WriteAllText($cmdF, [string]$w.command, $u8)
     $runner = "$out.run.ps1"
+    # audit: escape single quotes in interpolated paths so a path containing ' can't break (or inject into)
+    # the generated runner script; propagate the cmd subprocess exit code to the worker process.
+    $wtPathEsc = ([string]$wt.path).Replace("'","''")
+    $cmdFEsc   = ([string]$cmdF).Replace("'","''")
+    $outEsc    = ([string]$out).Replace("'","''")
     $rs = @"
 `$ErrorActionPreference='Continue'
-try { Set-Location -LiteralPath '$($wt.path)' } catch {}
-`$c = Get-Content -LiteralPath '$cmdF' -Raw
-try { & `$env:ComSpec /c `$c *>> '$out' 2>&1 } catch { `$_ | Out-File -Append -LiteralPath '$out' }
+`$LASTEXITCODE = 0
+try { Set-Location -LiteralPath '$wtPathEsc' } catch {}
+`$c = Get-Content -LiteralPath '$cmdFEsc' -Raw
+try { & `$env:ComSpec /c `$c *>> '$outEsc' 2>&1 } catch { `$_ | Out-File -Append -LiteralPath '$outEsc' }
+exit `$LASTEXITCODE
 "@
     [System.IO.File]::WriteAllText($runner, $rs, (New-Object System.Text.UTF8Encoding($true)))
     $proc = $null
@@ -122,16 +129,21 @@ function Invoke-CodexParallel {
   $results = New-Object System.Collections.Generic.List[object]; $merged=0; $conflicts=0
   foreach ($u in $units) {
     if (-not $u.wt) { [void]$results.Add(@{ name=$u.name; subtask=$u.subtask; mergeOk=$false; conflict=$false; tail='(worktree creation failed)' }); continue }
-    try { if ($u.proc -and -not $u.proc.HasExited) { & taskkill /PID $u.proc.Id /T /F 2>$null | Out-Null } } catch {}
+    # audit: track whether the worker was force-killed (timed out) vs exited on its own. A killed
+    # worker only had its COMMITTED work merged (git merge ignores uncommitted WIP), but the stream
+    # is incomplete, so surface it (timedOut flag + warning) instead of silently trusting the merge.
+    $timedOut = $false
+    try { if ($u.proc -and -not $u.proc.HasExited) { & taskkill /PID $u.proc.Id /T /F 2>$null | Out-Null; $timedOut = $true } } catch {}
     $tail = ''
     try { $tail = Get-Content -LiteralPath $u.msgF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
     if ([string]::IsNullOrWhiteSpace($tail)) { try { $tail = Get-Content -LiteralPath $u.outF -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } catch {} }
     if ($null -eq $tail) { $tail = '' }
     if ($tail.Length -gt 700) { $tail = '...' + $tail.Substring($tail.Length - 700) }
+    if ($timedOut) { try { Write-Warning ("[parallel] worker '" + $u.name + "' force-killed (timed out); merging only its committed work — stream is incomplete") } catch {} }
     $m = Merge-Worktree -Wt $u.wt -Message ('parallel: ' + $u.name)
     if ($m.ok) { $merged++ } elseif ($m.conflict) { $conflicts++ }
     Remove-Worktree $u.wt
-    [void]$results.Add(@{ name=$u.name; subtask=$u.subtask; mergeOk=$m.ok; conflict=$m.conflict; tail=$tail })
+    [void]$results.Add(@{ name=$u.name; subtask=$u.subtask; mergeOk=$m.ok; conflict=$m.conflict; timedOut=$timedOut; tail=$tail })
     try { Remove-Item $u.inF,$u.msgF,$u.outF,$u.errF -Force -ErrorAction SilentlyContinue } catch {}
   }
   return @{ results = @($results.ToArray()); merged = $merged; conflicts = $conflicts; error = '' }
@@ -2810,10 +2822,14 @@ function Invoke-ParallelDispatchGitProcess {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     [void]$proc.Start()
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
-    $exitCode = [int]$proc.ExitCode
+    # audit: read both pipes ASYNC (sync ReadToEnd on stdout+stderr can deadlock if one pipe fills)
+    # and bound the wait so a hung git subprocess can't block the dispatcher forever (kill on timeout).
+    $soTask = $proc.StandardOutput.ReadToEndAsync()
+    $seTask = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit(180000)) { try { $proc.Kill() } catch {}; try { [void]$proc.WaitForExit(5000) } catch {} }
+    $stdout = try { $soTask.Result } catch { '' }
+    $stderr = try { $seTask.Result } catch { '' }
+    $exitCode = try { [int]$proc.ExitCode } catch { -1 }
     $combined = @($stdout, $stderr) -join "`n"
     if (-not [string]::IsNullOrWhiteSpace($combined)) {
       $output = @($combined -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -2875,6 +2891,11 @@ function Merge-ParallelDispatchWorkerOutput {
         if ([int]$mergeOut3.ExitCode -eq 0) {
           $Context.merged++
           [void]$Context.mergedStreams.Add([string]$Worker.id)
+          # audit: -X ours drops this stream's CONFLICTING hunks (trunk wins) but still counts the stream
+          # as merged. The branch is preserved for review; also log a durable warning so the dropped work
+          # is visible in the audit trail, not only in the ephemeral chat event.
+          try { Write-Warning ("[parallel] stream " + $Worker.id + " merged with -X ours: conflicting hunks were discarded (trunk kept). Branch " + $Worker.branch + " preserved for manual review.") } catch {}
+          if ($Context.ContainsKey('conflictAutoResolved') -and $null -ne $Context.conflictAutoResolved) { try { [void]$Context.conflictAutoResolved.Add([string]$Worker.id) } catch {} }
           Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $Worker.branch + ")") -Kind event | Out-Null
         } else {
           try { [void](Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--abort')) } catch {}
