@@ -173,7 +173,7 @@ function Test-AdvancedSettingValue {
   # to catch bad values (audit P3 finding -- silent default fallback was hiding bugs).
   param([string]$Key, $Value)
   $ranges = @{
-    'parallel.maxStreams'           = @{ type='int';   min=1;   max=12  }
+    'parallel.maxStreams'           = @{ type='int';   min=1;   max=40  }
     'chunking.maxChunksPerTask'     = @{ type='int';   min=1;   max=50  }
     'criticMaxRetries'              = @{ type='int';   min=0;   max=5   }
     'auditor.intervalMin'           = @{ type='int';   min=1;   max=1440 }
@@ -206,7 +206,7 @@ function Test-AdvancedSettingValue {
     'backlogPack.dedupeMinGroupSize'= @{ type='int';   min=2;   max=1000 }
     'workpackExec.enabled'          = @{ type='bool'                    }
     'workpackExec.minItems'         = @{ type='int';   min=2;   max=12   }
-    'workpackExec.maxItems'         = @{ type='int';   min=2;   max=12   }
+    'workpackExec.maxItems'         = @{ type='int';   min=2;   max=40   }
     'workpackExec.includeProtected' = @{ type='bool'                    }
     'workpackExec.serialProtectedEnabled' = @{ type='bool'                    }
     'workpackExec.serialProtectedMinItems' = @{ type='int';   min=2;   max=24   }

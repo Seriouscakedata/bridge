@@ -1452,7 +1452,7 @@ function Get-BacklogWorkpackExecConfig {
 
   $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
   $cfg.minItems = ConvertTo-BacklogPackInt -Value $cfg.minItems -Default 2 -Min 2 -Max 12
-  $cfg.maxItems = ConvertTo-BacklogPackInt -Value $cfg.maxItems -Default 6 -Min 2 -Max 24
+  $cfg.maxItems = ConvertTo-BacklogPackInt -Value $cfg.maxItems -Default 6 -Min 2 -Max 40
   $cfg.includeProtected = ConvertTo-BacklogPackBool -Value $cfg.includeProtected -Default $false
   $cfg.serialProtectedEnabled = ConvertTo-BacklogPackBool -Value $cfg.serialProtectedEnabled -Default $true
   $cfg.serialProtectedMinItems = ConvertTo-BacklogPackInt -Value $cfg.serialProtectedMinItems -Default 3 -Min 2 -Max 24
