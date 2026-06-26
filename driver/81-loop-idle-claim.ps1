@@ -311,7 +311,7 @@ $script:DriverLoopIdleClaimBlock = {
       # not just a single mode tag.
       $taskIntent = $null
       if (-not $fastLaneReason -and -not $normalOverride -and -not $deepThinkMark -and (Get-Command Test-TaskIntent -ErrorAction SilentlyContinue)) {
-        try { $taskIntent = Test-TaskIntent -TaskText $taskMsg -TimeoutSec 25 } catch { $taskIntent = $null }
+        try { $taskIntent = Test-TaskIntent -TaskText $taskMsg -TimeoutSec 25 } catch { $taskIntent = $null; try { Write-Warning ("[driver] intent classifier failed; falling back to legacy mode detection: " + $_.Exception.Message) } catch {} }   # audit: was silently swallowed
       }
       $intentMode = ''
       if ($taskIntent -and [double]$taskIntent.confidence -ge 0.7) {
@@ -1441,6 +1441,8 @@ $script:DriverLoopIdleClaimBlock = {
         } catch {
           # If git itself errors, fail open — better to start the task than wedge
           # the loop. The watchdog/critic will catch a bad commit downstream.
+          # audit: log the fail-open so it isn't silent (behavior intentionally unchanged).
+          try { Write-Warning ("[driver] dirty-state guard: git error, failing open so the loop doesn't wedge (task proceeds): " + $_.Exception.Message) } catch {}
         }
       }
       # 🌒 Shadow observability (graduated autonomy; autonomy.selfExecuteTier). When an UNapproved
@@ -1580,7 +1582,11 @@ $script:DriverLoopIdleClaimBlock = {
             try { $gv = Test-PolicyAutotaskExecutionBlocked -Item $currentClaimedIdea -TaskText ('[Автозадача из бэклога] ' + [string]$currentClaimedIdea.text) -BridgeRoot $bridgeRoot } catch { $gv = $null }
             if ($gv -and [bool]$gv.blocked) {
               $gid = [string]$currentClaimedIdea.id
-              try { Set-Idea -Id $gid -Status 'held' | Out-Null } catch {}
+              # audit: a SAFETY gate — if the held-marking is swallowed, a blocked risky task can be
+              # re-picked next tick. Retry once and warn loudly so the failure isn't silent.
+              $heldOk = $false
+              try { Set-Idea -Id $gid -Status 'held' | Out-Null; $heldOk = $true } catch { try { Write-Warning ("[driver] pre-flight gate: FAILED to mark blocked idea " + $gid + " as held (may be re-picked!): " + $_.Exception.Message) } catch {} }
+              if (-not $heldOk) { try { Set-Idea -Id $gid -Status 'held' | Out-Null; $heldOk = $true } catch { try { Write-Warning ("[driver] pre-flight gate: held-marking RETRY also failed for " + $gid) } catch {} } }
               Add-Message -From system -Text ("🛑 Pre-flight gate: автозадача ЗАБЛОКИРОВАНА (риск=" + [string]$gv.risk + "): " + [string]$gv.reason + ". Помечена 'held' — нужна проверка оператора, мост её НЕ исполняет.") -Kind event | Out-Null
               try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='preflight-blocked'; item_id=$gid; risk=[string]$gv.risk; reason=[string]$gv.reason }) } catch {}
               $claimedIdea = $null

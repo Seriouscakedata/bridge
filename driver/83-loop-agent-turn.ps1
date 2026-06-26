@@ -223,6 +223,7 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
       }
     } catch {
       Add-Message -From system -Text ("⚠ Project-focus guard не смог проверить bridge diff: " + $_.Exception.Message) -Kind event | Out-Null
+      try { Write-Warning ("[driver] project-focus guard could not check bridge diff, failing open (turn proceeds): " + $_.Exception.Message) } catch {}   # audit: durable log for the chat-only surface
     }
   }
   try {
@@ -325,7 +326,12 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
           }
         }
       }
-    } catch {}
+    } catch {
+      # audit: don't silently swallow a bridge auto-commit / post-commit-QA failure — a missed commit
+      # leaves the coder's work uncommitted (dirty tree) and wedges the per-channel dirty-guard downstream.
+      try { Write-Warning ("[driver] bridge auto-commit/QA block errored (surfaced, not swallowed): " + $_.Exception.Message) } catch {}
+      try { Add-Message -From system -Text ("⚠ Драйвер: ошибка в блоке авто-коммита/QA bridge — " + (($_.Exception.Message) -replace '\s+',' ').Trim()) -Kind event | Out-Null } catch {}
+    }
   }
 
   # 2026-05-31 (Foundation #4): auto-commit PROJECT changes for project channels. The bridge
