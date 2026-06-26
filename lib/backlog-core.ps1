@@ -371,6 +371,13 @@ function Update-BacklogFailureClasses {
     $checked = 0
     $updated = 0
     $failed = 0
+    # audit: cap LLM classifier calls made WHILE holding the backlog mutex, so a large batch of newly
+    # failed items can't serialize the whole backlog behind N sequential LLM round-trips (claim/add/update
+    # all block on this lock). Remaining items are classified deterministically this pass; a later pass
+    # can still refine via LLM. Mock/test classifiers (explicit -Classifier) are exempt — fast + tests
+    # expect full coverage.
+    $llmBudget = 3
+    $llmBudgetUsed = 0
     foreach ($item in $items) {
       try { if ([string]$item.status -ne 'failed') { continue } } catch { continue }
       $checked++
@@ -379,6 +386,16 @@ function Update-BacklogFailureClasses {
         if ([string]$item.fail_class -ne $existing) { & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class' -Value $existing; $updated++ }
         continue
       }
+      if (-not $Classifier -and $llmBudgetUsed -ge $llmBudget) {
+        # lock-hold budget exhausted: classify deterministically instead of another LLM call under the lock
+        $cls = & $getFailureClassFallbackFn -Item $item
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class' -Value $cls
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_source' -Value 'fallback-lock-budget'
+        & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_at' -Value ((Get-Date).ToUniversalTime().ToString('o'))
+        $updated++
+        continue
+      }
+      if (-not $Classifier) { $llmBudgetUsed++ }
       $cls = & $invokeFailureClassModelFn -Item $item -Model $Model -Classifier $Classifier
       if ([string]::IsNullOrWhiteSpace($cls)) {
         & $setBacklogObjectPropertyFn -Item $item -Name 'fail_class_error' -Value 'classifier-empty-or-invalid'
