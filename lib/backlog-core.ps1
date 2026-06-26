@@ -4,7 +4,9 @@
 # source of truth). Guarded dot-source so direct consumers of this file (tests, jobs) get it too;
 # the lib/backlog.ps1 aggregator already loads policy.ps1 first.
 if (-not (Get-Command Test-PolicyControlPlanePath -ErrorAction SilentlyContinue)) {
-  try { . (Join-Path $PSScriptRoot 'policy.ps1') } catch {}
+  # audit (2026-06-26): surface a policy-module load failure -- a silent failure here means the
+  # authorization/control-plane checks fall back to defaults with no trace. Warn loudly (non-fatal).
+  try { . (Join-Path $PSScriptRoot 'policy.ps1') } catch { Write-Warning ("backlog-core: failed to load policy.ps1 -- access-control may use defaults: " + $_.Exception.Message) }
 }
 
 #region Backlog prioritization helpers
@@ -1580,7 +1582,12 @@ function Test-BacklogApprovedItemClaimable {
     } else {
       $touchesControl = [bool](Test-IdeaTouchesControlPlane -Idea $Item)
     }
-  } catch { $touchesControl = $false }
+  } catch {
+    # SECURITY (2026-06-26 audit finding): fail CLOSED on a control-plane detection error -- treat the
+    # item as control-plane so it still requires operator/admission, rather than silently bypassing the
+    # gate. A transient detector error must never let a control-plane task claim ungated.
+    $touchesControl = $true
+  }
   if ($touchesControl) {
     $admission = Test-IdeaBridgeSelfAdmitted -Idea $Item
     if ($admission -and [bool]$admission.ok) {
