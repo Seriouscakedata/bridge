@@ -36,7 +36,7 @@ try { & `$env:ComSpec /c `$c *>> '$out' 2>&1 } catch { `$_ | Out-File -Append -L
         Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$runner -WindowStyle Hidden -PassThru
       }
       $null = $proc.Handle
-    } catch {}
+    } catch { Write-Warning ("parallel: legacy worker spawn failed (unit kept as dead for merge handling): " + $_.Exception.Message) }   # audit: was silently swallowed
     $units += @{ w=$w; wt=$wt; proc=$proc; out=$out }
   }
   # 2) wait for ALL to finish (heartbeat via OnTick so the watchdog stays calm)
@@ -1725,7 +1725,7 @@ function Start-ParallelDispatchWorkers {
     [void]$usedIds.Add([string]$started.workerSpec.id)
   }
 
-  try { Save-ParallelStreams -State (Read-State) -Streams $workers } catch {}
+  try { Save-ParallelStreams -State (Read-State) -Streams $workers } catch { Write-Warning ("parallel: Save-ParallelStreams failed after dispatch (workers may not be tracked in state): " + $_.Exception.Message) }   # audit: was silently swallowed
   return @{ ok=$true; workers=@($workers.ToArray()); reason='' }
 }
 
