@@ -1,11 +1,10 @@
 ﻿# server.ps1 -- local web UI for the bridge (HttpListener, no admin needed).
-# audit [module-load]: fail with a clear, named error if a required module is missing — a bare
-# dot-source of a non-existent file throws an opaque error and can leave the server half-loaded.
-foreach ($mod in @('lib\common.ps1','lib\features.ps1','lib\plan.ps1','lib\radar.ps1','lib\metrics.ps1','lib\replay.ps1')) {
-  $modPath = Join-Path $PSScriptRoot $mod
-  if (-not (Test-Path -LiteralPath $modPath)) { throw "server.ps1: required module not found: $modPath" }
-  . $modPath
-}
+. (Join-Path $PSScriptRoot 'lib\common.ps1')
+. (Join-Path $PSScriptRoot 'lib\features.ps1')
+. (Join-Path $PSScriptRoot 'lib\plan.ps1')
+. (Join-Path $PSScriptRoot 'lib\radar.ps1')
+. (Join-Path $PSScriptRoot 'lib\metrics.ps1')
+. (Join-Path $PSScriptRoot 'lib\replay.ps1')
 
 $cfg  = Get-BridgeConfig
 $port = [int]$cfg.port
@@ -18,19 +17,10 @@ $maxUploadBytes = 25 * 1024 * 1024
 # store outside the bridge root (Get-AuthPath; falls back to legacy in-bridge path).
 $authPath = Get-AuthPath
 $authUser = $null; $authPass = $null; $authToken = $null
-$authConfigPresent = [bool](Test-Path $authPath)
-$authConfigError = $false
-if ($authConfigPresent) {
-  try {
-    $a = Get-Content $authPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $authUser = [string]$a.user; $authPass = [string]$a.password
-    if ($null -ne $a.PSObject.Properties['token']) { $authToken = [string]$a.token }
-  } catch {
-    # audit [auth-config]: a corrupt auth.json must NOT silently disable authentication. Record the
-    # failure and fail CLOSED (deny everything) rather than crashing startup or running wide open.
-    $authConfigError = $true
-    Write-Warning ("server.ps1: failed to parse auth config at $authPath — denying all requests until fixed: " + $_.Exception.Message)
-  }
+if (Test-Path $authPath) {
+  $a = Get-Content $authPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $authUser = [string]$a.user; $authPass = [string]$a.password
+  if ($null -ne $a.PSObject.Properties['token']) { $authToken = [string]$a.token }
 }
 
 $null = Initialize-Bridge   # ensure files exist
@@ -53,34 +43,9 @@ function New-BridgeListener($prefix) {
   return $l
 }
 $listener = $null
-# audit [bind]: default to loopback-only so the bridge isn't reachable from the LAN. Bind 127.0.0.1
-# AND localhost explicitly — an HttpListener "localhost" prefix does NOT match a request whose authority
-# is the literal 127.0.0.1 (HTTP.sys matches on the Host authority), which previously broke health checks.
-# server.lanExposure=true opts into all-interfaces. A working fallback is always kept LAST so a denied
-# loopback bind can never take the server down (no worse than the historical all-interfaces behavior).
-$lanExposure = $false
-try {
-  $cfgBind = Get-BridgeConfig
-  if ($cfgBind -and ($cfgBind.PSObject.Properties.Name -contains 'server') -and $cfgBind.server -and ($cfgBind.server.PSObject.Properties.Name -contains 'lanExposure')) {
-    $lanExposure = [bool]$cfgBind.server.lanExposure
-  }
-} catch {}
-$loopbackSet = @("http://127.0.0.1:$port/", "http://localhost:$port/")
-$allSet      = @("http://+:$port/")
-$prefixSets  = if ($lanExposure) { @($allSet, $loopbackSet) } else { @($loopbackSet, $allSet) }
-foreach ($set in $prefixSets) {
-  $l = $null
-  try {
-    $l = New-Object System.Net.HttpListener
-    foreach ($p in $set) { $l.Prefixes.Add($p) }
-    $l.Start()
-    $listener = $l
-    Write-Host ("Bridge UI listening on " + ($set -join ', '))
-    break
-  } catch {
-    Write-Host ("Cannot bind " + ($set -join ', ') + " ($($_.Exception.Message))")
-    try { if ($l) { $l.Close() } } catch {}
-  }
+foreach ($pfx in @("http://+:$port/", "http://localhost:$port/")) {
+  try { $listener = New-BridgeListener $pfx; Write-Host "Bridge UI listening on $pfx"; break }
+  catch { Write-Host "Cannot bind $pfx ($($_.Exception.Message))" }
 }
 if (-not $listener) { throw "Could not start HTTP listener on port $port" }
 
@@ -428,20 +393,7 @@ function ConvertTo-RunbookSummaryValue {
 }
 function Test-Auth {
   param($ctx)
-  # audit [auth-config]: if the auth file exists but failed to parse, fail CLOSED (never silently open).
-  if ($authConfigError) {
-    $ctx.Response.AddHeader('WWW-Authenticate','Basic realm="AI Bridge"')
-    Send-Text $ctx 'Authentication unavailable (auth config error)' 'text/plain; charset=utf-8' 503
-    return $false
-  }
-  # Open ONLY when there is genuinely no auth file (intentional cred-less local setup).
-  if (-not $authPass -and -not $authToken -and -not $authConfigPresent) { return $true }
-  # audit [auth-bypass]: auth file present but creds empty == misconfig -> deny, do not fall open.
-  if (-not $authPass -and -not $authToken) {
-    $ctx.Response.AddHeader('WWW-Authenticate','Basic realm="AI Bridge"')
-    Send-Text $ctx 'Authentication required' 'text/plain; charset=utf-8' 401
-    return $false
-  }
+  if (-not $authPass -and -not $authToken) { return $true }   # no credentials configured -> open
   $h = $ctx.Request.Headers['Authorization']
   if ($authToken) {
     if ($h -and $h.StartsWith('Bearer ')) {
@@ -763,10 +715,6 @@ try {
         if (-not $body -or [string]::IsNullOrWhiteSpace([string]$body.name)) {
           Send-Text $ctx '{"ok":false,"error":"name required"}' 'application/json; charset=utf-8' 400
         } else {
-          # audit [User-Agent stored]: cap + sanitize the attacker-controlled, unbounded User-Agent header.
-          $ua = [string]$ctx.Request.Headers['User-Agent']; if ($null -eq $ua) { $ua = '' }
-          if ($ua.Length -gt 256) { $ua = $ua.Substring(0,256) }
-          $ua = $ua -replace '[\r\n]',' '
           $rec = [ordered]@{
             ts = (Get-Date).ToUniversalTime().ToString('o')
             name = [string]$body.name
@@ -774,17 +722,14 @@ try {
             errors = if ($body.errors) { @($body.errors) } else { @() }
             log = if ($body.log) { @($body.log) } else { @() }
             timings = if ($body.timings) { $body.timings } else { $null }
-            user_agent = $ua
+            user_agent = [string]$ctx.Request.Headers['User-Agent']
           }
-          $wrote = $false
           try {
             $resPath = Join-Path $root 'control\scenario-results.jsonl'
             $line = ($rec | ConvertTo-Json -Compress -Depth 6) + "`n"
             [System.IO.File]::AppendAllText($resPath, $line, (New-Object System.Text.UTF8Encoding($false)))
-            $wrote = $true
-          } catch { Write-Warning ("scenario/result: failed to persist result for '" + ([string]$body.name) + "': " + $_.Exception.Message) }   # audit: was silently swallowed + reported ok
-          if ($wrote) { Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8' }
-          else { Send-Text $ctx '{"ok":false,"error":"persist failed"}' 'application/json; charset=utf-8' 500 }
+          } catch {}
+          Send-Text $ctx '{"ok":true}' 'application/json; charset=utf-8'
         }
       }
       elseif ($method -eq 'GET' -and $path -eq '/api/scenario/result') {
@@ -1062,24 +1007,18 @@ try {
         if ([string]::IsNullOrWhiteSpace($chParam) -and $null -ne $body -and $null -ne $body.channel) { $chParam = [string]$body.channel }
         $prevPin = Get-PinnedChannel
         $killedPid = $null
-        $killOk = $true
         try {
           if (-not [string]::IsNullOrWhiteSpace($chParam)) { Set-PinnedChannel $chParam }
           $apid = (Read-State).agent_pid
           Update-State { param($s) $s.abort = $true } | Out-Null
           if ($apid) {
             $killedPid = $apid
-            # audit: don't swallow the kill outcome then report success. abort=true is already set above,
-            # so the stop semantics hold regardless; surface whether taskkill actually succeeded.
-            try {
-              $tk = Start-Process taskkill -ArgumentList '/PID',([string]$apid),'/F','/T' -NoNewWindow -Wait -PassThru
-              if ($tk -and $tk.ExitCode -ne 0) { $killOk = $false; Write-Warning ("/api/stop: taskkill exited " + $tk.ExitCode + " for pid " + $apid) }
-            } catch { $killOk = $false; Write-Warning ("/api/stop: taskkill failed for pid " + $apid + ": " + $_.Exception.Message) }
+            try { Start-Process taskkill -ArgumentList '/PID',([string]$apid),'/F','/T' -NoNewWindow -Wait } catch {}
           }
           [void](Add-Message -From system -Text "🛑 Stop requested via /api/stop." -Kind event)
         } finally { Set-PinnedChannel $prevPin }
         $pidVal = if ($null -ne $killedPid) { [string]$killedPid } else { 'null' }
-        Send-Text $ctx "{`"ok`":true,`"killedPid`":$pidVal,`"killOk`":$($killOk.ToString().ToLower())}" 'application/json; charset=utf-8'
+        Send-Text $ctx "{`"ok`":true,`"killedPid`":$pidVal}" 'application/json; charset=utf-8'
       }
       elseif ($method -eq 'POST' -and $path -eq '/api/archive') {
         # User-triggered chat archive: move old messages to conversation.archive.jsonl, keeping the
