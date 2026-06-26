@@ -2886,22 +2886,16 @@ function Merge-ParallelDispatchWorkerOutput {
         [void]$Context.mergedStreams.Add([string]$Worker.id)
         Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (non-ff fallback)") -Kind event | Out-Null
       } else {
+        # diffusion-fix (operator, 2026-06-26): a TRUE merge conflict is NO LONGER silently auto-resolved
+        # with `merge --no-ff -X ours`, which kept trunk, DISCARDED the stream's conflicting hunks, yet
+        # still counted the stream as merged ($Context.merged++) and reported "✅ Merged" — silent work-loss
+        # masquerading as success (the bridge's own open-eval flagged this as a correctness bug that even
+        # threatens Layer-1 independent parallelism). Instead, abort + QUARANTINE: the stream is NOT counted
+        # as merged, its branch is preserved INTACT (no hunks dropped) for resolution, and it is surfaced.
         try { [void](Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--abort')) } catch {}
-        $mergeOut3 = Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--no-ff','-X','ours','-m',("merge parallel stream " + $Worker.id + " (auto-resolve: ours)"),[string]$Worker.branch)
-        if ([int]$mergeOut3.ExitCode -eq 0) {
-          $Context.merged++
-          [void]$Context.mergedStreams.Add([string]$Worker.id)
-          # audit: -X ours drops this stream's CONFLICTING hunks (trunk wins) but still counts the stream
-          # as merged. The branch is preserved for review; also log a durable warning so the dropped work
-          # is visible in the audit trail, not only in the ephemeral chat event.
-          try { Write-Warning ("[parallel] stream " + $Worker.id + " merged with -X ours: conflicting hunks were discarded (trunk kept). Branch " + $Worker.branch + " preserved for manual review.") } catch {}
-          if ($Context.ContainsKey('conflictAutoResolved') -and $null -ne $Context.conflictAutoResolved) { try { [void]$Context.conflictAutoResolved.Add([string]$Worker.id) } catch {} }
-          Add-Message -From system -Text ("✅ Merged stream " + $Worker.id + " (конфликт авто-разрешён: сохранена уже слитая версия; ветка " + $Worker.branch + ")") -Kind event | Out-Null
-        } else {
-          try { [void](Invoke-ParallelDispatchGitProcess -RepoRoot $Context.bridgeRoot -GitExe $Context.gitExe -GitArgs @('merge','--abort')) } catch {}
-          Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
-          Add-Message -From system -Text ("⚠ Поток " + $Worker.id + " не слит (конфликт не разрешился авто). Дерево очищено — остальные потоки сливаются нормально. Ветка " + $Worker.branch + " сохранена для ручного разбора.") -Kind event | Out-Null
-        }
+        Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+        try { Write-Warning ("[parallel] stream " + $Worker.id + " merge CONFLICT — QUARANTINED (not merged, not auto-resolved with -X ours). Branch " + $Worker.branch + " preserved intact for resolution.") } catch {}
+        Add-Message -From system -Text ("⚠ Поток " + $Worker.id + " НЕ слит — конфликт мёржа. Карантин: работа НЕ выброшена, ветка " + $Worker.branch + " сохранена целиком для разбора. Остальные потоки сливаются нормально.") -Kind event | Out-Null
       }
     }
   } catch {
