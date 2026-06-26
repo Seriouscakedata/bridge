@@ -533,31 +533,39 @@ function Start-BacklogAddIdeaJob {
       Set-Location -LiteralPath $BridgeRoot
       . (Join-Path $BridgeRoot 'lib\common.ps1')
       try { Initialize-Bridge | Out-Null } catch {}
-      $prevPin = $null
-      try {
-        if (Get-Command Get-PinnedChannel -ErrorAction SilentlyContinue) { $prevPin = Get-PinnedChannel }
-        if (-not [string]::IsNullOrWhiteSpace($Channel) -and (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue)) {
-          Set-PinnedChannel $Channel
-        }
-        if ($SkipCurator) {
-          $id = Add-Idea -Text $Text -From 'user' -Tags @('user') -Status $Status -SkipCurator
-        } else {
-          $id = Add-Idea -Text $Text -From 'user' -Tags @('user') -Status $Status
-        }
-        return [pscustomobject]@{
-          ok = [bool]$id
-          id = [string]$id
-          ts = (Get-Date).ToUniversalTime().ToString('o')
-        }
-      } finally {
-        if (Get-Command Clear-PinnedChannel -ErrorAction SilentlyContinue) {
-          if ([string]::IsNullOrWhiteSpace([string]$prevPin)) {
-            Clear-PinnedChannel
-          } elseif (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
-            Set-PinnedChannel $prevPin
+      # audit [23]: concurrent backlog-add jobs each Set-PinnedChannel on the SHARED pin then Add-Idea —
+      # a race where one job's pin leaks into another's Add-Idea (idea routed to the wrong channel).
+      # Serialize the whole pin-set -> Add-Idea -> restore sequence under the bridge lock so concurrent
+      # jobs can't interleave. The named mutex is re-entrant on the owning thread, and Add-Idea's own
+      # Invoke-BacklogLocked nests safely (no self-deadlock); GetNewClosure binds $Channel/$Text/etc.
+      $result = Invoke-BacklogLocked ({
+        $prevPin = $null
+        try {
+          if (Get-Command Get-PinnedChannel -ErrorAction SilentlyContinue) { $prevPin = Get-PinnedChannel }
+          if (-not [string]::IsNullOrWhiteSpace($Channel) -and (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue)) {
+            Set-PinnedChannel $Channel
+          }
+          if ($SkipCurator) {
+            $id = Add-Idea -Text $Text -From 'user' -Tags @('user') -Status $Status -SkipCurator
+          } else {
+            $id = Add-Idea -Text $Text -From 'user' -Tags @('user') -Status $Status
+          }
+          [pscustomobject]@{
+            ok = [bool]$id
+            id = [string]$id
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+          }
+        } finally {
+          if (Get-Command Clear-PinnedChannel -ErrorAction SilentlyContinue) {
+            if ([string]::IsNullOrWhiteSpace([string]$prevPin)) {
+              Clear-PinnedChannel
+            } elseif (Get-Command Set-PinnedChannel -ErrorAction SilentlyContinue) {
+              Set-PinnedChannel $prevPin
+            }
           }
         }
-      }
+      }.GetNewClosure())
+      return $result
     } catch {
       return [pscustomobject]@{
         ok = $false
