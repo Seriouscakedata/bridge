@@ -8,7 +8,7 @@
 > **Начни с `BRIDGE_STATUS.md`** — единая точка входа: актуальная версия, что умеет мост сейчас,
 > как проверить ЖИВОЕ состояние (git/процессы/state), карта документов. Этот гайд — глубже про управление.
 >
-> Последнее обновление: 2026-06-25.
+> Последнее обновление: 2026-06-26.
 
 ---
 
@@ -177,12 +177,17 @@ $st2=[IO.File]::ReadAllText($sf,[Text.Encoding]::UTF8)|ConvertFrom-Json; $st2.pa
 workpack_id, workpack_conflict_group('file:<путь>'), workpack_touch_set(['<путь>']), workpack_status('planned')`.
 Чтобы задачи шли **параллельно** — у каждой свой `workpack_conflict_group` = свой целевой файл.
 
-> **⚠️ Control-plane claim-gate.** Если задача трогает control-plane моста (`driver*.ps1`,
-> `server/supervisor/watchdog/canary.ps1`, `lib\backlog*.ps1`, `lib\parallel|circuit-breaker|policy.ps1`,
-> `control\`), она НЕ возьмётся автономией, пока не несёт тег `operator` (в `tags`) или валидный
-> блок `bridge_self_admission`. Иначе `Test-BacklogApprovedItemClaimable` вернёт `control-plane-blocked`
-> и задача застрянет в `approved` навсегда. Для операторских control-plane задач всегда добавляй
-> `tags: ["operator"]`.
+> **⚠️ Control-plane claim-gate.** Если задача трогает control-plane моста, она НЕ возьмётся
+> автономией, пока не несёт тег `operator` (в `tags`) или валидный блок `bridge_self_admission`.
+> Иначе `Test-BacklogApprovedItemClaimable` вернёт `control-plane-blocked` и задача застрянет в
+> `approved` навсегда. Для операторских control-plane задач всегда добавляй `tags: ["operator"]`.
+>
+> Защищённый набор путей — ОДНА точка истины `Test-PolicyControlPlanePath` (`lib\policy.ps1`),
+> `Test-BridgeControlPlanePath` (`lib\backlog-core.ps1`) делегирует ей. Текущий regex матчит:
+> `driver*.ps1`, `driver/*.ps1`, `(server|supervisor|watchdog|canary).ps1`, `lib\backlog*.ps1`,
+> `lib\(parallel|circuit-breaker|policy).ps1`, и каталог `control\`. Это всё, что считается
+> control-plane; `lib\common.ps1`, `lib\settings.ps1` и прочие модули в этот набор НЕ входят
+> и control-plane-gate не триггерят (трогаешь их — тег `operator` не обязателен).
 
 ### Способ E — операторский batch (приоритетная пачка задач)
 Чтобы влить сразу пачку well-specified задач с приоритетом ВЫШЕ audit/auto-идей — `tools\operator-delegate.ps1`
@@ -403,6 +408,26 @@ MicroDebate → FinalV2+RedTeam → Decision Record), чекпойнты под 
    на `danger-full-access` подняты ДВА канала: `literary-slop-video` и `oko`. Карта задаётся в
    `coder.sandboxModeByChannel`; `oko` добавлен через overlay `settings.json` (gitignored, переживает
    rollback) — поэтому config-only доки занижают объём elevated-доступа.
+9. **Script-integrity tripwire (защита от подмены кода ядра).** Перед запуском КАЖДОГО процесса
+   supervisor сверяет SHA256 файлов `server.ps1` И `driver.ps1` на диске с манифестом
+   `security\script-integrity.json`. Включено через `config.json → supervisor.scriptIntegrityEnabled`
+   (сейчас `true`) + `supervisor.scriptIntegrityManifest`. Логика — `lib\script-integrity.ps1`
+   (`Test-BridgeScriptIntegrity` / `Invoke-BridgeIntegrityGuard`), вызов из `supervisor.ps1`
+   (`Start-Srv` / `Start-Drv`). Если хэш файла ≠ манифесту, guard возвращает `Ok=false`, supervisor
+   пишет в `control\supervisor.log` строку `ERROR: integrity check failed for <файл>
+   reason=hash_mismatch ...` и **НЕ запускает процесс**. Симптом: сервер не поднят → HTTP.sys отдаёт
+   **503 на ВСЕХ эндпойнтах** (включая `/api/health`); или нет драйвера → `lastSeq`/heartbeat не растут.
+   **Когда срабатывает:** любая правка `server.ps1`/`driver.ps1` (руками ИЛИ авто-коммитом автономной
+   задачи) БЕЗ обновления хэша в манифесте. Защищены ТОЛЬКО `server.ps1` + `driver.ps1`; подмодули
+   `driver\*.ps1` и `lib\*.ps1` НЕ покрыты. Восстановление — см. §9 (refresh манифеста).
+   Само-тест: `tools\supervisor_script_integrity_test.ps1`.
+10. **Auth fail-closed + bind (`http://+:8787`).** Сервер закрывается «насмерх» при проблемах auth
+    (commit `7e4faee`): битый `auth.json` → **HTTP 503 deny-all** (`Authentication unavailable`);
+    файл есть, но креды пустые → **401**; открыт ТОЛЬКО если auth-файла нет вовсе (намеренный
+    cred-less local-режим). Bind остаётся `http://+:8787/` (strong-wildcard) ПО ЗАМЫСЛУ: explicit-loopback
+    (`http://127.0.0.1`) на этом хосте даёт 503 из-за отсутствующего urlacl; LAN-доступ держит Windows
+    Firewall + local-only использование, НЕ префикс. Поэтому 503/401 на пульте диагностируемы:
+    503 на всех путях → integrity-trip (п.9) ИЛИ битый `auth.json`; 401 → пустые/неверные креды.
 
 ---
 
@@ -442,6 +467,32 @@ watchdog не делает НИЧЕГО. Только этот защищённ�
 $priv="$env:USERPROFILE\.bridge-private"; New-Item -ItemType Directory $priv -Force | Out-Null
 New-Item -ItemType File (Join-Path $priv 'watchdog.pause') -Force | Out-Null   # снять = удалить файл
 ```
+
+**Мост не поднимается после правки `driver.ps1`/`server.ps1` (503 на всех эндпойнтах или `lastSeq`
+не растёт):** скорее всего сработал script-integrity tripwire (§8 п.9) — хэш файла разошёлся с
+манифестом `security\script-integrity.json`. Проверь `control\supervisor.log` на строку
+`integrity check failed ... reason=hash_mismatch`. Лечение = обновить манифест для ОБОИХ защищённых
+файлов (устаревший хэш ЛЮБОГО из двух тоже блокирует запуск):
+```powershell
+$bridge = 'C:\Users\rafie\OneDrive\Documents\bridge'
+# 1) убедись, что файл легитимен (не подмена): git-статус должен быть чистым / совпадать с HEAD.
+#    Coder-sandbox не дотягивается до этих файлов — неожиданный dirty-diff = настоящая тревога.
+git --git-dir=C:\Users\rafie\.bridge-runtime\bridge-git --work-tree=$bridge status --short driver.ps1 server.ps1
+# 2) пересчитай хэши (uppercase hex)
+(Get-FileHash -Algorithm SHA256 "$bridge\server.ps1").Hash
+(Get-FileHash -Algorithm SHA256 "$bridge\driver.ps1").Hash
+# 3) впиши ОБА в security\script-integrity.json → files."server.ps1" / files."driver.ps1"
+# 4) перезапусти и проверь, что новых "integrity check failed" нет
+Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'; Start-Sleep 5; Start-ScheduledTask -TaskName 'ClaudeCodexBridge'
+Get-Content "$bridge\control\supervisor.log" -Tail 20 | Select-String 'integrity check failed'
+```
+Проверить guard целиком — `tools\supervisor_script_integrity_test.ps1`.
+
+**Пульт отдаёт 503 на ВСЕХ путях (включая `/api/health`), хотя процесс вроде стартует:** два
+кандидата — (1) integrity-trip на `server.ps1` (см. выше, сервер не запущен); (2) битый `auth.json` →
+сервер fail-closed deny-all (§8 п.10). Глянь `control\supervisor.log` (integrity) и проверь, что
+`auth.json` парсится. **401 на пульте** = auth-файл есть, но креды пустые/неверные (не поломка, а
+misconfig).
 
 **Два инстанса supervisor (мигание процессов):** оставь самый ранний по времени старта, убей новые
 `Stop-Process -Id <pid> -Force`. Один supervisor сам удержит lock.
@@ -494,7 +545,10 @@ cd C:\Users\rafie\aipartners
 | `lib\backlog.ps1` | загрузчик-фасад бэклога; реальный код в `lib\backlog-*.ps1` (crud / core=claim-gate+risk-tier / workpack=intake-gate+packer+frontier / governor / dedup / autopilot / state-reaper) |
 | `tools\web-smoke.ps1` | универсальный live HTTP/API smoke для проектных сайтов: старт, readiness, checks, лог, cleanup |
 | `driver.ps1` | точка входа драйвера; рабочий цикл разнесён по `driver\NN-*.ps1` (80-preflight → 81-idle-claim → 82-turn-setup → 83-agent-turn → 84-reply-markers → 85-mode-transitions → 86-completion → 87-final-guard, оркестрация в 90-main-loop) |
-| `supervisor.ps1` | надзор за процессами, circuit-breaker |
+| `supervisor.ps1` | надзор за процессами, circuit-breaker, script-integrity gate перед запуском |
+| `security\script-integrity.json` | манифест SHA256 защищённых файлов (`server.ps1`, `driver.ps1`); refresh при правке (§8 п.9, §9) |
+| `lib\script-integrity.ps1` | проверка хэшей: `Test-BridgeScriptIntegrity` / `Invoke-BridgeIntegrityGuard` |
+| `tools\supervisor_script_integrity_test.ps1` | само-тест script-integrity tripwire |
 
 ---
 
@@ -512,6 +566,7 @@ cd C:\Users\rafie\aipartners
 | Поднять сайт проекта | §8 п.1 |
 | Проверить live HTTP/API проекта | `powershell -NoProfile -ExecutionPolicy Bypass -File tools\web-smoke.ps1 -ProjectRoot <проект> -ReadyPath /login -Check "/api/health=200"` |
 | Разморозить застрявший канал | §9 (lease/paused) |
+| Мост не поднялся после правки `driver.ps1`/`server.ps1` (503/нет heartbeat) | §9 (refresh `script-integrity.json`) |
 | Сбросить ложный cooldown | §9 (restarts.jsonl) |
 | Проверить, собирается ли проект | §9 (tsc + next build) |
 | Больше/меньше потоков команды | правь `config.parallel.workers` + `maxStreams` → restart.flag (§4-bis) |

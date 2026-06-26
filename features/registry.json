@@ -33,7 +33,7 @@
         "owner_files":  [
                             "lib/doctor.ps1"
                         ],
-        "owner_function":  "Invoke-Doctor",
+        "owner_function":  "Activate-Doctor",
         "trigger":  "on-demand",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
@@ -61,7 +61,7 @@
         "owner_files":  [
                             "lib/intent.ps1"
                         ],
-        "owner_function":  "Invoke-IntentClassifier",
+        "owner_function":  "Test-TaskIntent",
         "trigger":  "per-task",
         "expected_frequency":  "per-task",
         "activation_signal":  {
@@ -88,7 +88,7 @@
         "owner_files":  [
                             "tools/scenario.ps1"
                         ],
-        "owner_function":  "Invoke-ScenarioRunner",
+        "owner_function":  "(script tools/scenario.ps1)",
         "trigger":  "on-demand",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
@@ -141,12 +141,12 @@
                           "features-registry.js"
                       ],
         "name":  "Ночной аудит моста",
-        "description":  "Каждую ночь (01-06): 2-фазный аудит. Фаза 1: статический скан .ps1 на injection/path-traversal/dead-code. Фаза 2 (deep-audit): Codex анализирует безопасность 24h-diff, Claude анализирует drift реестра фич — оба запускаются параллельно (tools/deep-audit.ps1). Findings → задачи в бэклоге по каналам deep-codex/security и deep-claude/*."
+        "description":  "Каждую ночь (01-06): 2-фазный аудит. Фаза 1: статический скан .ps1 на injection/path-traversal/dead-code. Фаза 2 (deep-audit): Codex анализирует безопасность 24h-diff, Claude анализирует drift реестра фич — оба запускаются параллельно (tools/deep-audit.ps1). С 2026-06 прямое занесение deep-findings в backlog НЕЙТРАЛИЗОВАНО (commit 0e7d3e5, Add-DeepAuditFindingsToBacklog early-return): code-defect findings проходят через adversarial VERIFY (tools/adversarial-audit.ps1) и фиксируются confirmed-only."
     },
     {
         "id":  "recurrence-detection",
         "owner_files":  [
-                            "driver.ps1"
+                            "driver/20-context.ps1"
                         ],
         "owner_function":  "Get-RecurrenceContext",
         "trigger":  "per-task",
@@ -228,9 +228,11 @@
     {
         "id":  "librarian",
         "owner_files":  [
+                            "librarian.ps1",
+                            "driver/10-maintenance.ps1",
                             "lib/memory.ps1"
                         ],
-        "owner_function":  "Invoke-MemoryLibrarian",
+        "owner_function":  "Start-LibrarianIfDue (driver/10-maintenance.ps1) spawns librarian.ps1; primitives Invoke-MemoryDedup / Invoke-MemoryContentHashDedup / Invoke-MemoryAgePrune (lib/memory.ps1)",
         "trigger":  "schedule",
         "expected_frequency":  "nightly",
         "activation_signal":  {
@@ -256,7 +258,7 @@
     {
         "id":  "backlog-curator",
         "owner_files":  [
-                            "lib/backlog.ps1"
+                            "lib/backlog-core.ps1"
                         ],
         "owner_function":  "Invoke-BacklogCurator",
         "trigger":  "schedule",
@@ -286,7 +288,7 @@
         "owner_files":  [
                             "lib/postmortem.ps1"
                         ],
-        "owner_function":  "Invoke-Postmortem",
+        "owner_function":  "Invoke-PostMortem",
         "trigger":  "on-demand",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
@@ -314,7 +316,7 @@
         "owner_files":  [
                             "lib/replay.ps1"
                         ],
-        "owner_function":  "Start-ReplayCapture",
+        "owner_function":  "Add-ReplayRecord / Add-ReplayRecordForCurrentTask",
         "trigger":  "on-demand",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
@@ -477,7 +479,7 @@
     {
         "id":  "fast-lane",
         "owner_files":  [
-                            "driver.ps1"
+                            "lib/common-strings.ps1"
                         ],
         "owner_function":  "Test-IsTrivialTask",
         "trigger":  "per-task",
@@ -506,7 +508,7 @@
         "owner_files":  [
                             "lib/study.ps1"
                         ],
-        "owner_function":  "Invoke-StudyMode",
+        "owner_function":  "Detect-StudyMode",
         "trigger":  "on-demand",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
@@ -814,10 +816,10 @@
         "name":  "Tech Radar",
         "description":  "Внешний радар: периодически сканирует web (новости, релизы, GitHub trending) и предлагает идеи в backlog. Все web-sourced идеи требуют явного approve пользователем.",
         "owner_files":  [
-                            "techradar.ps1",
-                            "lib/radar.ps1"
+                            "lib/radar.ps1",
+                            "techradar.ps1"
                         ],
-        "owner_function":  "Invoke-TechRadar",
+        "owner_function":  "Invoke-RadarAutoIdeas (lib/radar.ps1) / Invoke-RadarArticleEval (techradar.ps1)",
         "trigger":  "nightly",
         "expected_frequency":  "daily",
         "activation_signal":  {
@@ -847,7 +849,7 @@
                             "lib/postmortem.ps1",
                             "reflect.ps1"
                         ],
-        "owner_function":  "Invoke-Postmortem",
+        "owner_function":  "Invoke-PostMortem",
         "trigger":  "on-failure",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
@@ -876,13 +878,13 @@
         "owner_files":  [
                             "lib/codemem.ps1"
                         ],
-        "owner_function":  "Search-CodeMemory",
+        "owner_function":  "Search-Code / Get-CodeRecall",
         "trigger":  "on-demand",
         "expected_frequency":  "on-demand",
         "activation_signal":  {
                                   "kind":  "log-pattern",
                                   "path":  "channels/main/conversation.jsonl",
-                                  "regex":  "codemem|semantic.*memory|Search-CodeMemory"
+                                  "regex":  "codemem|semantic.*memory|Search-Code|Get-CodeRecall"
                               },
         "scenarios":  [
 
@@ -891,36 +893,6 @@
                              "llm-router"
                          ],
         "layer":  "L2",
-        "status":  "active",
-        "scenario_recommended":  false,
-        "created_at":  "2026-05-28",
-        "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
-        "embedding":  null
-    },
-    {
-        "id":  "architect-agent",
-        "name":  "Architect Agent",
-        "description":  "Мета-улучшатель (75cbc5f). Раз в N задач анализирует тренды моста и предлагает архитектурные улучшения.",
-        "owner_files":  [
-                            "lib/architect.ps1"
-                        ],
-        "owner_function":  "Invoke-Architect",
-        "trigger":  "periodic",
-        "expected_frequency":  "weekly",
-        "activation_signal":  {
-                                  "kind":  "log-pattern",
-                                  "path":  "channels/main/conversation.jsonl",
-                                  "regex":  "architect|архитектор|архитектурн"
-                              },
-        "scenarios":  [
-
-                      ],
-        "dependencies":  [
-                             "reflect",
-                             "llm-router",
-                             "backlog-curator"
-                         ],
-        "layer":  "L1",
         "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
@@ -964,7 +936,7 @@
                             "driver.ps1",
                             "lib/channels.ps1"
                         ],
-        "owner_function":  "Start-ChannelDriver",
+        "owner_function":  "Start-Drv",
         "trigger":  "always-on",
         "expected_frequency":  "continuous",
         "activation_signal":  {
@@ -1054,7 +1026,7 @@
                             "watchdog.ps1",
                             "supervisor.ps1"
                         ],
-        "owner_function":  "Invoke-Watchdog",
+        "owner_function":  "Invoke-Rollback",
         "trigger":  "always-on",
         "expected_frequency":  "continuous",
         "activation_signal":  {
@@ -1131,6 +1103,234 @@
         "human_review":  true,
         "created_at":  "2026-05-28",
         "last_activated_at":  "2026-06-03T21:42:20.1766385+03:00",
+        "embedding":  null
+    },
+    {
+        "id":  "script-integrity",
+        "name":  "Tripwire целостности скриптов",
+        "description":  "Перед запуском supervisor SHA256-сверяет server.ps1 и driver.ps1 на диске с манифестом security/script-integrity.json. При расхождении хэша guard возвращает Ok=false, пишет 'integrity check failed ... reason=hash_mismatch' в control/supervisor.log и НЕ запускает процесс (симптом: HTTP 503 на всех эндпоинтах если не стартует server; lastSeq замирает если не стартует driver). Гейтится config.json supervisor.scriptIntegrityEnabled (true) + supervisor.scriptIntegrityManifest. Guard'ятся ТОЛЬКО server.ps1+driver.ps1; driver/*.ps1 и lib/*.ps1 — нет. Любая правка guarded-файла (оператор или авто-коммит) без обновления манифеста триггерит tripwire; recovery — пересчитать (Get-FileHash -Algorithm SHA256), вписать в манифест, рестарт ClaudeCodexBridge. Self-test: tools/supervisor_script_integrity_test.ps1.",
+        "owner_files":  [
+                            "lib/script-integrity.ps1",
+                            "supervisor.ps1"
+                        ],
+        "owner_function":  "Invoke-BridgeIntegrityGuard / Test-BridgeScriptIntegrity",
+        "trigger":  "process-launch",
+        "expected_frequency":  "on-restart",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "control/supervisor.log",
+                                  "regex":  "integrity check (failed|ok)"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "human_review":  true,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "tool-foundry",
+        "name":  "Tool Foundry",
+        "description":  "Mid-task синтез инструментов: воркер может маркером [[NEED-TOOL]] заказать новый инструмент/шаг, который собирается и встраивается в текущий план через DAG. Реализован в lib/foundry.ps1 (Invoke-PlanDag + step-runners).",
+        "owner_files":  [
+                            "lib/foundry.ps1"
+                        ],
+        "owner_function":  "Invoke-PlanDag",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "NEED-TOOL|foundry|PlanDag"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "worker-pool"
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "project-foundry",
+        "name":  "Project Foundry",
+        "description":  "Создание нового проекта из задачи: New-Project разворачивает проект и Invoke-FoundryPlanDispatch диспатчит DAG шагов по воркерам с path-containment (Test-FoundryPathContained) и max-parallel. lib/foundry.ps1.",
+        "owner_files":  [
+                            "lib/foundry.ps1"
+                        ],
+        "owner_function":  "New-Project / Invoke-FoundryPlanDispatch",
+        "trigger":  "on-demand",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "New-Project|FoundryPlanDispatch|project foundry"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "worker-pool",
+                             "worktree-isolation"
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "circuit-breaker",
+        "name":  "Circuit Breaker",
+        "description":  "Защита от рестарт-штормов: считает рестарты/ошибки в окне (Test-CircuitTrip) и при превышении порога переводит мост в paused-режим (Invoke-CircuitPauseAction) вместо бесконечного цикла рестартов. Логи в control/restarts.* с BOM-repair и mutex.",
+        "owner_files":  [
+                            "lib/circuit-breaker.ps1"
+                        ],
+        "owner_function":  "Test-CircuitTrip",
+        "trigger":  "on-restart",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "circuit|breaker|restart storm|paused"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "watchdog-auto-rollback"
+                         ],
+        "layer":  "L1",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "qa-agent",
+        "name":  "QA Agent",
+        "description":  "QA-гейт перед закрытием задачи: прогоняет project build gate (Invoke-ProjectBuildGate), сценарную сюиту (Invoke-QAAgentScenarioSuite) и post-commit diff-check. Не bridge-smoke, а реальная сборка/прогон проекта. lib/qa-agent.ps1.",
+        "owner_files":  [
+                            "lib/qa-agent.ps1"
+                        ],
+        "owner_function":  "Invoke-QAAgent",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "qa-agent|build gate|QAAgent"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "scenario-runner"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "acceptance-gate",
+        "name":  "Acceptance Gate (проекты)",
+        "description":  "Приёмочный sidecar для проектных задач: поднимает сервер проекта на свободном порту, прогоняет journey/HTTP-проверки против живой поверхности (Invoke-ProjectAcceptanceSidecar) и сверяет с PLAN, а не только зелёным build. lib/project-acceptance.ps1.",
+        "owner_files":  [
+                            "lib/project-acceptance.ps1"
+                        ],
+        "owner_function":  "Invoke-ProjectAcceptanceSidecar",
+        "trigger":  "per-task",
+        "expected_frequency":  "on-demand",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "acceptance|ProjectAcceptance|journey"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+                             "qa-agent",
+                             "project-scoping"
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "delivery-mode-routing",
+        "name":  "Маршрутизация режима доставки",
+        "description":  "Решает, как обрабатывать задачу (код / audit-pack / read-only-tiny / external-project и т.п.) по фактам задачи: Get-DeliveryModeDecision применяет набор Test-Delivery* предикатов (audit-backlog, critical-bridge-path, forbidden-path, external-project, read-only). lib/delivery-mode.ps1.",
+        "owner_files":  [
+                            "lib/delivery-mode.ps1"
+                        ],
+        "owner_function":  "Get-DeliveryModeDecision",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "delivery mode|DeliveryMode|audit_pack"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
+        "embedding":  null
+    },
+    {
+        "id":  "worktree-isolation",
+        "name":  "Изоляция worktree",
+        "description":  "Каждый воркер/поток работает в своём git-worktree (New-Worktree), результат вливается обратно (Merge-Worktree), orphan-деревья чистятся (Clear-OrphanWorktrees). Изолирует параллельные потоки друг от друга. lib/worktrees.ps1.",
+        "owner_files":  [
+                            "lib/worktrees.ps1"
+                        ],
+        "owner_function":  "New-Worktree / Merge-Worktree",
+        "trigger":  "per-task",
+        "expected_frequency":  "per-task",
+        "activation_signal":  {
+                                  "kind":  "log-pattern",
+                                  "path":  "channels/main/conversation.jsonl",
+                                  "regex":  "worktree|New-Worktree|Merge-Worktree"
+                              },
+        "scenarios":  [
+
+                      ],
+        "dependencies":  [
+
+                         ],
+        "layer":  "L2",
+        "status":  "active",
+        "scenario_recommended":  false,
+        "created_at":  "2026-06-26",
+        "last_activated_at":  null,
         "embedding":  null
     }
 ]

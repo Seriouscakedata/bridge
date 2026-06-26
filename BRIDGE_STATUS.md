@@ -6,7 +6,7 @@
 > не устарели — раздел **«Как проверить РЕАЛЬНОЕ состояние»** говорит, как посмотреть живое
 > состояние напрямую, не доверяя тексту.
 
-_Обновлено: 2026-06-02. Поддерживает: оператор (Claude) + Codex. Держать актуальным при крупных изменениях._
+_Обновлено: 2026-06-26. Поддерживает: оператор (Claude) + Codex. Держать актуальным при крупных изменениях._
 
 ---
 
@@ -34,11 +34,34 @@ driver.ps1 (по одному на канал) + watchdog.ps1**. Каждый **
 
 ## 2. Текущая версия / веха
 
-- **Веха:** `2026-06-02 — Project Autopilot ПОД Discuss-First + Project Acceptance.`
+- **Веха:** `2026-06-24..26 — Audit-hardening pass + adversarial-audit harness + script-integrity re-enable.`
 - **Предыдущие вехи:** Foundation #1 (рантайм вне OneDrive) → #3 (честная метрика автономии) →
-  #4 (доказана сквозная автономия на реальном проекте) → пакет надёжности параллели (ERR-001..015).
+  #4 (доказана сквозная автономия на реальном проекте) → пакет надёжности параллели (ERR-001..015) →
+  `2026-06-02` Project Autopilot ПОД Discuss-First + Project Acceptance.
 - **Точная версия = git HEAD** репозитория моста (см. ниже). Отдельного номера версии нет —
   истина в git-истории и в живом состоянии.
+
+### Что нового в этой вехе (сессия 2026-06-24/26)
+1. **Adversarial-audit harness** (`tools/adversarial-audit.ps1`) — новый ОСНОВНОЙ детектор код-дефектов:
+   FIND-матрица → детерминистический grounding-gate → скептик-VERIFY → идемпотентная подача в backlog
+   ТОЛЬКО подтверждённого (concurrency floor ≥20). Пришёл на смену прямой подаче deep-audit→backlog.
+2. **deep-audit→backlog filing НЕЙТРАЛИЗОВАН** (commit `0e7d3e5`): `Add-DeepAuditFindingsToBacklog`
+   (`tools/audit.ps1`) early-return'ит (под `Test-AuditDirectDeepFilingDisabled`); deep-находки теперь
+   идут через adversarial VERIFY. Плюс `tools/audit-snapshot.ps1` (commit `ff4c27b`) — иммутабельный
+   снимок аудита.
+3. **Script-integrity tripwire RE-ENABLED** (commit `b4d9ad8`): supervisor снова SHA256-сверяет
+   `server.ps1` + `driver.ps1` с `security/script-integrity.json` перед запуском; mismatch →
+   процесс НЕ стартует (см. `MONITORING_RUNBOOK.md` §4.3 — recovery при integrity-block). Гвардятся
+   только `server.ps1`/`driver.ps1`, НЕ submodules.
+4. **Fail-open → fail-closed (7-commit hardening, `03a6a43..76e8dbf`)** по `server.ps1`/`parallel.ps1`/
+   `backlog-core.ps1`/driver-submodules: control-plane claim-gate fail-closed, всплытие молчаливых
+   catch, mutex-budget на backlog-классификаторе, сериализованный backlog-add pin-dance,
+   git-subprocess async-read+timeout, prompt-injection framing текста идей куратора.
+5. **server.ps1 auth fail-closed** (commit `7e4faee`): битый `auth.json` → **HTTP 503 deny-all**;
+   auth-файл есть, но креды пустые → 401; открыто без токена ТОЛЬКО когда auth-файла нет вовсе.
+   Bind остаётся `http://+:8787/` (strong-wildcard) BY DESIGN (explicit-loopback 127.0.0.1 на этом
+   хосте даёт 503 из-за отсутствующего urlacl); LAN-экспозиция сдерживается Windows Firewall +
+   локальным использованием, НЕ префиксом.
 
 ### Что нового в этой вехе (сессия 2026-06-01/02)
 1. **12 корневых фиксов параллели/надёжности** (журнал: `OPERATOR_ERROR_LOG.md`): CRLF-ложные
@@ -94,7 +117,7 @@ Get-Content C:\Users\rafie\OneDrive\Documents\bridge\control\watchdog.log -Tail 
 | **Как устроен код моста** (для разработчика/самоулучшения) | `DEVELOPER_GUIDE.md` | актуально |
 | **Карта подсистем моста** (что из чего состоит) | `PROJECT_MAP.md` | актуально |
 | **Журнал инцидентов/ошибок** (что ломалось и как чинили) | `OPERATOR_ERROR_LOG.md` | живой |
-| **Мониторинг/диагностика** (что смотреть когда «что-то не так») | `MONITORING_RUNBOOK.md` | проверить |
+| **Мониторинг/диагностика** (что смотреть когда «что-то не так») | `MONITORING_RUNBOOK.md` | актуально |
 | Старые материалы (ранние идеи/обсуждения) | `ARCHITECTURE_V2.md`, `architecture-matrix.md`, `discussion.md`, `roles.md`, `sources.md`, `goals.md`, `AGENTS.md`, `external-systems.md`, `study-travel-*.md` | **архив (≤05-27), не источник правды** |
 
 ---
@@ -203,7 +226,7 @@ Drift Audit         tools/self-model-drift.ps1
 
 ### Как обновляется
 
-- **Авто** — hook в `driver/86-loop-completion.ps1` запускает refresh после каждой успешно
+- **Авто** — hook в `driver/86-loop-completion-actions.ps1` запускает refresh после каждой успешно
   завершённой задачи (fail-open: сбой refresh не ломает completion).
 - **Вручную** — `tools/refresh-self-model.ps1` (идемпотентен: no-op, если источники не менялись).
 

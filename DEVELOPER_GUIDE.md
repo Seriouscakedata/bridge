@@ -48,7 +48,32 @@ Task Scheduler (autostart, elevated)
 - держать живыми `server.ps1` и по одному `driver.ps1` на канал;
 - ловить их падения и перезапускать (recycle);
 - применять **circuit-breaker** (защита от рестарт-штормов, см. §5);
-- соблюдать rate-limit (не чаще 1 recycle / 60 c).
+- соблюдать rate-limit (не чаще 1 recycle / 60 c);
+- **script-integrity gate** — SHA256-верифицировать `server.ps1` и `driver.ps1` ПЕРЕД каждым запуском (см. ниже).
+
+**Script-integrity tripwire (re-enabled 2026-06-26).** `supervisor.ps1` дот-сорсит `lib/script-integrity.ps1`
+(`supervisor.ps1:9`) и перед запуском каждого процесса сверяет SHA256 файла на диске с манифестом
+`security/script-integrity.json`. Логика — `Test-BridgeScriptIntegrity` / `Invoke-BridgeIntegrityGuard`,
+вызывается из `Start-Srv` (`supervisor.ps1:~495-500`, для `server.ps1`) и `Start-Drv`
+(`supervisor.ps1:~537-542`, для `driver.ps1`). Гейт включается конфигом
+`supervisor.scriptIntegrityEnabled` (сейчас `true`) + `supervisor.scriptIntegrityManifest`
+(`'security/script-integrity.json'`). **Гвардятся ТОЛЬКО `server.ps1` и `driver.ps1`**; `driver/*.ps1`
+и `lib/*.ps1` НЕ покрыты.
+
+- **Failure mode:** если hash файла != манифест → guard возвращает `Ok=false`, supervisor пишет
+  `ERROR: integrity check failed for <file> reason=hash_mismatch expected=<H> actual=<H>` в
+  `control/supervisor.log` и **НЕ запускает процесс**. Симптом: без server'а HTTP.sys отдаёт `503` на
+  ВСЕХ ручках (включая `/api/health`); без driver'а `lastSeq` перестаёт расти.
+- **Когда срабатывает:** любая правка `server.ps1`/`driver.ps1` (операторская ИЛИ авто-коммит легитимной
+  автозадачи) БЕЗ обновления хеша в манифесте.
+- **Восстановление (оператор):** (1) убедиться что файл легитимен (`git ... status --short <file>` чист —
+  песочница кодера до этих файлов не дотягивается, так что неожиданный dirty = реальная тревога);
+  (2) `(Get-FileHash -Algorithm SHA256 <file>).Hash`; (3) вписать новый хеш в
+  `security/script-integrity.json` → `files."<file>"` (ОБА `server.ps1` и `driver.ps1` должны совпадать с
+  диском — устаревший «чужой» entry тоже блокирует); (4) рестарт через
+  `Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'; Start-Sleep 5; Start-ScheduledTask -TaskName 'ClaudeCodexBridge'`
+  и проверить отсутствие новых `integrity check failed` в `control/supervisor.log`.
+- **Self-test:** `tools/supervisor_script_integrity_test.ps1`.
 
 ### 2.2 server.ps1 (≈98 KB)
 HTTP-сервер на `http://+:8787/`:
@@ -104,7 +129,10 @@ bridge/
 │   ├── 83-loop-agent-turn.ps1     # planner/coder invocation and preflight/timeout handling
 │   ├── 84-loop-reply-markers.ps1  # FILE/SAVE/EVIDENCE/PLAN/RUNJOB/PROJECT markers
 │   ├── 85-loop-mode-transitions.ps1 # discuss/study/research transition handling
-│   ├── 86-loop-completion.ps1     # planner status, verify/commit, completion gates
+│   ├── 86-loop-completion.ps1     # thin completion entry; dot-sources the 3 модуля ниже
+│   ├── 86-loop-completion-actions.ps1   # planner status → verify/commit actions
+│   ├── 86-loop-completion-checks.ps1    # completion/chunk/DECOMPOSED gates (крупнейший)
+│   ├── 86-loop-completion-cleanup.ps1   # post-completion cleanup/teardown
 │   ├── 87-loop-final-guard.ps1    # max-turn guard and idle sleep
 │   └── 90-main-loop.ps1           # loop skeleton; dot-sources phase scriptblocks
 ├── server.ps1            # HTTP API + UI
@@ -122,6 +150,8 @@ bridge/
 │   ├── architect.ps1     # брейншторм/deep-think (40 KB)
 │   ├── foundry.ps1       # синтез новых проектов (36 KB)
 │   ├── circuit-breaker.ps1  # защита от штормов (26 KB)
+│   ├── qa-agent.ps1     # QA/acceptance gate: build-gate, scenario-suite, post-commit verdicts (wired в driver.ps1 self-test)
+│   ├── script-integrity.ps1  # SHA256-верификация server.ps1/driver.ps1 для supervisor (см. §2.1)
 │   ├── channels.ps1 / features.ps1 / metrics.ps1 / plan.ps1 / doctor.ps1 /
 │   │   intent.ps1 / postmortem.ps1 / codemem.ps1 / toolforge.ps1 /
 │   │   settings.ps1 / replay.ps1 / worktrees.ps1 / radar.ps1 / usage.ps1 /
@@ -197,9 +227,9 @@ bridge/
 - `maxAutonomousTasksPerDay` — лимит (0 = безлимит);
 - `autonomyDisabledChannels` — каналы без автономии, если надо временно убрать конкуренцию за Codex; UI: 🤖/🚫 в меню каналов.
 
-Гейт — `Test-AutonomyReady` (driver.ps1). Бэклог: `lib/backlog.ps1` (загрузчик). Статусы идеи: `new → approved → running/working → done | rejected | held | auto-dropped | failed | superseded | cancelled` (`deduped` на входе). Терминальные статусы автоматики:
+Гейт — `Test-AutonomyReady` (`driver/20-context.ps1`). Бэклог: `lib/backlog.ps1` (загрузчик). Статусы идеи: `new → approved → running/working → done | rejected | held | auto-dropped | failed | superseded | cancelled` (`deduped` на входе). Терминальные статусы автоматики:
 - **`auto-resolved`** — на claim-time `Test-IdeaStillRelevant` обнаружил, что задача уже сделана другим коммитом (`resolved_by_sha`); идея закрывается без работы (`backlog-core.ps1`). Считается как done в автономной статистике.
-- **`needs-review`** — после `attempts >= 5` `Set-BacklogAttemptsExhausted` снимает задачу с автоисполнения (`needs_review_reason='attempts-exhausted'`, `backlog-core.ps1:1532`). Чтобы вернуть в работу — оператор переводит обратно в `approved` (`Set-Idea -Status approved -Reason 'operator:…'`).
+- **`needs-review`** — после `attempts >= 5` `Set-BacklogAttemptsExhausted` снимает задачу с автоисполнения (`needs_review_reason='attempts-exhausted'`, `lib/backlog-core.ps1` функция `Set-BacklogAttemptsExhausted` ~:1702). Чтобы вернуть в работу — оператор переводит обратно в `approved` (`Set-Idea -Status approved -Reason 'operator:…'`).
 - **`decomposed`** — родительский атом, который планировщик разбил на дочерние через `[[DECOMPOSED: N]]` (см. §4.3-quater), либо осиротевший parent, закрытый state-reaper'ом.
 - **`auto-stale`** — непривзятая `new`-идея старше `ideaStaleDays=14` авто-архивируется (`backlog-dedup.ps1`).
 
@@ -207,7 +237,7 @@ bridge/
 
 **State-reaper (zombie-recovery):** зависшую `running`-задачу без живого `agent_pid`, без свежего worker-heartbeat (старше `HeartbeatMaxAgeSeconds=900`) и без активного runtime-state state-reaper авто-возвращает в `approved`, чтобы она переклеймилась; после `MaxZombieRetries=2` смертей подряд уходит в `held` на ревью (`lib/backlog-state-reaper.ps1`).
 
-**Embedding-дедуп на входе (`Add-Idea` может тихо вернуть null/existing id):** при cosine-similarity к уже известной идее `>= 0.88` возвращается id существующей (дедуп); `>= 0.85` к недавно отклонённой — идея дропается (silent null); `0.70–0.88` — лишь помечается «similar», но создаётся (`lib/backlog-dedup.ps1:74,79,82`).
+**Embedding-дедуп на входе (`Add-Idea` может тихо вернуть null/existing id):** при cosine-similarity к уже известной идее `>= 0.88` возвращается id существующей (дедуп); `>= 0.85` к недавно отклонённой — идея дропается (silent null); `0.70–0.88` — лишь помечается «similar», но создаётся (`lib/backlog-dedup.ps1` ~:149-157).
 
 ### 4.3-bis Project Autopilot (project backlog generation)
 Для каналов, привязанных к внешнему проекту, добавлен отдельный слой автопилота, чтобы проект не
@@ -402,7 +432,7 @@ Codex работает в **изолированной песочнице** (`wo
 ### 4.4-bis Project repo gates и quality bypass guard
 Для project-каналов критично проверять не bridge repo, а repo активного проекта. Исправления:
 
-- `Get-TaskRepoRoot` в `driver.ps1` выбирает repo root текущей задачи: project binding для project tasks,
+- `Get-TaskRepoRoot` в `driver/20-context.ps1` выбирает repo root текущей задачи: project binding для project tasks,
   иначе bridge root. Это устранило ложный gate, где `git-sha` коммита проекта искался в bridge repo.
 - Base commit автономной project task теперь берётся из project repo, а не из bridge.
 - Verify diff fallback, critic gate, changed files, task history, symbol evidence и `DIFF_META` используют
@@ -431,7 +461,7 @@ root-cause дубли логируются как `intake-dedup`, очевидн
 
 **Security-evidence правила gate'а** (проверка против реального кода): security-находка только в комментарии → `auto-dropped`; нет реального dynamic-exec примитива (`Invoke-Expression` и т.п.) → `auto-dropped`; слабое/косвенное evidence секрета → `held`; реальное присваивание/использование → `allow`.
 
-**Второй слой — `cross_file_causal_map` hard hold** (`Test-BacklogFindingCausalMap`, `lib/backlog.ps1:266-306`): даже когда базовый gate вернул `allow`, для approved audit-source находки это переигрывается в `held` (`reason='cross_file_causal_map required'`), ПОКА finding не несёт ВСЕ: ≥2 затронутых файла, все файлы поимённо названы в тексте, file-roles, propagation-path, multi-layer failure-path и причинно-следственный язык. Это отсекает «однострочные» автозаявки без сквозной причинной карты.
+**Второй слой — `cross_file_causal_map` hard hold** (`Test-BacklogFindingCausalMap`, `lib/backlog.ps1` функция `Test-BacklogFindingCausalMap` ~:224): даже когда базовый gate вернул `allow`, для approved audit-source находки это переигрывается в `held` (`reason='cross_file_causal_map required'`), ПОКА finding не несёт ВСЕ: ≥2 затронутых файла, все файлы поимённо названы в тексте, file-roles, propagation-path, multi-layer failure-path и причинно-следственный язык. Это отсекает «однострочные» автозаявки без сквозной причинной карты.
 
 **Ночное окно (планировщик аудита):** `Start-AuditIfDue` (`driver/10-maintenance.ps1`) запускает аудит раз за ОККУРРЕНЦИЮ окна (`audit.windowStartHour`/`windowEndHour`, привязка к `winStart`, `floorHours=20` — вторичный same-window guard), с throttle попыток запуска за окно (`maxLaunchAttemptsPerWindow`) и ledger'ом запусков `audit/audit.launches.jsonl`.
 
@@ -533,7 +563,7 @@ Codex). Для снижения конкуренции временно выкл
 `autonomyDisabledChannels`. Lock имеет stale-detection (мёртвый/чужой PID → забирается сразу).
 
 ### 6.6 Размер крупных файлов
-`driver.ps1` больше не является одиночным 366 KB монолитом: entrypoint около 150 строк, функции/startup/runtime loop вынесены в `driver/*.ps1`, а main loop дополнительно разложен на фазовые scriptblock-модули. Крупными остаются `web/index.html` ≈282 KB, `lib/backlog-core.ps1` ≈143 KB, `common.ps1` 97 KB, `server.ps1` ≈98 KB и отдельные driver-модули до ~1k строк. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
+`driver.ps1` больше не является одиночным 366 KB монолитом: entrypoint около 640 строк (тонкий: config, загрузка модулей, self-test, вызовы startup/loop), функции/startup/runtime loop вынесены в `driver/*.ps1`, а main loop дополнительно разложен на фазовые scriptblock-модули. Крупными остаются `web/index.html` ≈282 KB, `lib/backlog-core.ps1` ≈143 KB, `common.ps1` 97 KB, `server.ps1` ≈98 KB и отдельные driver-модули до ~1k строк. Правки — **точечные** (`Edit` по уникальному фрагменту), в профильном модуле. Полную перезапись делать только осознанно.
 
 ---
 
@@ -578,7 +608,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File driver.ps1 -Channel main -Se
 ## 8. Конфигурация
 
 ### 8.1 config.json (в git — общий дефолт)
-Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `sttModel` (модель платного голосового STT — живой вызов Gemini на `/api/stt`), `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `router.{minSuccess,minSamples,windowHours}` (эскалация triage→deep, см. §4), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `taskRestartCaps.{apply:6,hard:3,total:8}` (per-task потолок рестартов, см. §5.3), `autonomy.*`, `usage.dailyCapUsd` (живой суточный кап расходов; `0`=выключен, operator-pulse предупреждает при превышении), `audit.{windowStartHour,floorHours,deepAgents}`, `auditor.{intervalMin,doctorRecidivismMax}` (`auditor.cooldownMin` присутствует, но инертен — нигде в коде не читается), `doctor.{maxRepairAttempts:3,maxRestartResumes:3}`, `chunking.maxChunksPerTask:10`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`.
+Ключевое: `port`, `planner`, `coder.{agent,sandboxMode}`, `triageModel`/`deepModel`, `sttModel` (модель платного голосового STT — живой вызов Gemini на `/api/stt`), `plannerRouting.opusKeywords`, `llm.*` (модели ролей), `router.{minSuccess,minSamples,windowHours}` (эскалация triage→deep, см. §4), `circuitBreaker.{windowMin,maxRestarts,cooldownMin}`, `taskRestartCaps.{apply:6,hard:3,total:8}` (per-task потолок рестартов, см. §5.3), `autonomy.*`, `usage.dailyCapUsd` (живой суточный кап расходов; `0`=выключен, operator-pulse предупреждает при превышении), `audit.{windowStartHour,floorHours,deepAgents}`, `auditor.{intervalMin,doctorRecidivismMax}` (`auditor.cooldownMin` присутствует, но инертен — нигде в коде не читается), `doctor.{maxRepairAttempts:3,maxRestartResumes:3}`, `chunking.maxChunksPerTask:10`, `parallel.{enabled,maxStreams,workers}`, `probeTimeout`, `supervisor.*` (см. ниже).
+
+**Supervisor-блок (`config.json` → `supervisor.*`):** `scriptIntegrityEnabled:true` + `scriptIntegrityManifest:'security/script-integrity.json'` (SHA256-гейт для `server.ps1`/`driver.ps1` перед запуском, см. §2.1), `maxConcurrentDrivers:20`, `reapBloatedMB`/`reapWarnMB`/`reapGraceMs` (reap раздутых процессов), `restartLimitMaxPerHour`/`restartLimitWindowMin`/`restartLimitCooldownMin` (supervisor restart-limiter, см. §5.3 — в проде `maxPerHour`≈1000, практически выключен), `stopWaitMs`, `fatalDriverExitCodes`/`fatalServerExitCodes`.
 
 **Decision Synthesis: живые vs мёртвые config-ключи.** В `synthesisMode` код реально читает ТОЛЬКО `enabled`, `proposerModels.C` (он же `cheapModel`/`claudeModel` где явно резолвятся) и `judgeByTaskType.*` (`lib/decision-synthesis.ps1`). Ключи `defaultDepth`, `maxDebateTopics`, `maxDebateRounds`, `rubricWeights.*`, `promoteAfterShadowRuns` в config.json присутствуют, но **инертны** — соответствующие значения (глубина, потолки дебатов, веса рубрики) захардкожены в коде; правка их в config ни на что не влияет.
 

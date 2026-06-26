@@ -143,7 +143,7 @@ Task Scheduler: ClaudeCodexBridge  (autostart, elevated)
 - **Бэклог-семейство** — фасад-загрузчик `backlog.ps1` (28 KB) dot-source'ит split-модули: `backlog-core.ps1` (~143 KB; claim-gate, risk-tier, self-exec), `backlog-crud.ps1` (Add/Set/Get-Idea), `backlog-workpack.ps1` (deterministic intake gate + ready-frontier), `backlog-governor.ps1`, `backlog-dedup.ps1` (embedding root-cause dedup), `backlog-autopilot.ps1`, `backlog-state-reaper.ps1`.
 - `auditor.ps1` (read-only health-сенсор), `memory.ps1` (векторная память, `gemini-embedding-001`), `architect.ps1` (брейншторм/deep-think), `circuit-breaker.ps1`, `doctor.ps1`, `decision-depth.ps1` + `decision-synthesis.ps1` (Multi-Model Decision Synthesis), `router.ps1`, `intent.ps1`, `channels.ps1`, `settings.ps1`, и др.
 
-**`tools/` (~191 скрипт)** — аудит и утилиты: `audit.ps1` (статика + findings-ledger), `deep-audit.ps1` + `deep-audit-agent.ps1` (многоагентный), `web-smoke.ps1`, `scenario.ps1`.
+**`tools/` (~191 скрипт)** — аудит и утилиты: `adversarial-audit.ps1` (~52 KB, **основной** контур поиска дефектов кода: FIND-матрица → grounding-gate → скептик-VERIFY → confirmed-only заливка), `audit-snapshot.ps1` (immutable-снапшот для аудита), `audit.ps1` (статика + findings-ledger), `deep-audit.ps1` + `deep-audit-agent.ps1` (многоагентный срез), `web-smoke.ps1`, `scenario.ps1`.
 
 ### Надзор и восстановление
 
@@ -271,7 +271,7 @@ Task Scheduler: ClaudeCodexBridge  (autostart, elevated)
 
 ### Embedding-дедуп на входе (`Add-Idea` может вернуть null/existing)
 
-Перед созданием идеи `lib/backlog-dedup.ps1` считает cosine-similarity эмбеддинга к уже известным идеям (порядок проверок в `backlog-dedup.ps1:74-86`):
+Перед созданием идеи `lib/backlog-dedup.ps1` считает cosine-similarity эмбеддинга к уже известным идеям (`Test-IdeaShouldKeep`, ветки вердикта `backlog-dedup.ps1 ~:154-161`):
 
 - `>= 0.88` к существующей → `action='dedup'`, возвращается id существующей (новая НЕ создаётся);
 - `>= 0.85` к недавно отклонённой → `action='rejected-recently'`, идея молча дропается (silent null);
@@ -303,7 +303,7 @@ Task Scheduler: ClaudeCodexBridge  (autostart, elevated)
 
 ### Risk-tiers и selfExecuteTier
 
-`Get-IdeaRiskTier` (`backlog-core.ps1:2735-2763`) классифицирует идею:
+`Get-IdeaRiskTier` (`backlog-core.ps1 ~:2784`, функция `Get-IdeaRiskTier`) классифицирует идею:
 
 - **`red`** — security/необратимое/деньги, внешний источник (radar/web), правка собственного контура (`Test-IdeaTouchesControlPlane`), либо пустой текст. **`red` никогда не авто-исполняется** — только ручное одобрение.
 - **`green`** — узкий обратимый скоуп (доки/комменты/линт/тексты).
@@ -407,7 +407,7 @@ Stateless artifact-движок: каждая стадия пишет свой J
 
 ## Аудит и Доктор
 
-Три независимых контура надёжности: **Auditor** (read-only сенсор здоровья), **deep-audit** (ночной поиск дефектов кода) и **Doctor** (авто-починка упавших задач). Auditor только наблюдает и классифицирует — чинит исключительно Doctor; deep-audit только заводит находки в backlog.
+Контуры надёжности: **Auditor** (read-only сенсор здоровья), **adversarial-audit** (основной поиск дефектов кода с VERIFY-стадией), **deep-audit** (ночной многоагентный срез) и **Doctor** (авто-починка упавших задач). Auditor только наблюдает и классифицирует — чинит исключительно Doctor. Прямая заливка находок deep-audit в backlog **нейтрализована** (commit `0e7d3e5`): `Add-DeepAuditFindingsToBacklog` (`tools/audit.ps1`) теперь early-return'ит, а дефекты кода проходят через скептик-стадию VERIFY adversarial-audit и попадают в backlog только подтверждёнными (`Invoke-AuditFileConfirmed`, `tools/adversarial-audit.ps1`).
 
 ### Auditor (`lib/auditor.ps1`)
 
@@ -464,6 +464,17 @@ Read-only health-сенсор. Запускается из idle-тика дра�
 
 Находки не пишутся в backlog напрямую: даже `Add-Idea -SkipCurator` проходит детерминистический intake-gate (root-cause-дубли, security без реального dynamic-exec примитива → `auto-dropped`, слабое evidence → `held`). `usefulness.jsonl` оценивает полезность аудита (action_rate + resolved_signal_delta + incident_capture).
 
+### Adversarial-audit (`tools/adversarial-audit.ps1`) — основной контур дефектов кода
+
+Заменяет прямую цепочку deep-audit→backlog. Дефекты кода теперь проходят многостадийный конвейер «найти → заземлить → опровергнуть → завести только подтверждённое», поэтому в backlog не утекают галлюцинации и непроверяемые находки:
+
+1. **FIND** (`Invoke-AuditFindStage`) — матрица срезов `Get-AuditFindMatrix` по измерениям (`correctness`/`security`/`concurrency`/`error-handling`/`resources`…) разбрасывается параллельными finder-джобами; результаты валидируются схемой (`Test-AuditFinderSchema`).
+2. **Grounding-gate** (`Invoke-AuditGroundingGate` → `Test-AuditFindingGrounded`) — каждая находка детерминистически сверяется с реальным файлом/строкой в immutable-снапшоте (`tools/audit-snapshot.ps1`); незаземлённое → `state='rejected_grounding'` и дальше не идёт.
+3. **VERIFY** (`Invoke-AuditVerifyStage`) — независимый **скептик**-проход (`Build-AuditSkepticJobSpec`, голос `refute|support|abstain`): пытается ОПРОВЕРГНУТЬ находку против сниппета. Только пережившие → `verdict='confirmed'` (`Resolve-AuditFindingVerdict`).
+4. **Confirmed-only filing** (`Invoke-AuditFileConfirmed`) — идемпотентно заводит в backlog ТОЛЬКО `verdict=confirmed` (иначе `POLICY VIOLATION`-throw), c тегом `adversarial-confirmed` и fingerprint-дедупом. Прямая deep-заливка запрещена насмерть (`Assert-NoDirectDeepFiling`).
+
+**Concurrency floor** (`Get-AuditConcurrencyFloor`, дефолт **≥20**, override `config.audit.adversarial.concurrencyFloor`): FIND и VERIFY проверяют, что фактический peak-параллелизм дотянул до пола (`Test-AuditFloorMet`) — иначе аудит помечается недонагруженным, чтобы срез не получился «дырявым» из-за тихой деградации джоб-слоя.
+
 ### Doctor (`lib/doctor.ps1`)
 
 Авто-ремонт при жёстком сбое задачи: `Activate-Doctor` приостанавливает текущую задачу в `held_task`, ставит `doctor_active=true`, обнуляет счётчики, и следующая итерация драйвера прогоняет диагностический промпт (`Get-DoctorTaskText`, `mode=doctor`) через обычный planner→coder→critic пайплайн. Лог — `control/doctor.log`, события — `metrics.jsonl` (`doctor_event`). Doctor сам **не трогает** `watchdog.ps1`, `supervisor.ps1`, `.git/*`, `secrets.json`, `auth.json` (ограничение в промпте).
@@ -510,9 +521,21 @@ Salvage никогда не разрушает работу и не трогае
 | Слой | Файл | Что ловит | Реакция |
 |---|---|---|---|
 | **Supervisor** | `supervisor.ps1` (elevated, Task Scheduler `\ClaudeCodexBridge`) | падения server/driver; раздутые процессы; зависшие (hung) процессы | recycle (kill+respawn), zombie-reaper, hung-detection |
+| **Script-integrity** | `lib/script-integrity.ps1` (внутри `supervisor.ps1`) | подмена/неотслеженная правка `server.ps1` или `driver.ps1` (хеш ≠ манифесту) | процесс **не запускается** до выверки манифеста |
 | **Watchdog** | `watchdog.ps1` (скрытый, `-WindowStyle Hidden`) | API не отвечает / мёртвый heartbeat / шторм одинаковых ошибок | мягкий рестарт (`restart.flag`) → git-rollback на `stable` |
 | **Circuit-breaker** | `lib/circuit-breaker.ps1` | штормы рестартов (5/30мин) | cooldown 15 мин или **HARD-FREEZE** |
 | **System Sentinel** | внутри `watchdog.ps1` | живой драйвер, который рестарт-лупит/спамит одну ошибку | grace ~8мин → Doctor → rollback+page |
+
+**Принцип fail-closed (hardening-проход 2026-06-26, commits `03a6a43..76e8dbf`):** ключевые гейты переведены с fail-open на fail-closed, а ранее «тихие» `catch` теперь всплывают наружу. Затронуты: control-plane claim-gate (`lib/backlog-core.ps1` — при ошибке проверки задача НЕ клеймится, а не «пропускается»), `server.ps1` (auth fail-closed, см. ниже), `lib/parallel.ps1` (git-subprocess с async-чтением и таймаутом), backlog-классификатор (mutex-budget) и backlog-add (сериализованный pin-dance), плюс prompt-injection-обрамление текста идей у куратора. Смысл: при сбое самой проверки система отказывает в сторону безопасности, а не молча продолжает.
+
+#### Script-integrity tripwire
+
+`supervisor.ps1` перед запуском КАЖДОГО процесса SHA256-сверяет on-disk `server.ps1` и `driver.ps1` с манифестом `security/script-integrity.json` (`Test-BridgeScriptIntegrity` / `Invoke-BridgeIntegrityGuard` из `lib/script-integrity.ps1`, зовётся из `Start-Srv`/`Start-Drv`). Включён `config.json/supervisor.scriptIntegrityEnabled=true` (re-enabled 2026-06-26, commit `b4d9ad8`) + `scriptIntegrityManifest='security/script-integrity.json'`.
+
+- **Что охраняется:** ТОЛЬКО `server.ps1` и `driver.ps1`. Подмодули `driver/*.ps1` и `lib/*.ps1` — НЕ под защитой.
+- **Срабатывание:** хеш файла ≠ манифесту → guard вернёт `Ok=false`, supervisor пишет в `control/supervisor.log` строку `ERROR: integrity check failed for <file> reason=hash_mismatch expected=<H> actual=<H>` и **НЕ запускает процесс**. Симптом: server не поднялся → HTTP.sys отдаёт `503` на ВСЕ эндпойнты (вкл. `/api/health`); или нет драйвера → `lastSeq` перестаёт двигаться.
+- **Когда триггерит:** любая правка `server.ps1`/`driver.ps1` (ручная ИЛИ легитимный авто-коммит автономной задачи) БЕЗ обновления хеша в манифесте. Стейл-запись по ВТОРОМУ файлу тоже блокирует.
+- **Восстановление (оператор):** (1) убедиться, что файл легитимен — `git --git-dir=C:/Users/rafie/.bridge-runtime/bridge-git --work-tree=C:/Users/rafie/OneDrive/Documents/bridge status --short <file>` чистый/совпадает с HEAD (coder-sandbox не достаёт эти файлы, так что неожиданный dirty = реальная тревога); (2) пересчитать `(Get-FileHash -Algorithm SHA256 <file>).Hash` (UPPERCASE hex); (3) записать в `security/script-integrity.json → files."<file>"`, причём ОБЕ записи (`server.ps1` И `driver.ps1`) должны совпадать с текущими файлами; (4) рестарт `Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'; Start-Sleep 5; Start-ScheduledTask -TaskName 'ClaudeCodexBridge'`, проверить, что в `control/supervisor.log` нет нового `integrity check failed`. Self-test — `tools/supervisor_script_integrity_test.ps1`.
 
 ### Watchdog (smoke + rollback)
 
@@ -707,11 +730,13 @@ Set-ProjectPlanApproved -Channel '<slug>'        # снять: -Approved:$false
 
 ## API (эндпоинты сервера :8787)
 
-HTTP-сервер `server.ps1` (single-threaded `HttpListener`) слушает порт **8787** (`config.json` → `"port": 8787`). Пытается биндить на все интерфейсы (LAN, нужен urlacl от `setup-lan.ps1`), иначе fallback на localhost-only. Все ответы — JSON (`application/json; charset=utf-8`), если не указано иное.
+HTTP-сервер `server.ps1` (single-threaded `HttpListener`) слушает порт **8787** (`config.json` → `"port": 8787`). Биндит на strong-wildcard префикс `http://+:8787/` **by design** (commit `7e4faee`): explicit-loopback bind (`http://127.0.0.1` / `http://localhost`) на этом хосте отдаёт клиентам `503`, т.к. urlacl-резервация есть на `+`, но не на `127.0.0.1`. LAN-экспозиция сдерживается Windows Firewall + локальным использованием, а НЕ префиксом. Все ответы — JSON (`application/json; charset=utf-8`), если не указано иное.
 
 ### Аутентификация
 
 Один gate `Test-Auth` (server.ps1) защищает **всё, кроме `/api/health`**. Креды читаются на старте из `auth.json` (поля `user`, `password`, опционально `token`), который резолвится через `Get-AuthPath` → `Get-PrivateFilePath` из приватного стора **вне корня моста**; путь внутри моста — лишь legacy-fallback (`lib/common-files.ps1`).
+
+**Auth fail-closed (commit `7e4faee`):** при битом/непарсимом `auth.json` сервер НЕ падает и НЕ открывается нараспашку — он отдаёт **`503`** «Authentication unavailable (auth config error)» и блокирует ВСЁ. Если файл есть, но креды пустые (мисконфиг) — тоже deny (`401`), а не fall-open. Открытый доступ возможен ТОЛЬКО когда auth-файла нет вовсе (преднамеренный no-auth-режим).
 
 Принимаются два механизма (любой проходит):
 

@@ -82,6 +82,9 @@ $recent = @($all | ForEach-Object { try { $o=$_|ConvertFrom-Json; if (([datetime
 Write-Output ("  restarts(30min): " + $recent.Count + "/5  " + $(if($recent.Count -ge 5){'⚠ STORM/cooldown риск'}elseif($recent.Count -ge 3){'(повышено)'}else{'OK'}))
 
 # 4. Каналы: статус + свежесть драйвера
+# ⚠ Список захардкожен — на этой машине активны и другие каналы (claude, computer-control,
+#    telegram-bridge-bot). Чтобы покрыть ВСЕ — перечисли по факту:
+#    Get-ChildItem "$src\channels" -Directory | ? Name -ne '_archive' | % Name
 foreach ($ch in @('main','oko')) {
   $sf = Join-Path $src ("channels\" + $ch + "\state.json")
   if (Test-Path $sf) {
@@ -156,6 +159,23 @@ if($bad){ "BROKEN: " + ($bad -join ', ') } else { "all core .ps1 parse OK" }
 ```
 Если probe красный из-за реального битого файла — почини файл, потом §5. Failsafe: после 3 продлений cooldown мост поднимется принудительно сам + напишет тебе в чат.
 
+**Script-integrity startup-block (supervisor отказывается запускать процесс).** Перед стартом supervisor SHA256-сверяет на-диске `server.ps1` И `driver.ps1` с манифестом `security/script-integrity.json` (гейт включён: `config.json` → `supervisor.scriptIntegrityEnabled=true` + `scriptIntegrityManifest='security/script-integrity.json'`; логика — `lib/script-integrity.ps1`, функции `Test-BridgeScriptIntegrity`/`Invoke-BridgeIntegrityGuard`, вызов из `supervisor.ps1` `Start-Srv`/`Start-Drv`). Если хэш файла ≠ манифесту — guard возвращает `Ok=false`, supervisor пишет в `control/supervisor.log` строку `ERROR: integrity check failed for <file> reason=hash_mismatch expected=<H> actual=<H>` и **НЕ запускает процесс**. Симптом: server не поднят → HTTP.sys отдаёт **503 на ВСЕ маршруты** (включая `/api/health`); driver не поднят → `lastSeq`/`state.json` перестаёт двигаться. Триггерится ЛЮБАЯ правка `server.ps1`/`driver.ps1` (ручная ИЛИ авто-коммит легитимной автозадачи) БЕЗ обновления хэша в манифесте. Гвардятся ТОЛЬКО `server.ps1` + `driver.ps1`; `driver/*.ps1` и `lib/*.ps1` — нет.
+
+Диагностика:
+```powershell
+$src='C:\Users\rafie\OneDrive\Documents\bridge'
+Get-Content "$src\control\supervisor.log" -Tail 30 -EA SilentlyContinue | Select-String 'integrity check failed'
+```
+Восстановление (оператор):
+1. Убедись, что файл легитимен (не подмена): `git --git-dir=C:\Users\rafie\.bridge-runtime\bridge-git --work-tree=C:\Users\rafie\OneDrive\Documents\bridge status --short server.ps1 driver.ps1` должен быть чистым / совпадать с HEAD. Песочница кодера до этих файлов не дотянется — неожиданная грязная правка = реальная тревога (подмена), НЕ обновляй манифест вслепую.
+2. Пересчитай хэш: `(Get-FileHash -Algorithm SHA256 "$src\server.ps1").Hash` (uppercase hex), то же для `driver.ps1`.
+3. Впиши в `security/script-integrity.json` → `files."server.ps1"` (и/или `"driver.ps1"`) новый хэш. **ОБА** entry должны совпадать с текущими на-диске файлами — устаревший «чужой» entry тоже блокирует старт.
+4. Рестарт: `Stop-ScheduledTask -TaskName 'ClaudeCodexBridge'; Start-Sleep 5; Start-ScheduledTask -TaskName 'ClaudeCodexBridge'`. Проверь, что в `control/supervisor.log` нет новых `integrity check failed`.
+
+Самопроверка гейта: `tools/supervisor_script_integrity_test.ps1`.
+
+> **Примечание про 503 vs 401.** Раньше «API отдаёт 503 на всё» означало только «server не слушает». Теперь 503 имеет ДВЕ причины: (а) server не запущен (в т.ч. из-за integrity-block выше); (б) server жив, но `Test-Auth` (`server.ps1`) при битом/непарсящемся `auth.json` **fail-closed** отдаёт `503 Authentication unavailable (auth config error)` — deny-all (а НЕ только 401). 401 теперь означает: auth-файл есть, но креды пустые/неверные. «Открыто без токена» возможно ТОЛЬКО когда auth-файла нет вовсе. То есть 503 на `/api/health` → сначала проверь `control/supervisor.log` на integrity-block, затем валидность `auth.json`.
+
 **System Sentinel (детектор шторма в `watchdog.ps1`).** Heartbeat-проверка ловит «мёртв vs жив», но НЕ ловит живой драйвер, который рестарт-лупит или спамит одну и ту же ошибку. Этот пробел закрывает Sentinel: детерминистический подсчёт сигнатур (одна сигнатура ≥3 раз ИЛИ ≥4 рестарта за 15 мин = шторм), затем **grace ~8 мин на самолечение** (мост часто чинит себя сам — НЕ топчи это окно), потом dispatch в Doctor (`repair.signal`), и если за 15 мин не вылечилось — rollback + пейдж оператору в чат. Артефакты: `control/sentinel.suspect`, `control/sentinel.cooldown`, `control/sentinel.incidents.jsonl`. Если видишь запись об инциденте Sentinel — мост уже сам реагирует; дай ему отработать grace-окно прежде чем вмешиваться вручную (§5).
 
 ### 4.4 Застрявшая задача (`task-survived-3x`)
@@ -216,6 +236,8 @@ foreach($f in @('control\restart.flag','control\restart.deferred','runtime\codex
 $ext="$env:USERPROFILE\.bridge-runtime\cb-cooldown-extensions"; if(Test-Path $ext){ Remove-Item $ext -Force -EA SilentlyContinue }
 
 # 4. (если state повреждён) сбрось застрявшее состояние каналов
+# ⚠ Список захардкожен и НЕ покрывает все активные каналы (claude, computer-control,
+#    telegram-bridge-bot). При полном сбросе перечисли по факту через Get-ChildItem "$src\channels".
 $u8=New-Object System.Text.UTF8Encoding($false)
 foreach($ch in @('main','oko')){ $sf=Join-Path $src "channels\$ch\state.json"; if(Test-Path $sf){ try{ $s=[IO.File]::ReadAllText($sf)|ConvertFrom-Json; $s.status='idle'; foreach($k in @('claimed_at','current_task','current_task_id','task_turn','task_mode','abort','current_backlog_id')){ if($s.PSObject.Properties.Name -contains $k){ $s.$k=$null } }; [IO.File]::WriteAllText($sf,($s|ConvertTo-Json -Depth 10),$u8); "reset $ch" }catch{} } }
 
@@ -246,7 +268,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$src\driver.ps1" -Channel m
 ```
 `lib/*.ps1` и `tools/*.ps1` (кроме исполняемых скриптов вроде `deep-audit.ps1`, у которого есть top-level запуск) — это библиотеки, их dot-source безопасен. Если сомневаешься — только ParseFile.
 
-> **Где живёт логика loop.** `driver.ps1` теперь тонкий entrypoint-загрузчик; реальная логика цикла разбита по модулям `driver/NN-*.ps1` (`80-preflight`, `81-loop-idle-claim`, `82-loop-turn-setup`, `84-loop-reply-markers`, `85-mode-transitions`, `86-completion`, `90-main-loop`; обслуживание/аудит — `10-maintenance.ps1`). `-SelfTest` грузит все эти модули, так что ловит load-time ошибки и в них. При parse-fail (§4.3) проверяй и `driver\*.ps1`-модули, не только корневой `driver.ps1`.
+> **Где живёт логика loop.** `driver.ps1` теперь тонкий entrypoint-загрузчик; реальная логика цикла разбита по модулям `driver/NN-*.ps1` (`80-loop-preflight.ps1`, `81-loop-idle-claim.ps1`, `82-loop-turn-setup.ps1`, `83-loop-agent-turn.ps1`, `84-loop-reply-markers.ps1`, `85-loop-mode-transitions.ps1`, completion разбит на `86-loop-completion.ps1` + `86-loop-completion-actions.ps1` / `-checks.ps1` / `-cleanup.ps1`, `87-loop-final-guard.ps1`, `90-main-loop.ps1`; обслуживание/аудит — `10-maintenance.ps1`). `-SelfTest` грузит все эти модули, так что ловит load-time ошибки и в них. При parse-fail (§4.3) проверяй и `driver\*.ps1`-модули, не только корневой `driver.ps1`.
 
 ---
 
