@@ -665,7 +665,7 @@
                                                   "bugfix":  "codex",
                                                   "refactor":  "codex",
                                                   "infra":  "codex",
-                                                  "research":  "gemini-2.5-flash",
+                                                  "research":  "deepseek-v4-pro",
                                                   "creative":  "gemini-2.5-flash"
                                               },
                           "maxDebateTopics":  3,
