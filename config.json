@@ -159,7 +159,7 @@
                        "fatalServerExitCodes":  [
 
                                                 ],
-                       "scriptIntegrityEnabled":  false,
+                       "scriptIntegrityEnabled":  true,
                        "scriptIntegrityManifest":  "security/script-integrity.json",
                        "maxConcurrentDrivers":  20
                    },
