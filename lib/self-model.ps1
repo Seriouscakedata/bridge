@@ -187,8 +187,8 @@ function Get-SelfModelUnregisteredModules {
     $modules = @()
     foreach ($file in @(Get-ChildItem -LiteralPath $libRoot -Filter '*.ps1' -File | Sort-Object Name)) {
         $relative = ConvertTo-SelfModelRepoPath -Path ('lib/' + $file.Name)
-        if ($ownerFiles.Contains($relative)) { continue }
         $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        if ($ownerFiles.Contains($relative) -and -not $preferredRank.ContainsKey($moduleName)) { continue }
         $rank = 1000
         if ($preferredRank.ContainsKey($moduleName)) { $rank = [int]$preferredRank[$moduleName] }
         $modules += [pscustomobject]@{

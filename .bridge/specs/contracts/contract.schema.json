@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bridge Project Autopilot Interface Contract",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "version",
+    "signature",
+    "behavior",
+    "invariants",
+    "errors",
+    "golden_examples",
+    "owned_files"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stable": {
+      "type": "boolean",
+      "description": "True means the contract is frozen enough to permit soft-edge parallel construction."
+    },
+    "content_hash": {
+      "type": "string",
+      "description": "Optional canonical content hash used when stable is not true."
+    },
+    "signature": {
+      "type": ["object", "array", "string"]
+    },
+    "behavior": {
+      "type": "object",
+      "required": ["preconditions", "postconditions"],
+      "properties": {
+        "preconditions": {
+          "type": ["array", "string"]
+        },
+        "postconditions": {
+          "type": ["array", "string"]
+        },
+        "ordering": {
+          "type": ["array", "string"]
+        },
+        "side_effects": {
+          "type": ["array", "string"]
+        },
+        "idempotency": {
+          "type": ["string", "boolean"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "invariants": {
+      "type": ["array", "string"]
+    },
+    "errors": {
+      "type": ["object", "array", "string"]
+    },
+    "golden_examples": {
+      "type": "array"
+    },
+    "owned_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "owned_regions": {
+      "type": "array"
+    }
+  }
+}

@@ -6,18 +6,27 @@ function Get-ProjectAutopilotConfig {
     cooldownMinutes = 5
     maxTasksPerBatch = 12
     emptyCoordinatorLimit = 3
+    diffusionMode = 'off'
+    diffusionMinIndependentAtoms = 2
+    diffusionMaxWaveSize = 6
   }
   $dotted = @{
     'projectAutopilot.enabled' = 'enabled'
     'projectAutopilot.cooldownMinutes' = 'cooldownMinutes'
     'projectAutopilot.maxTasksPerBatch' = 'maxTasksPerBatch'
     'projectAutopilot.emptyCoordinatorLimit' = 'emptyCoordinatorLimit'
+    'projectAutopilot.diffusionMode' = 'diffusionMode'
+    'projectAutopilot.diffusionMinIndependentAtoms' = 'diffusionMinIndependentAtoms'
+    'projectAutopilot.diffusionMaxWaveSize' = 'diffusionMaxWaveSize'
   }
   $flat = @{
     projectAutopilotEnabled = 'enabled'
     projectAutopilotCooldownMinutes = 'cooldownMinutes'
     projectAutopilotMaxTasksPerBatch = 'maxTasksPerBatch'
     projectAutopilotEmptyCoordinatorLimit = 'emptyCoordinatorLimit'
+    projectAutopilotDiffusionMode = 'diffusionMode'
+    projectAutopilotDiffusionMinIndependentAtoms = 'diffusionMinIndependentAtoms'
+    projectAutopilotDiffusionMaxWaveSize = 'diffusionMaxWaveSize'
   }
   try {
     if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
@@ -46,6 +55,10 @@ function Get-ProjectAutopilotConfig {
   $cfg.cooldownMinutes = ConvertTo-BacklogPackInt -Value $cfg.cooldownMinutes -Default 5 -Min 1 -Max 240
   $cfg.maxTasksPerBatch = ConvertTo-BacklogPackInt -Value $cfg.maxTasksPerBatch -Default 12 -Min 1 -Max 50
   $cfg.emptyCoordinatorLimit = ConvertTo-BacklogPackInt -Value $cfg.emptyCoordinatorLimit -Default 3 -Min 1 -Max 20
+  $cfg.diffusionMode = ([string]$cfg.diffusionMode).Trim().ToLowerInvariant()
+  if ($cfg.diffusionMode -notin @('off','shadow','diffusion')) { $cfg.diffusionMode = 'off' }
+  $cfg.diffusionMinIndependentAtoms = ConvertTo-BacklogPackInt -Value $cfg.diffusionMinIndependentAtoms -Default 2 -Min 1 -Max 50
+  $cfg.diffusionMaxWaveSize = ConvertTo-BacklogPackInt -Value $cfg.diffusionMaxWaveSize -Default 6 -Min 1 -Max 50
   return [pscustomobject]$cfg
 }
 
@@ -366,6 +379,297 @@ function Get-ProjectAutopilotPlanContractPath {
   param([string]$ProjectRoot)
   if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
   return (Join-Path (Join-Path $ProjectRoot '.bridge') 'project-contract.json')
+}
+
+function Get-ProjectAutopilotInterfaceContractDir {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+  return (Join-Path (Join-Path (Join-Path $ProjectRoot '.bridge') 'specs') 'contracts')
+}
+
+function ConvertTo-ProjectAutopilotCanonicalValue {
+  param($Value)
+  if ($null -eq $Value) { return $null }
+  if ($Value -is [string] -or $Value -is [bool] -or $Value -is [char]) { return $Value }
+  if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [int] -or $Value -is [long] -or $Value -is [single] -or $Value -is [double] -or $Value -is [decimal]) { return $Value }
+  if ($Value -is [System.Collections.IDictionary]) {
+    $map = [ordered]@{}
+    foreach ($key in @($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object)) {
+      if ($key -in @('content_hash','computed_hash','frozen_hash','hash')) { continue }
+      $map[$key] = ConvertTo-ProjectAutopilotCanonicalValue -Value $Value[$key]
+    }
+    return $map
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+    $arr = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($item in @($Value)) { [void]$arr.Add((ConvertTo-ProjectAutopilotCanonicalValue -Value $item)) }
+    return @($arr.ToArray())
+  }
+  $props = @()
+  try { $props = @($Value.PSObject.Properties | Where-Object { $_.MemberType -match 'Property' } | Select-Object -ExpandProperty Name | Sort-Object) } catch { $props = @() }
+  if ($props.Count -eq 0) { return [string]$Value }
+  $obj = [ordered]@{}
+  foreach ($name in $props) {
+    if ($name -in @('content_hash','computed_hash','frozen_hash','hash')) { continue }
+    $obj[$name] = ConvertTo-ProjectAutopilotCanonicalValue -Value $Value.$name
+  }
+  return $obj
+}
+
+function Get-ProjectAutopilotCanonicalJson {
+  param($Value)
+  return ((ConvertTo-ProjectAutopilotCanonicalValue -Value $Value) | ConvertTo-Json -Compress -Depth 10)
+}
+
+function Get-ProjectAutopilotInterfaceContractHash {
+  param($Contract)
+  try { return (Get-ProjectAutopilotSha256 (Get-ProjectAutopilotCanonicalJson -Value $Contract)) } catch { return '' }
+}
+
+function Get-ProjectAutopilotInterfaceContractId {
+  param($Contract, [string]$Path = '')
+  $id = ''
+  foreach ($name in @('id','contract_id','contractId','name')) {
+    try {
+      $v = Get-ProjectAutopilotContractValue -Obj $Contract -Names @($name) -Default $null
+      if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) { $id = [string]$v; break }
+    } catch {}
+  }
+  if ([string]::IsNullOrWhiteSpace($id) -and -not [string]::IsNullOrWhiteSpace($Path)) {
+    try { $id = [System.IO.Path]::GetFileNameWithoutExtension($Path) } catch {}
+  }
+  return (ConvertTo-ProjectAutopilotSlug $id)
+}
+
+function Test-ProjectAutopilotInterfaceContract {
+  param($Contract, [string]$Path = '')
+  $missing = New-Object 'System.Collections.Generic.List[string]'
+  $id = Get-ProjectAutopilotInterfaceContractId -Contract $Contract -Path $Path
+  if ([string]::IsNullOrWhiteSpace($id)) { [void]$missing.Add('id') }
+  foreach ($field in @('version','signature','behavior','invariants','golden_examples','owned_files')) {
+    $v = Get-ProjectAutopilotContractValue -Obj $Contract -Names @($field, ($field -replace '_','')) -Default $null
+    if ($null -eq $v -or [string]::IsNullOrWhiteSpace([string]($v | ConvertTo-Json -Compress -Depth 8))) { [void]$missing.Add($field) }
+  }
+  $errors = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('errors','error_taxonomy','failure_taxonomy') -Default $null
+  if ($null -eq $errors -or [string]::IsNullOrWhiteSpace([string]($errors | ConvertTo-Json -Compress -Depth 8))) { [void]$missing.Add('errors') }
+  $hash = Get-ProjectAutopilotInterfaceContractHash -Contract $Contract
+  $declaredHash = [string](Get-ProjectAutopilotContractValue -Obj $Contract -Names @('content_hash','hash','frozen_hash') -Default '')
+  $stableFlag = Test-ProjectAutopilotTruthy (Get-ProjectAutopilotContractValue -Obj $Contract -Names @('stable','frozen') -Default $false)
+  $stable = ($stableFlag -or (-not [string]::IsNullOrWhiteSpace($declaredHash) -and $declaredHash.Trim().ToLowerInvariant() -eq $hash))
+  return [pscustomobject]@{
+    id = $id
+    path = [string]$Path
+    valid = ($missing.Count -eq 0)
+    stable = [bool]$stable
+    hash = $hash
+    missing = @($missing.ToArray())
+  }
+}
+
+function Get-ProjectAutopilotInterfaceContracts {
+  param([string]$ProjectRoot)
+  $dir = Get-ProjectAutopilotInterfaceContractDir -ProjectRoot $ProjectRoot
+  if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    if ($file.Name -match '\.schema\.json$' -or $file.Name -eq 'contract.schema.json') { continue }
+    try {
+      $obj = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+      $check = Test-ProjectAutopilotInterfaceContract -Contract $obj -Path $file.FullName
+      $out.Add([pscustomobject]@{
+        id = [string]$check.id
+        path = $file.FullName
+        contract = $obj
+        valid = [bool]$check.valid
+        stable = [bool]$check.stable
+        hash = [string]$check.hash
+        missing = @($check.missing)
+      }) | Out-Null
+    } catch {
+      $out.Add([pscustomobject]@{
+        id = ConvertTo-ProjectAutopilotSlug ([System.IO.Path]::GetFileNameWithoutExtension($file.Name))
+        path = $file.FullName
+        contract = $null
+        valid = $false
+        stable = $false
+        hash = ''
+        missing = @('valid_json')
+      }) | Out-Null
+    }
+  }
+  return @($out.ToArray())
+}
+
+function Test-ProjectAutopilotPathOverlap {
+  param([string[]]$Left = @(), [string[]]$Right = @())
+  foreach ($l in @(ConvertTo-ProjectAutopilotPathArray $Left)) {
+    foreach ($r in @(ConvertTo-ProjectAutopilotPathArray $Right)) {
+      if ($l -eq $r) { return $true }
+      if ($l.StartsWith($r.TrimEnd('/') + '/') -or $r.StartsWith($l.TrimEnd('/') + '/')) { return $true }
+    }
+  }
+  return $false
+}
+
+function Test-ProjectAutopilotGraphAcyclic {
+  param([object[]]$Nodes = @(), [object[]]$Edges = @())
+  $ids = @($Nodes | ForEach-Object { [string]$_.slug } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $indegree = @{}
+  $out = @{}
+  foreach ($id in $ids) { $indegree[$id] = 0; $out[$id] = New-Object 'System.Collections.Generic.List[string]' }
+  foreach ($edge in @($Edges)) {
+    $from = [string]$edge.from
+    $to = [string]$edge.to
+    if (-not $indegree.ContainsKey($from) -or -not $indegree.ContainsKey($to) -or $from -eq $to) { continue }
+    [void]$out[$from].Add($to)
+    $indegree[$to] = [int]$indegree[$to] + 1
+  }
+  $queue = New-Object 'System.Collections.Generic.Queue[string]'
+  foreach ($id in $ids) { if ([int]$indegree[$id] -eq 0) { $queue.Enqueue($id) } }
+  $visited = 0
+  while ($queue.Count -gt 0) {
+    $n = $queue.Dequeue()
+    $visited++
+    foreach ($m in @($out[$n].ToArray())) {
+      $indegree[$m] = [int]$indegree[$m] - 1
+      if ([int]$indegree[$m] -eq 0) { $queue.Enqueue($m) }
+    }
+  }
+  return [pscustomobject]@{ acyclic = ($visited -eq $ids.Count); visited = $visited; total = $ids.Count }
+}
+
+function New-ProjectAutopilotUnifiedGraph {
+  param(
+    [object[]]$Tasks = @(),
+    [object[]]$Contracts = @()
+  )
+  $nodes = New-Object 'System.Collections.Generic.List[object]'
+  $edges = New-Object 'System.Collections.Generic.List[object]'
+  $dangling = New-Object 'System.Collections.Generic.List[object]'
+  $orphan = New-Object 'System.Collections.Generic.List[object]'
+  $conflicts = New-Object 'System.Collections.Generic.List[object]'
+  $contractsById = @{}
+  foreach ($c in @($Contracts)) {
+    $cid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
+    if (-not [string]::IsNullOrWhiteSpace($cid)) { $contractsById[$cid] = $c }
+  }
+  foreach ($task in @($Tasks)) {
+    $slug = ConvertTo-ProjectAutopilotSlug (Get-ProjectAutopilotTaskStringField -Task $task -Names @('slug','id','title'))
+    $nodes.Add([pscustomobject]@{
+      slug = $slug
+      chapter = Get-ProjectAutopilotTaskStringField -Task $task -Names @('chapter','phase','area')
+      kind = Normalize-ProjectAutopilotAtomKind (Get-ProjectAutopilotTaskStringField -Task $task -Names @('kind','atom_kind'))
+      files = @(ConvertTo-ProjectAutopilotPathArray (Get-BacklogPackObjectValue -Obj $task -Name 'files' -Default @()))
+      depends_on = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $task -Name 'depends_on' -Default @()))
+      provides = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $task -Name 'provides' -Default @()))
+      consumes = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $task -Name 'consumes' -Default @()))
+    }) | Out-Null
+  }
+  foreach ($node in @($nodes.ToArray())) {
+    foreach ($dep in @($node.depends_on)) {
+      $edges.Add([pscustomobject]@{ from=$dep; to=[string]$node.slug; contract=''; edge_type='hard'; provenance='declared'; confidence='declared' }) | Out-Null
+    }
+  }
+  foreach ($consumer in @($nodes.ToArray())) {
+    foreach ($contractId in @($consumer.consumes)) {
+      $providers = @($nodes.ToArray() | Where-Object { @($_.provides) -contains $contractId })
+      if ($providers.Count -eq 0) {
+        $dangling.Add([pscustomobject]@{ atom=[string]$consumer.slug; contract=$contractId; reason='consume-without-provider' }) | Out-Null
+        continue
+      }
+      $contract = if ($contractsById.ContainsKey($contractId)) { $contractsById[$contractId] } else { $null }
+      $valid = ($contract -and [bool](Get-BacklogPackObjectValue -Obj $contract -Name 'valid' -Default $false))
+      $stable = ($contract -and [bool](Get-BacklogPackObjectValue -Obj $contract -Name 'stable' -Default $false))
+      foreach ($provider in $providers) {
+        if ([string]$provider.slug -eq [string]$consumer.slug) { continue }
+        $edges.Add([pscustomobject]@{
+          from = [string]$provider.slug
+          to = [string]$consumer.slug
+          contract = $contractId
+          edge_type = if ($valid -and $stable) { 'soft' } else { 'hard' }
+          provenance = 'contract'
+          confidence = if ($valid -and $stable) { 'high' } else { 'uncertain' }
+        }) | Out-Null
+      }
+    }
+  }
+  foreach ($provider in @($nodes.ToArray())) {
+    foreach ($contractId in @($provider.provides)) {
+      $consumers = @($nodes.ToArray() | Where-Object { @($_.consumes) -contains $contractId })
+      if ($consumers.Count -eq 0) {
+        $orphan.Add([pscustomobject]@{ atom=[string]$provider.slug; contract=$contractId; reason='provide-without-consumer' }) | Out-Null
+      }
+    }
+  }
+  $nodeArr = @($nodes.ToArray())
+  for ($i = 0; $i -lt $nodeArr.Count; $i++) {
+    for ($j = $i + 1; $j -lt $nodeArr.Count; $j++) {
+      if (Test-ProjectAutopilotPathOverlap -Left @($nodeArr[$i].files) -Right @($nodeArr[$j].files)) {
+        $conflicts.Add([pscustomobject]@{ left=[string]$nodeArr[$i].slug; right=[string]$nodeArr[$j].slug; reason='touch-overlap' }) | Out-Null
+      }
+    }
+  }
+  $cycle = Test-ProjectAutopilotGraphAcyclic -Nodes @($nodes.ToArray()) -Edges @($edges.ToArray())
+  return [pscustomobject]@{
+    nodes = @($nodes.ToArray())
+    edges = @($edges.ToArray())
+    dangling_consumes = @($dangling.ToArray())
+    orphan_provides = @($orphan.ToArray())
+    file_conflicts = @($conflicts.ToArray())
+    acyclic = [bool]$cycle.acyclic
+  }
+}
+
+function Test-ProjectAutopilotDiffusionGate {
+  param(
+    [object[]]$Tasks = @(),
+    [object[]]$Contracts = @(),
+    [string]$ProjectRoot = '',
+    [bool]$OptIn = $false,
+    [Nullable[bool]]$CleanKnownState = $null,
+    [Nullable[bool]]$StitchingTestsPresent = $null,
+    [int]$MinIndependentAtoms = 2,
+    [int]$MaxWaveSize = 6
+  )
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  if (-not $OptIn) { [void]$reasons.Add('diffusion-opt-in-missing') }
+  $clean = $true
+  if ($null -ne $CleanKnownState) { $clean = [bool]$CleanKnownState }
+  elseif (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $clean = [bool](Test-ProjectAutopilotProjectClean -ProjectRoot $ProjectRoot) }
+  if (-not $clean) { [void]$reasons.Add('worktree-not-clean-or-unknown') }
+  $graph = New-ProjectAutopilotUnifiedGraph -Tasks @($Tasks) -Contracts @($Contracts)
+  $contractIds = @($Contracts | ForEach-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $neededContracts = @($graph.nodes | ForEach-Object { @($_.consumes) + @($_.provides) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $missingContracts = @($neededContracts | Where-Object { $contractIds -notcontains $_ })
+  if ($missingContracts.Count -gt 0 -or $graph.dangling_consumes.Count -gt 0) { [void]$reasons.Add('contract-coverage-incomplete') }
+  $badContracts = @($Contracts | Where-Object { -not [bool](Get-BacklogPackObjectValue -Obj $_ -Name 'valid' -Default $false) })
+  if ($badContracts.Count -gt 0) { [void]$reasons.Add('contract-invalid') }
+  $unstableContracts = @($Contracts | Where-Object { -not [bool](Get-BacklogPackObjectValue -Obj $_ -Name 'stable' -Default $false) })
+  if ($unstableContracts.Count -gt 0) { [void]$reasons.Add('contract-unstable') }
+  if (-not [bool]$graph.acyclic) { [void]$reasons.Add('graph-cyclic') }
+  if (@($graph.file_conflicts).Count -gt 0) { [void]$reasons.Add('file-conflict-unresolved') }
+  $hasStitch = $false
+  if ($null -ne $StitchingTestsPresent) { $hasStitch = [bool]$StitchingTestsPresent }
+  else {
+    foreach ($task in @($Tasks)) {
+      $kind = Normalize-ProjectAutopilotAtomKind (Get-ProjectAutopilotTaskStringField -Task $task -Names @('kind','atom_kind'))
+      $checks = @(Get-ProjectAutopilotTaskStringArray -Task $task -Names @('checks','verify','verification'))
+      if ($kind -eq 'consolidation' -and (@($checks | Where-Object { $_ -match '(?i)stitch|integration|contract' }).Count -gt 0)) { $hasStitch = $true; break }
+    }
+  }
+  if (-not $hasStitch) { [void]$reasons.Add('stitching-tests-missing') }
+  $hardTargets = @($graph.edges | Where-Object { [string]$_.edge_type -eq 'hard' } | ForEach-Object { [string]$_.to } | Sort-Object -Unique)
+  $independent = @($graph.nodes | Where-Object { $hardTargets -notcontains [string]$_.slug })
+  if ($independent.Count -lt [int]$MinIndependentAtoms) { [void]$reasons.Add('independent-atom-count-below-floor') }
+  if ($Tasks.Count -gt [int]$MaxWaveSize) { [void]$reasons.Add('wave-size-over-cap') }
+  return [pscustomobject]@{
+    enabled = ($reasons.Count -eq 0)
+    fallback = ($reasons.Count -gt 0)
+    reasons = @($reasons.ToArray())
+    graph = $graph
+    independent_atom_count = [int]$independent.Count
+    wave_size = [int]$Tasks.Count
+  }
 }
 
 function Get-ProjectAutopilotPlanningStageDefinitions {
@@ -946,8 +1250,19 @@ function Test-ProjectPlanContractReady {
 }
 
 function New-ProjectAutopilotCoordinatorTaskText {
-  param([string]$Slug, [string]$ProjectRoot, [int]$MaxTasks = 12)
+  param(
+    [string]$Slug,
+    [string]$ProjectRoot,
+    [int]$MaxTasks = 12,
+    [string]$DiffusionMode = 'off',
+    [int]$DiffusionMinIndependentAtoms = 2,
+    [int]$DiffusionMaxWaveSize = 6
+  )
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
+  $diffMode = ([string]$DiffusionMode).Trim().ToLowerInvariant()
+  if ($diffMode -notin @('off','shadow','diffusion')) { $diffMode = 'off' }
+  $diffK = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMinIndependentAtoms))
+  $diffN = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMaxWaveSize))
   return @"
 [project-autopilot $Slug] [[NORMAL]]
 
@@ -956,6 +1271,11 @@ Project Autopilot coordinator for channel '$Slug'.
 Work only in $ProjectRoot.
 
 Mission: keep this project moving without the operator manually feeding backlog items.
+
+Coordinator mode:
+- diffusion_mode: $diffMode
+- diffusion_min_independent_atoms: $diffK
+- diffusion_max_wave_size: $diffN
 
 Plan gate status:
 - This coordinator is queued only after the channel-level Discuss-First plan gate has approved the current PROJECT_PLAN signature.
@@ -977,7 +1297,9 @@ Rules:
 - Do not expand into new surfaces such as dashboards, admin panels, regeneration tools, web UIs, APIs, analytics, or background services unless that surface is explicitly in the approved current-release contract. "Could be useful" is not enough.
 - If the contract does not explicitly authorize the next chapter/wave, do not create atoms for it; emit [[PROJECT_OPEN_QUESTION: release scope needs approval before new chapter]] and finish without PROJECT_BACKLOG.
 - For full/large projects and high-risk changes, create or update .bridge/changes/<change-id>/proposal.md, design.md, tasks.md, and acceptance.md before implementation atoms, and archive completed change packages under .bridge/archive/<change-id>. Do not force change-package ceremony on lite/small work.
-- Decompose only ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
+- Default decomposition is still ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
+- Diffusion/cross-chapter decomposition is opt-in only. If diffusion_mode is off, always use the one-chapter default. If diffusion_mode is shadow, compute and report the would-be cross-chapter graph/gate result as durable markers but still emit only the one-chapter default. If diffusion_mode is diffusion, do not emit a cross-chapter PROJECT_BACKLOG unless every deterministic gate is satisfied: complete and stable .bridge/specs/contracts/<contract-id>.json coverage for every cross-atom interface, no [[PROJECT_OPEN_QUESTION]] blocking scope/architecture, a validated acyclic depends_on graph, known non-overlapping file ownership or explicit serial_reason, stitching/integration tests, clean git worktree, independent atom count >= $diffK, and wave size <= $diffN. If any condition is missing, fall back to the one-chapter default and emit [[PROJECT_OPEN_QUESTION: diffusion gate blocked: ...]] or a concise [[PROJECT_RISK: ...]] marker instead of guessing.
+- Interface contracts live in .bridge/specs/contracts/<contract-id>.json. A contract must cover signature, behavior/preconditions/postconditions/side-effects/idempotency, invariants, error taxonomy, golden input/output examples, owned files/regions, version, content hash or stable:true. Atoms may reference them through provides and consumes arrays; a stable frozen contract may justify a soft edge, while missing/unstable contracts require hard depends_on serialization.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
 - Keep each atom to a SINGLE focused concern with a SMALL diff (ideally one function/class/area). Do NOT bundle multiple changes into one atom (e.g., new implementation + a refactor + cross-file tests): a large diff makes the completion-critic find many issues per pass and iterate for many slow rounds. Tests for a module are their own atom, separate from the implementation atoms they cover; a bug fix is its own atom. Small single-concern diffs let the critic converge in 1-2 rounds even when atoms run batched in parallel.
 - Order infra-first: shared modules, contracts, schemas, adapters, migrations, and test harnesses must be emitted before feature atoms that consume them. Feature atoms that depend on shared infra must list the infra atom slug in depends_on.
@@ -1010,6 +1332,8 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
     "kind": "infra|feature|consolidation|planning",
     "parallel_group": "auth|gallery|chat|admin|docs|tests|...",
     "files": ["relative/path/or/directory"],
+    "provides": ["contract-id-provided-by-this-atom"],
+    "consumes": ["contract-id-consumed-by-this-atom"],
     "depends_on": ["slug-of-prerequisite-if-any"],
     "acceptance": ["observable acceptance criterion tied to the approved contract"],
     "checks": ["npm run typecheck", "npm run build"],
@@ -1249,7 +1573,7 @@ function Start-ProjectAutopilotIfNeeded {
     return [pscustomobject]@{ queued=$false; reason='project-dirty-or-git-unavailable'; pressure=$pressure }
   }
 
-  $task = New-ProjectAutopilotCoordinatorTaskText -Slug $slug -ProjectRoot $root -MaxTasks ([int]$cfg.maxTasksPerBatch)
+  $task = New-ProjectAutopilotCoordinatorTaskText -Slug $slug -ProjectRoot $root -MaxTasks ([int]$cfg.maxTasksPerBatch) -DiffusionMode ([string]$cfg.diffusionMode) -DiffusionMinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -DiffusionMaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
   $id = Add-Idea -Text $task -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'approved' -Severity 'critical' -Project $slug -Scope 'project' -SkipCurator
   if ([string]::IsNullOrWhiteSpace([string]$id)) { return [pscustomobject]@{ queued=$false; reason='add-idea-failed'; pressure=$pressure } }
 
@@ -1481,6 +1805,8 @@ function Set-ProjectAutopilotIdeaMetadata {
       if ([string]::IsNullOrWhiteSpace($body)) { $body = $title }
       $files = @(ConvertTo-ProjectAutopilotPathArray (Get-BacklogPackObjectValue -Obj $Task -Name 'files' -Default @()))
       $deps = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $Task -Name 'depends_on' -Default @()))
+      $provides = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $Task -Name 'provides' -Default @()))
+      $consumes = @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $Task -Name 'consumes' -Default @()))
       $chapter = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('chapter','phase','area')
       $wave = Get-ProjectAutopilotTaskStringField -Task $Task -Names @('wave','milestone')
       $kind = Normalize-ProjectAutopilotAtomKind (Get-ProjectAutopilotTaskStringField -Task $Task -Names @('kind','atom_kind'))
@@ -1502,6 +1828,8 @@ function Set-ProjectAutopilotIdeaMetadata {
       $i | Add-Member -NotePropertyName autopilot_source_task -NotePropertyValue ([string]$SourceTaskId) -Force
       $i | Add-Member -NotePropertyName files -NotePropertyValue ([object[]]@($files)) -Force
       $i | Add-Member -NotePropertyName depends_on -NotePropertyValue ([object[]]@($deps)) -Force
+      if ($provides.Count -gt 0) { $i | Add-Member -NotePropertyName provides -NotePropertyValue ([object[]]@($provides)) -Force }
+      if ($consumes.Count -gt 0) { $i | Add-Member -NotePropertyName consumes -NotePropertyValue ([object[]]@($consumes)) -Force }
       $i | Add-Member -NotePropertyName risk -NotePropertyValue $risk -Force
       $i | Add-Member -NotePropertyName kind -NotePropertyValue $kind -Force
       $i | Add-Member -NotePropertyName serial_reason -NotePropertyValue $serialReason -Force
@@ -1527,6 +1855,8 @@ function Set-ProjectAutopilotIdeaMetadata {
       if (-not [string]::IsNullOrWhiteSpace($parallelGroup)) { $meta.parallel_group = $parallelGroup }
       $meta.lane = $lane
       $meta.depends_on = @($deps)
+      if ($provides.Count -gt 0) { $meta.provides = @($provides) }
+      if ($consumes.Count -gt 0) { $meta.consumes = @($consumes) }
       if ($files.Count -gt 0) { $meta.files = @($files) }
       if ($acceptance.Count -gt 0) { $meta.acceptance = @($acceptance) }
       if ($checks.Count -gt 0) { $meta.checks = @($checks) }
@@ -1555,6 +1885,51 @@ function Add-ProjectBacklogFromMarker {
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
   $tasks = @(Get-ProjectAutopilotTaskArrayFromMarker -Block $Block | Select-Object -First $max)
   if ($tasks.Count -eq 0) { return [pscustomobject]@{ created=0; skipped=0; errors=@('no valid JSON tasks found'); ids=@() } }
+
+  $diffusionMode = 'off'
+  $diffusionGate = $null
+  try {
+    $cfg = Get-ProjectAutopilotConfig
+    $diffusionMode = ([string]$cfg.diffusionMode).Trim().ToLowerInvariant()
+    if ($diffusionMode -in @('shadow','diffusion')) {
+      $projectRoot = ''
+      try {
+        if (Get-Command Get-ChannelProjectBinding -ErrorAction SilentlyContinue) {
+          $binding = Get-ChannelProjectBinding -Slug $Channel
+          if ($binding -and [bool](Get-BacklogPackObjectValue -Obj $binding -Name 'ok' -Default $false)) {
+            $projectRoot = [string](Get-BacklogPackObjectValue -Obj $binding -Name 'project_root' -Default '')
+          }
+        }
+      } catch {}
+      if ([string]::IsNullOrWhiteSpace($projectRoot) -and (([string]$Channel).Trim().ToLowerInvariant() -eq 'main')) {
+        try { $projectRoot = Get-BridgeRoot } catch {}
+      }
+      $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot)
+      $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
+      Write-BacklogJsonLine ([ordered]@{
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+        action = 'project-autopilot-diffusion-gate'
+        channel = [string]$Channel
+        mode = $diffusionMode
+        enabled = [bool]$diffusionGate.enabled
+        fallback = ($diffusionMode -eq 'diffusion' -and -not [bool]$diffusionGate.enabled)
+        reasons = @($diffusionGate.reasons)
+        atoms = [int]$diffusionGate.wave_size
+        independent_atoms = [int]$diffusionGate.independent_atom_count
+      })
+    }
+  } catch {}
+  if ($diffusionMode -eq 'diffusion' -and $diffusionGate -and -not [bool]$diffusionGate.enabled) {
+    $chaptersForGate = @($tasks | ForEach-Object { Get-ProjectAutopilotTaskStringField -Task $_ -Names @('chapter','phase','area') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    if ($chaptersForGate.Count -gt 1) {
+      return [pscustomobject]@{
+        created = 0
+        skipped = $tasks.Count
+        errors = @('diffusion gate blocked cross-chapter PROJECT_BACKLOG: ' + ((@($diffusionGate.reasons) | Sort-Object -Unique) -join ', '))
+        ids = @()
+      }
+    }
+  }
 
   $existing = @(Get-Backlog)
   $existingSlugs = @{}
