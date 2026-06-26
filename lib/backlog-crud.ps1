@@ -341,7 +341,7 @@ function Get-Backlog {
   $noId = New-Object 'System.Collections.Generic.List[object]'
   foreach ($line in (Get-Content -LiteralPath $p -Encoding UTF8)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
-    try { $i = $line | ConvertFrom-Json } catch { continue }
+    try { $i = $line | ConvertFrom-Json } catch { Write-Warning 'Get-Backlog: skipped a corrupted/unparseable backlog.jsonl line'; continue }   # audit: was silently dropped (invisible data loss)
     $iid = ''
     try { $iid = [string]$i.id } catch { $iid = '' }
     if ([string]::IsNullOrWhiteSpace($iid)) { [void]$noId.Add($i); continue }
@@ -422,7 +422,7 @@ function Set-Idea {
         return $false
       }
       if ($requestedStatusLower -eq 'failed') {
-        if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) { return $false }
+        if (-not (Get-Command Test-TaskOutcomeLedgerFailed -ErrorAction SilentlyContinue)) { Write-Warning "Set-Idea: outcome-ledger validator unavailable; cannot mark task 'failed' (transition blocked)"; return $false }   # audit: was a silent block
         $failedCandidate = [pscustomobject][ordered]@{}
         foreach ($prop in @($i.PSObject.Properties)) {
           $failedCandidate | Add-Member -NotePropertyName ([string]$prop.Name) -NotePropertyValue $prop.Value -Force
