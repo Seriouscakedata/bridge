@@ -356,6 +356,32 @@ MicroDebate → FinalV2+RedTeam → Decision Record), чекпойнты под 
 **Операторски важно:** High-Stakes-решения и high-severity red-team-находки ВСЕГДА дают
 `needs_operator` `final_decision_record.json` и НЕ авто-внедряются — их надо утвердить до реализации.
 
+### Скорость проектной стройки — критик-скип (`project.skipCritic`)
+**Зачем.** На проектных каналах (не `main`) каждая параллельная волна гоняла лишний LLM-обзор —
+**критик** (отдельная модель перечитывает git-дифф волны, ~3-4 мин на волну). Для проектов это
+перестраховка: настоящая приёмка — это **сборка + тесты** (QA `npm build`/`test` + детерминистические
+verify-гейты), и она НЕ зависит от критика. На многих мелких волнах критик копил большой простой.
+
+**Переключатель `project.skipCritic` (config.json, сейчас `true`).** Когда `true`, проектные
+(`Channel != 'main'`) ИСПОЛНИТЕЛЬНЫЕ атомы (не synthesis/study) при claim получают флаг `skip_critic`
+→ критик-блок (driver/86-loop-completion-actions.ps1) их пропускает. **Сборка+тесты по-прежнему
+гоняются на каждом — ложно-зелёное невозможно.** **Критик самого моста (канал `main`/control-plane)
+НЕ затронут** — там обзор остаётся полным (правки инфры моста по-прежнему критикуются).
+
+**Как управлять.**
+- Вернуть критик проектам (выключить ускорение): `config.json → "project.skipCritic": false`. Подхватится
+  на следующем claim; для немедленного эффекта — рестарт моста.
+- Включить: `true`. Влияет только на каналы ≠ `main`.
+- Проверить, что работает: в `channels\<slug>\state.json` поле `skip_critic` должно стоять `true`, пока
+  идёт проектная волна (статус `working`).
+- Где в коде: решение считается в `driver\81-loop-idle-claim.ps1` (перед Update-State при claim,
+  переменная `$projSkipCriticDecision`), флаг ставится после fast-lane-ветки; сам скип — критик-блок в
+  `driver\86-loop-completion-actions.ps1` по `skip_critic`. Commit `47a797c`.
+
+**Следующий рычаг скорости (по умолчанию ВЫКЛ, включать осознанно отдельным решением):** планер-релей /
+«сверка» после параллели (~4-5 мин/волну). Он реконсилирует слитую параллельную работу, поэтому скип
+рискованнее критик-скипа — не включать на проектах по умолчанию.
+
 ### Декомпозиция до АТОМОВ (между Ф2 и Ф6)
 Крупная задача дробится как книга — и в беклог идут только атомы, а не «главы»:
 
@@ -540,7 +566,7 @@ cd C:\Users\rafie\aipartners
 | `control\driver.<ch>.out/err.log` | логи драйвера канала |
 | `control\supervisor.log` | лог супервизора |
 | `.bridge-runtime\restarts.jsonl` | окно рестартов для circuit-breaker |
-| `config.json` | порт сервера, пул воркеров (parallel.workers), maxStreams |
+| `config.json` | порт сервера, пул воркеров (parallel.workers), maxStreams, `synthesisMode.enabled`, `project.skipCritic` (критик-скип проектов, см. §«Скорость проектной стройки») |
 | `lib\parallel.ps1` | параллель: dispatch, collect-then-commit, роутинг воркеров |
 | `lib\backlog.ps1` | загрузчик-фасад бэклога; реальный код в `lib\backlog-*.ps1` (crud / core=claim-gate+risk-tier / workpack=intake-gate+packer+frontier / governor / dedup / autopilot / state-reaper) |
 | `tools\web-smoke.ps1` | универсальный live HTTP/API smoke для проектных сайтов: старт, readiness, checks, лог, cleanup |
