@@ -1006,6 +1006,39 @@ function Cleanup-WorkerWorktree {
   } catch {}
 }
 
+function Reset-ParallelTaskWorktrees {
+  # 2026-06-27 PARALLEL RELIABILITY FIX (dominant cause of false "outside touch-set"
+  # quarantine): at the START of a fresh batch dispatch, force this task's parallel
+  # worktrees + branches back to a clean slate. A reused worktree (Get-WorkerWorktree
+  # returns an existing dir; an existing wip/parallel/<hash>/<sid> branch is checked out
+  # WITH its prior commits) carries another atom's committed files, so the post-run
+  # `git diff $base` reports unrelated files and the stream is wrongly quarantined.
+  # Chunk continuations respawn via Respawn-WorkerForChunk and NEVER pass through
+  # Start-ParallelDispatchWorkers, so their in-worktree chunk commits are unaffected.
+  param([string]$TaskHash)
+  $ErrorActionPreference = 'Continue'
+  $hash = Normalize-ParallelId $TaskHash
+  if ([string]::IsNullOrWhiteSpace($hash)) { return }
+  $git = Get-GitExe
+  $repoRoot = Get-ParallelRepoRoot
+  $taskRoot = Join-Path (Get-ParallelRoot) $hash
+  if (Test-Path -LiteralPath $taskRoot) {
+    foreach ($wt in @(Get-ChildItem -LiteralPath $taskRoot -Directory -ErrorAction SilentlyContinue)) {
+      try { & $git -C $repoRoot worktree remove --force $wt.FullName 2>&1 | Out-Null } catch {}
+      if (Test-Path -LiteralPath $wt.FullName) { try { Remove-Item -LiteralPath $wt.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+  }
+  # Delete this task's stale wip branches (their work is already merged to master or was
+  # abandoned/quarantined on the prior attempt) so fresh worktrees branch from $base.
+  try {
+    foreach ($ln in @(& $git -C $repoRoot branch --list "wip/parallel/$hash/*" 2>$null)) {
+      $bn = ([string]$ln).TrimStart('*',' ').Trim()
+      if (-not [string]::IsNullOrWhiteSpace($bn)) { try { & $git -C $repoRoot branch -D $bn 2>&1 | Out-Null } catch {} }
+    }
+  } catch {}
+  try { & $git -C $repoRoot worktree prune 2>&1 | Out-Null } catch {}
+}
+
 function New-ParallelWorkerPrompt {
   param([string]$Body, [string[]]$Files, [string]$BranchName)
   $fileText = if ($Files -and $Files.Count -gt 0) { ($Files | ForEach-Object { "- $_" }) -join "`n" } else { "- (files not declared)" }
@@ -1720,6 +1753,12 @@ function Start-ParallelDispatchWorkers {
     [object[]]$Streams,
     [string]$TaskHash
   )
+
+  # 2026-06-27: fresh-slate this task's parallel worktrees + wip branches before spawning
+  # the initial workers, so a reused worktree from a prior dispatch can't carry another
+  # atom's commits into this run's diff and trip a false "outside touch-set" quarantine.
+  # Chunk continuations respawn via Respawn-WorkerForChunk and bypass this function.
+  try { Reset-ParallelTaskWorktrees -TaskHash $TaskHash } catch { Write-Warning ("parallel: Reset-ParallelTaskWorktrees failed: " + $_.Exception.Message) }
 
   $workers = New-Object 'System.Collections.Generic.List[object]'
   $usedIds = New-Object 'System.Collections.Generic.List[string]'
