@@ -2229,6 +2229,61 @@ function Set-ProjectAutopilotIdeaMetadata {
   }.GetNewClosure()))
 }
 
+function Get-ProjectAutopilotGlobalParallelismReport {
+  # 2026-06-27 Phase-1 diffusion (shadow measurement): the "designer sees ALL atoms" view. Collects
+  # every project-autopilot atom across all chapters from the live backlog and computes the would-be
+  # global parallelism: longest TRUE dependency chain (critical path), independent-atom count, topo
+  # wave count, max/avg atoms per wave, and how many files are shared by >1 atom (false-conflict risk).
+  # READ-ONLY telemetry — never changes behavior. Tells us honestly whether the win is wide independent
+  # parallelism (short chains) or needs contract-stubs (long chains), per project.
+  param([string]$Channel = '')
+  $atoms = @()
+  foreach ($it in @(Get-Backlog)) {
+    if ([string](Get-BacklogPackObjectValue -Obj $it -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+    $st = [string](Get-BacklogPackObjectValue -Obj $it -Name 'status' -Default '')
+    if ($st -in @('rejected','auto-dropped')) { continue }
+    $slug = [string](Get-BacklogPackObjectValue -Obj $it -Name 'slug' -Default (Get-BacklogPackObjectValue -Obj $it -Name 'id' -Default ''))
+    if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+    $deps = @(@(Get-BacklogPackObjectValue -Obj $it -Name 'depends_on' -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $files = @(@(Get-BacklogPackObjectValue -Obj $it -Name 'files' -Default @()) | ForEach-Object { ([string]$_).Replace('\','/') } | Where-Object { $_ })
+    $atoms += [pscustomobject]@{ slug = $slug; deps = $deps; files = $files }
+  }
+  $n = @($atoms).Count
+  if ($n -eq 0) { return [pscustomobject]@{ atoms = 0 } }
+  $slugSet = @{}; foreach ($a in $atoms) { $slugSet[[string]$a.slug] = $true }
+  $level = @{}; foreach ($a in $atoms) { $level[[string]$a.slug] = 1 }
+  for ($iter = 0; $iter -lt $n; $iter++) {
+    $changed = $false
+    foreach ($a in $atoms) {
+      foreach ($d in @($a.deps)) {
+        if ($slugSet.ContainsKey([string]$d)) {
+          $cand = [int]$level[[string]$d] + 1
+          if ($cand -gt [int]$level[[string]$a.slug]) { $level[[string]$a.slug] = $cand; $changed = $true }
+        }
+      }
+    }
+    if (-not $changed) { break }
+  }
+  $chain = 0; foreach ($v in $level.Values) { if ([int]$v -gt $chain) { $chain = [int]$v } }
+  $independent = @($atoms | Where-Object { @(@($_.deps) | Where-Object { $slugSet.ContainsKey([string]$_) }).Count -eq 0 }).Count
+  $byLevel = @{}; foreach ($a in $atoms) { $L = [int]$level[[string]$a.slug]; if (-not $byLevel.ContainsKey($L)) { $byLevel[$L] = 0 }; $byLevel[$L] = [int]$byLevel[$L] + 1 }
+  $waves = @($byLevel.Keys).Count
+  $maxPar = 0; foreach ($c in $byLevel.Values) { if ([int]$c -gt $maxPar) { $maxPar = [int]$c } }
+  $fileOwners = @{}
+  foreach ($a in $atoms) { foreach ($f in @($a.files)) { if (-not $fileOwners.ContainsKey([string]$f)) { $fileOwners[[string]$f] = 0 }; $fileOwners[[string]$f] = [int]$fileOwners[[string]$f] + 1 } }
+  $sharedFiles = @(@($fileOwners.Values) | Where-Object { [int]$_ -gt 1 }).Count
+  return [pscustomobject]@{
+    atoms = $n
+    independent = $independent
+    longest_chain = $chain
+    waves = $waves
+    max_parallel = $maxPar
+    avg_parallel = [math]::Round($n / [math]::Max(1, $waves), 1)
+    shared_files = $sharedFiles
+    total_files = @($fileOwners.Keys).Count
+  }
+}
+
 function Repair-ProjectAutopilotAtomFileOwnership {
   # 2026-06-27 Phase-1 diffusion (clean per-atom file ownership): the coordinator sometimes emits a
   # batch where MANY atoms over-declare `files` — each atom lists the SAME multi-file set (e.g. every
