@@ -1731,6 +1731,17 @@ $script:DriverLoopIdleClaimBlock = {
           $taskManagementSnapshot = New-TaskManagementSnapshot -TaskId $bid -TaskText $btext -Channel $Channel -TouchedFiles @($tmTouched.ToArray()) -BatchIds @($batchIdsForState) -WorkpackBatchMode $workpackBatchMode -WorkpackFrontier $tmFrontier -ChannelFacts $tmChannelFacts -Context $tmContext
           Write-TaskManagementShadowRecord -BridgeRoot $bridgeRoot -Channel $Channel -TaskId $bid -Snapshot $taskManagementSnapshot -Note 'idle-claim' | Out-Null
         } catch {}
+        # 2026-06-27: project fast-critic decision (computed outside the state-write closure).
+        # On a non-main (project) channel running an EXECUTION atom (not study/synthesis), when
+        # config project.skipCritic=true, we will skip the LLM critic. Real acceptance (QA npm
+        # build+test + deterministic verify gates) still runs → no false-green. Main untouched.
+        $projSkipCriticDecision = $false
+        try {
+          if (([string]$Channel -ne 'main') -and (-not $studyDetect) -and (-not $backlogSynthesisRouteClosure)) {
+            $cfgPSC = Get-BridgeConfig
+            if (($cfgPSC.PSObject.Properties.Name -contains 'project.skipCritic') -and [bool]$cfgPSC.'project.skipCritic') { $projSkipCriticDecision = $true }
+          }
+        } catch {}
         Update-State ({ param($s)
           $s.current_task=$btext; $s.task_turn=0; $s.task_mode='normal'; $s.discuss_turn=0; $s.discuss_snapshot=''; $s.study_phase=''; $s.study_subtype=''; $s.study_snapshot=''; $s.research_count=0
           Start-ReplayForStateTask -State $s -TaskText $btext -ChannelName $Channel
@@ -1747,6 +1758,13 @@ $script:DriverLoopIdleClaimBlock = {
             # stage 1b: only skip_planner — critic/QA/gates and the planner's verify role stay on.
             $s | Add-Member -NotePropertyName skip_planner -NotePropertyValue $true -Force
             $s | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue 'operator-atom-declared' -Force
+          }
+          # 2026-06-27: project fast-critic — skip the LLM critic for project (non-main) execution
+          # atoms when config project.skipCritic=true. QA (npm build+test) + verify gates still run
+          # → real acceptance preserved, no false-green. Main/control-plane critic untouched.
+          if ($projSkipCriticDecision) {
+            $s | Add-Member -NotePropertyName skip_critic -NotePropertyValue $true -Force
+            $s | Add-Member -NotePropertyName fast_lane_reason -NotePropertyValue 'project-fast-critic' -Force
           }
           $s.task_start_seq=[int]$s.lastSeq; $s.no_progress_count=0; $s.timeout_retry_count=0; $s.task_did_actions=$false; $s.coder_fired=$false; $s.coder_bypass_retry_count=0; $s.verify_retry_count=0; $s.force_planner=$false; $s.current_backlog_id=$bid; $s.status='working'; $s.heartbeat=(Get-Date).ToString('o')
           $taskStartedAtMap = [ordered]@{}

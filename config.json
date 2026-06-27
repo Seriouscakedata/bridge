@@ -5,6 +5,7 @@
     "loopDelaySeconds":  2,
     "maxTurns":  150,
     "criticMaxRetries":  3,
+    "project.skipCritic":  true,
     "taskRestartCaps":  {
                             "apply":  6,
                             "hard":  3,
