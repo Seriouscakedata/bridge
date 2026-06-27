@@ -4,6 +4,16 @@ Status: 2026-06-27 — operator gave GO to implement (phased, by me). Bridge ran
 design on `main` (sanity check); this doc is the consolidated architect design to reconcile with it.
 First proving ground: the paused glass-interpreter build (chapters 4-8).
 
+## Scope correction after critic review
+
+Commit `7a1a2b0` was auto-titled as a workpack batch that completed seven independent approved backlog
+tasks. That title is not supported by the diff: the commit added only this diffusion design document and
+`channels/glass-interpreter/diffusion-final-decision-record.json`. Treat `7a1a2b0` as a design/decision
+artifact commit, not as evidence that any independent backlog execution tasks were completed.
+
+The executable P1 work is in the later P1 commit. This document is the durable design deliverable plus
+architect-review notes; it is not a completion proof for a batch of backlog atoms.
+
 ## Goal
 Remove the dominant speed bottleneck (dependency-sequenced atoms force chapter waves to run mostly
 serially). Parallelize **dependent** atoms — not just independent ones — by building them against
@@ -42,6 +52,25 @@ then stitching + integration-testing at the end. Target: run atoms in tens/hundr
 - Frontier (lib/backlog-workpack.ps1 Resolve-BacklogWorkpackFrontier :2117-2515): per-chapter disjoint
   touch-set batch + serial-chain fallback. Parallel dispatch lib/parallel.ps1 (worktree workers).
 - Unit of parallelism today: one wave of disjoint atoms **within one chapter**.
+
+## Architect-review correction: graph soft edges are not execution
+
+`New-ProjectAutopilotUnifiedGraph` and its hard/soft contract edges are planner/gate artifacts only.
+The live executor frontier is `Resolve-BacklogWorkpackFrontier` in `lib/backlog-workpack.ps1`; it admits
+parallel work from `depends_on` readiness, `workpack_conflict_group`, and path touch-overlap. It does not
+read the unified graph, freeze locks, or soft edges. Therefore P1 soft-edge flipping is shadow-safe, but it
+cannot by itself dispatch dependent consumers before their real provider atoms finish.
+
+P2 must use additive emit-shaping instead of teaching the executor a new dependency rule:
+
+- emit a freeze atom/marker for the frozen contract;
+- emit each dependent consumer atom with `depends_on` on the freeze atom/marker, not on the real provider;
+- place generated stubs only in consumer-owned or ephemeral test-double files so provider files remain
+  untouched;
+- emit a stitch/consolidation atom with `depends_on` on the provider and all consumers;
+- let the existing frontier dispatch these shaped atoms without any `backlog-workpack.ps1` change.
+
+If this shaping cannot be expressed for a slice, the slice stays serial with a concrete `serial_reason`.
 
 ## Gap (net-new to build)
 - (a) **Global** whole-project atom collection (today per-chapter).

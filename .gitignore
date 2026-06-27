@@ -63,6 +63,7 @@ channels/*/snapshots/
 channels/*/checkpoints/
 channels/*/acceptance/
 channels/*/project-acceptance.last.json
+channels/*/project-autopilot.last.json
 channels/*/qa-results.jsonl
 channels/*/workpacks/
 channels/*/decision-shadow.jsonl
