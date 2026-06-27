@@ -1497,6 +1497,57 @@ function Set-ProjectPlanApproved {
   return $Approved
 }
 
+function Invoke-ProjectAutopilotHeldDuplicateAutoHeal {
+  # 2026-06-27 lever#4 (GENERAL logic, any approved project): auto-resolve atoms stuck in status='held'
+  # with attempts=0 (held BEFORE any execution attempt -- e.g. dedup / touch-overlap) whose declared
+  # deliverable files ALL already exist on disk AND are committed to git in the project repo. Such an
+  # atom is a duplicate of work a sibling atom already delivered; it sits held forever and clutters the
+  # queue. Strong guards prevent ever auto-passing genuinely-failed work: only attempts=0 (never ran),
+  # only project scope, never operator-held / failure-flagged, and every file must be git-tracked.
+  param([string]$ProjectRoot = '')
+  $out = [pscustomobject]@{ checked = 0; resolved = 0; resolved_ids = @() }
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot)) { return $out }
+  $resolved = New-Object System.Collections.Generic.List[string]
+  $checked = 0
+  foreach ($item in @(Get-Backlog)) {
+    if ([string]$item.status -ne 'held') { continue }
+    $att = 0; try { $att = [int]$item.attempts } catch {}
+    if ($att -ne 0) { continue }
+    $scope = ''; try { $scope = ([string]$item.scope).ToLowerInvariant() } catch {}
+    $proj = ''; try { $proj = [string]$item.project } catch {}
+    if ($scope -ne 'project' -and [string]::IsNullOrWhiteSpace($proj)) { continue }
+    $heldBy = ''; try { $heldBy = ([string]$item.held_by).ToLowerInvariant() } catch {}
+    if ($heldBy -eq 'operator') { continue }
+    $rsn = ''; try { $rsn = ([string]$item.reason).ToLowerInvariant() } catch {}
+    if ($rsn -match 'fail|error|critic|reject|operator') { continue }
+    $checked++
+    # Use the atom's declared DELIVERABLE files (the 'files' field), NOT workpack_touch_set —
+    # touch_set is the expanded set that also lists reference files (contract, plan) the atom merely
+    # reads, which are not deliverables and may live outside the project repo.
+    $files = @()
+    try { if (($item.PSObject.Properties.Name -contains 'files') -and $item.files) { $files = @(@($item.files) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } } catch {}
+    if (@($files).Count -eq 0) { continue }
+    $allCommitted = $true
+    foreach ($rel in @($files)) {
+      if ([string]::IsNullOrWhiteSpace([string]$rel)) { $allCommitted = $false; break }
+      $abs = Join-Path $ProjectRoot ([string]$rel)
+      if (-not (Test-Path -LiteralPath $abs)) { $allCommitted = $false; break }
+      $tracked = $false
+      try { $null = & git -C $ProjectRoot ls-files --error-unmatch -- ([string]$rel) 2>$null; $tracked = ($LASTEXITCODE -eq 0) } catch { $tracked = $false }
+      if (-not $tracked) { $allCommitted = $false; break }
+    }
+    if (-not $allCommitted) { continue }
+    try {
+      Set-Idea -Id ([string]$item.id) -Status 'done' -Reason 'auto-resolved: deliverable already exists and is committed (held-duplicate auto-heal)' | Out-Null
+      [void]$resolved.Add([string]$item.id)
+    } catch {}
+  }
+  $out.checked = $checked
+  $out.resolved = $resolved.Count
+  $out.resolved_ids = @($resolved.ToArray())
+  return $out
+}
+
 function Start-ProjectAutopilotIfNeeded {
   param([string]$Reason = 'idle-empty-backlog')
   # Driver idle hook enters here before autonomy claim; piggyback operator-batch
@@ -1537,6 +1588,15 @@ function Start-ProjectAutopilotIfNeeded {
       delivery_contract_required_sections = @($planContract.delivery_contract_required_sections)
     }
   }
+
+  # 2026-06-27 lever#4: before any queue decision, auto-heal stuck held-duplicate atoms whose
+  # deliverables already exist + are committed (general logic; runs for any approved project, even paused).
+  try {
+    $healRes = Invoke-ProjectAutopilotHeldDuplicateAutoHeal -ProjectRoot $root
+    if ($healRes -and [int]$healRes.resolved -gt 0) {
+      try { Add-Message -From system -Text ("🩹 Project Autopilot: авто-закрыто " + [int]$healRes.resolved + " зависших дубликат-задач (deliverable уже готов и закоммичен).") -Kind event | Out-Null } catch {}
+    }
+  } catch {}
 
   $pressure = Get-ProjectAutopilotBacklogPressure
   if ([int]$pressure.runnable -gt 0) { return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure } }
