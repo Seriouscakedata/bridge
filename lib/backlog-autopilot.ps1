@@ -1263,6 +1263,46 @@ function New-ProjectAutopilotCoordinatorTaskText {
   if ($diffMode -notin @('off','shadow','diffusion')) { $diffMode = 'off' }
   $diffK = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMinIndependentAtoms))
   $diffN = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMaxWaveSize))
+  # 2026-06-27 root-fix: deterministic plan-chapter progress injected into the coordinator prompt.
+  # Root cause of premature autopilot pause: the coordinator was 100% LLM-judgment for "which chapter
+  # is next / is the release complete". After decomposing a few chapters it conservatively judged the
+  # release done, emitted no PROJECT_BACKLOG, and the empty-coordinator-streak paused it at 3/8 chapters.
+  # We compute the next undecomposed chapter from PROJECT_PLAN.md and tell the coordinator explicitly,
+  # so it advances through ALL approved chapters instead of guessing the release is finished early.
+  $chapterProgressBlock = ''
+  try {
+    $planFileCP = Join-Path $ProjectRoot 'PROJECT_PLAN.md'
+    if (Test-Path -LiteralPath $planFileCP -PathType Leaf) {
+      $planTxtCP = [System.IO.File]::ReadAllText($planFileCP, [System.Text.Encoding]::UTF8)
+      $chapMatchesCP = [regex]::Matches($planTxtCP, '(?m)^##\s+\S+\s+(\d+)\s*[—–:\-]\s*(.+?)\s*$')
+      $totalChCP = $chapMatchesCP.Count
+      if ($totalChCP -gt 0) {
+        $planLinesCP = @()
+        foreach ($mLineCP in $chapMatchesCP) { $planLinesCP += ('  ' + [string]$mLineCP.Groups[1].Value + ': ' + ([string]$mLineCP.Groups[2].Value).Trim()) }
+        # decomposed chapters = distinct non-empty 'chapter' slugs among this channel's project-autopilot
+        # atoms (reliable: every decomposed chapter has atoms; CHAPTER_N_ATOMS.md files are not always written).
+        $doneChaptersCP = New-Object System.Collections.Generic.HashSet[string]
+        try {
+          foreach ($biCP in @(Get-Backlog)) {
+            if ([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+            $chpCP = ([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'chapter' -Default '')).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($chpCP)) { [void]$doneChaptersCP.Add($chpCP) }
+          }
+        } catch {}
+        $decCountCP = $doneChaptersCP.Count
+        $nextNCP = $decCountCP + 1
+        $nextTitleCP = ''
+        if ($nextNCP -ge 1 -and $nextNCP -le $totalChCP) { $nextTitleCP = ([string]$chapMatchesCP[$nextNCP-1].Groups[2].Value).Trim() }
+        $doneSlugsCP = (@($doneChaptersCP) -join ', '); if ([string]::IsNullOrWhiteSpace($doneSlugsCP)) { $doneSlugsCP = '(none yet)' }
+        $remainCP = $totalChCP - $decCountCP
+        if ($nextNCP -le $totalChCP) {
+          $chapterProgressBlock = "DETERMINISTIC PLAN PROGRESS (authoritative -- computed from PROJECT_PLAN.md + the live backlog; trust this over your own judgment about whether the release is finished):`n- The approved release IS the full plan: $totalChCP chapters total, ALL approved and in scope. Chapters you have not reached yet are NOT future/optional/out-of-scope work.`n- Full approved plan chapters:`n$($planLinesCP -join "`n")`n- Chapter areas already decomposed into the backlog ($decCountCP of $totalChCP done): $doneSlugsCP`n- NEXT chapter to decompose NOW: Chapter $nextNCP - $nextTitleCP`n- Decompose ONLY Chapter $nextNCP into atoms this run. Do NOT conclude the release is complete -- $remainCP chapter(s) still remain. Do NOT emit a release-scope open-question for Chapter $nextNCP; it is already authorized by the approved plan.`n`n"
+        } else {
+          $chapterProgressBlock = "DETERMINISTIC PLAN PROGRESS: all $totalChCP approved plan chapters are already decomposed into the backlog. Only if every chapter's atoms are done AND acceptance passes may you finish without PROJECT_BACKLOG; otherwise emit the remaining atoms.`n`n"
+        }
+      }
+    }
+  } catch {}
   return @"
 [project-autopilot $Slug] [[NORMAL]]
 
@@ -1282,6 +1322,7 @@ Plan gate status:
 - Treat channels/$Slug/channel.json plan_approved=true and its approved signature as the source of truth for execution permission.
 - If PROJECT_PLAN.md, PROJECT_MAP.md, or .bridge/project-contract.json still contain pre-approval wording such as "not approved", "UNAPPROVED", or "planned, not approved", do not treat that wording as a blocker after this coordinator has been queued. Use those words as historical planning status unless the channel gate itself is not approved.
 
+$chapterProgressBlock
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
 - Read the Bridge spec layer first: .bridge/constitution.md, .bridge/specs/*.md, .bridge/changes/*, PROJECT_BRIEF.md, DISCUSS_*.md when present, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
