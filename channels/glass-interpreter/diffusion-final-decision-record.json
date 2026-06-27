@@ -1,0 +1,218 @@
+{
+  "final_answer": "Implement diffusion execution as a strictly ADDITIVE capability on top of the proven serial one-chapter default, with reliability winning every tie by construction. The mechanism is 'contract freeze as the parallelization primitive': a deterministic pre-wave freeze stage produces stable, hash-pinned interface contracts and writes {version, canonical_hash, stable:true} to a per-contract lock. That stable flag is the only thing that flips New-ProjectAutopilotUnifiedGraph's dependency edge from hard to soft, making consumer atoms count as 'independent' in the gate the bridge already trusts — no new scheduler. Stability is a binary, fully deterministic, no-LLM predicate: all required fields non-empty, stable flag set, stored canonical_hash equals a recomputed hash over the canonical payload (signature+behavior+invariants+errors+golden_examples+owned_files/regions), at least one well-formed golden example, no open-question referencing the contract id, and non-overlapping ownership. Once frozen, contracts are immutable for the wave: contract files never appear in any wave atom's owned_files, workers are pinned to the frozen hash, and the hash is re-verified at atom start, atom completion, stitch start, and final acceptance — any unbumped hash change is drift and aborts the affected sub-DAG to serial. Workers build dependent atoms in parallel inside isolated git worktrees (reusing worktrees.ps1) against a contract workpack: a deterministically generated stub provider (signature→typed stub, golden_examples→canned I/O, error taxonomy→error cases, invariants→assertions) placed in the CONSUMER's ephemeral test-double path — never the provider's files. Worker acceptance is a REAL build+unit-test green tagged acceptance_scope='contract', which is necessary but NEVER sufficient. Dedicated integration atoms then merge the worktrees, swap real bindings for stubs, and run each provider's REAL implementation against every consumer's contract (golden examples, invariants, postconditions, error taxonomy); a mandatory consolidation atom runs the FULL unchanged project acceptance gate tagged acceptance_scope='integrated', and no code lands until that passes. On mismatch, repair is 'contract is law' with bounded escalation: provider diverged → targeted provider-repair atom (consumers untouched); contract proven wrong → raise open-question, bump version, RE-FREEZE to a new hash, rebuild only the affected sub-DAG; budget exhausted → serial fallback. The wave is atomic — a red integrated tree never partially lands. Every failure mode (plan-time gate red, mid-wave drift, worktree merge conflict, conformance/integration red beyond budget, timeout) collapses deterministically to serial from the clean base with a logged serial_reason. Rollout reuses the existing diffusion_mode state machine shadow→measured→limited→full with explicit promotion gates, and speedup is credited ONLY from measured wall-clock on the same git base, reported VOID unless the diffusion-integrated tree passes the identical acceptance serial would have. First slice: one proven ~1h glass-interpreter chapter with a clean provider/consumer split.",
+  "decisions": [
+    {
+      "decision": "Add a mandatory pre-wave contract-freeze phase that emits a run-scoped freeze manifest (contract id, version, canonical content hash, provider atom, consumer atoms, owned files/regions, generated stub hash, frozen timestamp) before any diffusion execution. (DA-01)",
+      "rationale": "A deterministic pre-execution freeze is the necessary precondition for every downstream parallelization guarantee; the manifest is the single source of truth that workers, the stitch atom, and the drift check all pin to. Judge: accept 0.845, consensus-aligned with DA-12's freeze mechanism.",
+      "alternatives_considered": [
+        "Freeze contracts lazily at each atom's start (rejected: no single run-scoped snapshot to detect drift against)",
+        "No explicit freeze, rely on file mtime / git state (rejected: not deterministic, cannot pin workers)"
+      ],
+      "risk": "Introduces a new pipeline phase (medium reversibility); mitigated by being inert in shadow mode and built before any emission change.",
+      "test": "Coordinator emits a run-scoped freeze manifest containing all listed fields for every cross-atom contract before any wave atom starts."
+    },
+    {
+      "decision": "Define 'stable enough' as a binary, fully deterministic, no-LLM predicate: contract valid (all required fields non-empty) AND stable-flag set by freeze AND stored canonical_hash == recomputed hash over the canonical payload (signature+behavior+invariants+errors+golden_examples+owned_files/regions) AND >=1 well-formed golden example AND no open-question references the contract id AND owned_files non-overlapping. Freeze writes the hash+flag; stability is never re-judged at runtime, only re-verified by hash. (DA-02, modified per review)",
+      "rationale": "Triple-source consensus core; hash-over-canonical-payload is genuinely deterministic and is the keystone of trustable parallelism. Per the major review on DA-02, the validation test is revised to enumerate ONLY these predicates — 'historical churn metrics', 'review state', and 'stub generation' are stripped from the stability test because they introduce non-determinism / external state and contradict the no-LLM framing.",
+      "alternatives_considered": [
+        "LLM-judged 'is this contract mature?' (rejected: non-deterministic, cannot gate reliability on it)",
+        "Include churn/review-state heuristics in the stability predicate (rejected per review: external/non-deterministic state)",
+        "stable:true flag alone without hash verification (rejected: no drift detection)"
+      ],
+      "risk": "Original statement/test mismatch resolved by stripping non-deterministic criteria. Reconciles with DA-07: 're-freeze' = a new version, not runtime re-judgement of a frozen contract.",
+      "test": "Automated predicate evaluates true iff all enumerated criteria hold (required fields non-empty, canonical_hash equality, stable flag set, >=1 golden example, no open-question refs to the contract id, non-overlapping owned_files); no churn/review/stub-gen inputs participate, and the verdict is byte-stable across repeated runs on the same git base."
+    },
+    {
+      "decision": "Contracts are produced/frozen in the dedicated pre-wave stage and are read-only during the parallel wave: .bridge/specs/contracts/*.json MUST NOT appear in any wave atom's owned_files. Workers are pinned to the frozen hash; the coordinator recomputes each contract hash at atom start, atom completion, stitch start, and final acceptance; the stitch atom re-verifies every consumed hash before merge. Any hash change without a version bump = drift = abort + fallback for the affected sub-DAG. (DA-03)",
+      "rationale": "The keystone safety property (highest risk-reduction 0.95 among structural atoms). Excluding contract files from wave ownership plus four hash checkpoints makes 'parallelizing on a moving target' structurally impossible. Dual-source (A,B), specific and enforceable.",
+      "alternatives_considered": [
+        "Allow contract edits mid-wave with locking (rejected: a moving target defeats the guarantee)",
+        "Single hash check at merge only (rejected: late detection wastes the whole wave)"
+      ],
+      "risk": "Low residual; medium reversibility. Cost is the four-checkpoint plumbing.",
+      "test": "Contract files absent from all wave owned_files; hash recomputed at atom start/completion/stitch-start/acceptance; an injected unbumped hash change triggers abort + serial fallback for the sub-DAG with a logged serial_reason."
+    },
+    {
+      "decision": "Each contract-built dependent worker is given a 'contract workpack': frozen contract(s) pinned by hash, a deterministically generated stub provider (signature→typed stub, golden_examples→canned I/O, error taxonomy→error cases, invariants→assertions) placed in the CONSUMER's owned/ephemeral test-double path (never the provider's files), an isolated git worktree (reuse worktrees.ps1), and a contract-conformance unit-test obligation. Acceptance is a REAL build+unit-test green tagged acceptance_scope='contract'. (DA-04)",
+      "rationale": "The actual parallelism mechanism (triple-source, top impact 0.9). Stub placement in the consumer's path prevents the classic cross-write hazard. Real build+test acceptance preserves the 'every atom gated by real build+test' invariant. Highest build cost; the specification is precise enough to accept as-is.",
+      "alternatives_considered": [
+        "Place stubs in the provider's files (rejected: cross-write hazard, corrupts ownership)",
+        "Mock at runtime without a real build (rejected: violates 'real build+test must gate every atom')",
+        "Hand-written mocks (rejected: non-deterministic, drift-prone)"
+      ],
+      "risk": "High cost / low simplicity (feasibility 0.7); deterministic stub synthesis is the heaviest build item. Mitigation: if a contract cannot produce a faithful stub, the atom stays serial rather than diffusing.",
+      "test": "Dependent atom builds + unit-tests green in an isolated worktree against generated stubs enforcing the frozen contract's pre/postconditions, invariants, error taxonomy, and golden I/O; recorded stub hash matches the freeze manifest; tagged acceptance_scope='contract'."
+    },
+    {
+      "decision": "Stitching is performed by dedicated integration atoms that run after all parallel waves complete: merge worktrees, replace stubs with real bindings, and run each provider's REAL implementation against every consumer's contract (golden_examples, invariants, postconditions, error taxonomy). Mismatch detection triggers the repair loop. (DA-05)",
+      "rationale": "Closes the correctness gap that contract-only acceptance leaves open (triple-source, risk-reduction 0.9). It is the correct counterpart to DA-04's stubbing: the stub asserted the contract in isolation; integration asserts the real provider honors the same contract its consumers were built against.",
+      "alternatives_considered": [
+        "Trust contract-green and skip real-vs-contract conformance (rejected: false-green risk)",
+        "Incremental pairwise integration during the wave (rejected: reintroduces serialization)"
+      ],
+      "risk": "High cost; this is the highest-risk 'integration hell' surface, contained by conformance tests plus the bounded repair loop (DA-07) and atomic landing (DA-06).",
+      "test": "Integration atoms merge worktrees, swap real bindings, and pass provider-real-vs-contract conformance for golden examples/invariants/postconditions/error taxonomy; any mismatch routes to the categorized repair loop."
+    },
+    {
+      "decision": "acceptance_scope='contract' is necessary but NEVER sufficient. Every diffusion wave MUST contain a consolidation atom (the gate already requires stitching-tests-present, lines 651-660) whose acceptance is the FULL unchanged project/delivery acceptance gate on the merged tree, tagged acceptance_scope='integrated'. Per-atom contract-green never lands code on its own. (DA-06)",
+      "rationale": "The discipline that makes the whole scheme safe: it forbids per-atom partial landing and reuses the existing unchanged full acceptance gate, so diffusion cannot lower the proven acceptance bar. Correctness 0.95, risk-reduction 0.95; leverages existing infra so feasibility is good.",
+      "alternatives_considered": [
+        "Land each atom on contract-green (rejected: false-green, non-atomic partial landing)",
+        "A reduced 'integration smoke' gate (rejected: weakens the proven acceptance bar)"
+      ],
+      "risk": "Low; high reversibility. Adds exactly one consolidation atom per wave.",
+      "test": "Consolidation atom runs the full, unchanged project/delivery acceptance gate on the merged tree, tagged acceptance_scope='integrated'; no code lands until it passes."
+    },
+    {
+      "decision": "Repair policy is 'contract is law' with bounded escalation: (a) provider diverged → spawn a targeted repair atom to make the provider conform (localized, consumers untouched); (b) contract proven wrong/underspecified → raise an open-question, bump version, RE-FREEZE (new hash), and rebuild ONLY the affected sub-DAG (provider + direct consumers); (c) repair budget exhausted → fall back to serial for that chapter. The wave is atomic: a red integrated tree never partially lands. (DA-07)",
+      "rationale": "A coherent, necessary failure policy with atomic landing. The DA-02 conflict is reconciled: re-freeze produces a NEW versioned contract rather than re-judging a frozen one — a refinement, not a contradiction. Keeps the blast radius minimal (provider + direct consumers) and always has a deterministic floor (serial).",
+      "alternatives_considered": [
+        "Patch consumers to match a diverged provider (rejected: violates 'contract is law', unbounded blast radius)",
+        "Unbounded repair retries (rejected: must collapse to serial within a bounded budget)",
+        "Partial landing of the green atoms only (rejected: non-atomic, leaves an inconsistent tree)"
+      ],
+      "risk": "High logical complexity (failure categorization + sub-DAG rebuild + atomic landing); the repair budget must be concretely bounded (see open questions).",
+      "test": "Integration failures are categorized (provider breach vs contract ambiguity); provider-repair / version-bump+re-freeze+sub-DAG-rebuild / serial fallback each fire within a defined retry budget; nothing partially lands when the integrated tree is red."
+    },
+    {
+      "decision": "Safe fallback is structural, not best-effort: diffusion is strictly additive on top of the proven serial one-chapter default (live behavior, lines 2023-2033). Every failure mode — gate red at plan, contract drift mid-wave, worktree merge conflict, conformance/integration red beyond budget, timeout — collapses to serial execution of the affected chapter/sub-DAG from the clean base, with a logged serial_reason. When uncertain, do not diffuse. (DA-08)",
+      "rationale": "Highest-scoring atom (0.888). Reliability — the bridge's core strength — wins ties by construction because the serial default is the live, proven path and diffusion only ever sits on top of it. Low cost, reuses the existing serial path, triple-source consensus.",
+      "alternatives_considered": [
+        "Best-effort partial diffusion with manual recovery (rejected: reduces reliability)",
+        "Retry diffusion on failure before falling back (rejected: serial is the safe deterministic default; retries belong inside the bounded repair budget, not the fallback)"
+      ],
+      "risk": "Lowest of all atoms; high reversibility. This is the reliability backstop that lets every other atom be attempted safely.",
+      "test": "Any diffusion gate-condition failure at plan time or during execution logs a serial_reason and executes the affected chapter/sub-DAG serially from a clean base, producing the same acceptance outcome as a pure serial run."
+    },
+    {
+      "decision": "Speedup is only ever credited from MEASURED wall-clock gated by a correctness-parity flag — never from the shadow projection. Run the real slice serially (authoritative ship) and the diffusion plan on the SAME git base; speedup = serial_wallclock / diffusion_wallclock (all overhead included), reported VOID unless the diffusion-integrated tree passes the identical acceptance serial would have. Start on one proven ~1h glass-interpreter chapter with a clean provider/consumer split. (DA-09)",
+      "rationale": "Methodologically rigorous and triple-source. Crediting the shadow projection is the single most likely way the project would fool itself; binding speedup to a same-base serial baseline and a correctness-parity flag prevents that. The concrete starting slice makes it actionable.",
+      "alternatives_considered": [
+        "Credit the shadow projection as speedup (rejected: dishonest, unverified)",
+        "Measure diffusion only, without a same-base serial baseline (rejected: no parity anchor)"
+      ],
+      "risk": "Low; the doubled-run cost during the measured phase is accepted as the price of honesty.",
+      "test": "System reports end-to-end diffusion wall-clock including all overhead, compares against a serial baseline on the same git base, logs the metrics and a correctness-parity flag, and reports speedup VOID if parity fails."
+    },
+    {
+      "decision": "Phased rollout reuses the existing diffusion_mode state machine — shadow → measured → limited → full — with explicit promotion gates keyed on the prior phase's measured reliability and speedup metrics. No new rollout machinery. (DA-11)",
+      "rationale": "Reuses trusted existing states (high feasibility/simplicity) and supplies the concrete state mechanism that DA-09's measurement policy plugs into. Each promotion is evidence-gated rather than vibe-based.",
+      "alternatives_considered": [
+        "Build a new rollout/feature-flag system (rejected: reinvents existing diffusion_mode)",
+        "Jump straight to full once shadow looks good (rejected: skips measured parity evidence)"
+      ],
+      "risk": "Low; high reversibility. Concrete promotion thresholds still to be set (see open questions).",
+      "test": "diffusion_mode transitions shadow→measured→limited→full only when the promotion gate on the prior phase's measured reliability + speedup passes."
+    },
+    {
+      "decision": "Treat contract freeze as THE parallelization primitive: the deterministic freeze step writes {version, canonical_hash, stable:true} to a per-contract lock, and that flag alone flips New-ProjectAutopilotUnifiedGraph's edge for that contract from hard→soft, making consumers count as 'independent' in the existing gate. Evaluation is PER-CONTRACT: an atom with any immature consumed contract keeps its hard edges (stays serial) while siblings with all-mature contracts parallelize. No new scheduler — feed the gate the bridge already trusts. (DA-12, with DA-10's per-contract maturity granularity folded in)",
+      "rationale": "The most elegant execution-model atom (0.8725): the stability flag drives scheduling via the existing unified graph, naming concrete artifacts and reusing trusted infra. Folding DA-10 in gives per-contract granularity without a duplicate sub-gate — the edge-flip is driven strictly by DA-02's deterministic predicate.",
+      "alternatives_considered": [
+        "Add a separate contract-maturity sub-gate (DA-10 standalone — rejected: duplicates the edge-flip already provided by DA-02 + DA-12)",
+        "Build a new diffusion scheduler (rejected: reinvents trusted machinery)",
+        "All-or-nothing chapter maturity (rejected: loses sibling parallelism when one contract is immature)"
+      ],
+      "risk": "Medium reversibility; correctness depends on the hard→soft edge-flip being driven strictly by the DA-02 predicate and nothing else.",
+      "test": "Freeze writes {version, canonical_hash, stable:true} to the per-contract lock; the unified graph flips that contract's edge hard→soft; consumers with all-mature contracts count as independent while an atom with any immature consumed contract retains its hard edges and stays serial."
+    }
+  ],
+  "rejected": [
+    {
+      "decision": "DA-10 as a standalone parallel contract-maturity sub-gate.",
+      "why": "Modify verdict (0.7825): per-contract maturity granularity is genuinely useful, but as a standalone single-source atom it re-describes the gate behavior that DA-02 (the deterministic predicate) and DA-12 (the hard→soft edge-flip) already provide. Its useful content — per-contract rather than all-or-nothing evaluation — is folded into Decision 11 (DA-12) as the predicate-driven edge-flip, rather than adding a parallel sub-gate that would duplicate gate logic and create two sources of truth."
+    },
+    {
+      "decision": "Non-deterministic inputs to the stability predicate: 'historical churn metrics', 'review state', and 'stub generation' as stability criteria (from DA-02's original test).",
+      "why": "Major review on DA-02: these contradict the 'binary, fully deterministic, no-LLM' framing and introduce non-determinism / external state, which would make the keystone stability guarantee untrustworthy. They are removed from the stability predicate's validation test. (Stub generation is retained as a worker workpack step under DA-04, but it is NOT a stability criterion; churn/review may be reconsidered later only as separate, explicitly-scoped advisory atoms.)"
+    }
+  ],
+  "open_questions": [
+    "Concrete repair budget bound for DA-07: how many provider-repair atoms and re-freeze/sub-DAG-rebuild cycles per sub-DAG before collapsing to serial?",
+    "Stub-synthesis fidelity limits (DA-04): for stateful or complex providers, at what point is a deterministic stub infeasible, so the atom must be marked serial rather than diffused?",
+    "Worktree merge-conflict policy (DA-08): when owned_files/regions are declared non-overlapping but git reports a conflict at stitch, is this always treated as drift→fallback, or is there a safe auto-resolution path?",
+    "Exact promotion-gate thresholds (DA-11): minimum sample size, required acceptance-parity rate (presumably 100%), and minimum measured speedup to promote shadow→measured→limited→full.",
+    "Concrete first-rollout values for the existing gate's K (independent-atom-count >= K) and N (wave-size <= N) on the glass-interpreter slice.",
+    "Reconciling the contract schema's two stability representations (content hash vs stable:true): does freeze always materialize both, and which is authoritative for the predicate when they disagree?",
+    "Canonical-payload serialization (DA-02): the exact field ordering and normalization used for canonical_hash so the same contract hashes identically across machines and runs."
+  ],
+  "implementation_plan": [
+    {
+      "phase": "Phase 0 — Shadow hardening (diffusion_mode='shadow', emission unchanged)",
+      "work_items": [
+        "Implement the deterministic stability predicate (DA-02) and emit per-contract maturity as a durable shadow marker.",
+        "Implement canonical-payload hashing and the freeze-manifest schema (DA-01) as shadow-only artifacts.",
+        "Compute the would-be hard→soft edge-flip in New-ProjectAutopilotUnifiedGraph and record the would-be independent-atom set (DA-12, DA-10 folded) without changing emission."
+      ],
+      "deterministic_gate": "Predicate is byte-stable: same contract → same canonical_hash → same maturity verdict across two runs on the same git base. Freeze manifest validates against schema. No churn/review/LLM inputs present in the predicate.",
+      "exit_criteria": "Shadow markers for >=1 real glass-interpreter chapter show a non-trivial independent-atom set with all consumed contracts mature, while the coordinator still emits the serial default.",
+      "maps_to": ["DA-01", "DA-02", "DA-12", "DA-10 (folded)"]
+    },
+    {
+      "phase": "Phase 1 — Freeze stage + immutability/drift wiring (still serial emission)",
+      "work_items": [
+        "Add the dedicated pre-wave freeze stage writing {version, canonical_hash, stable:true} per-contract lock + the run-scoped freeze manifest (DA-01, DA-12).",
+        "Enforce contract files excluded from every wave atom's owned_files; add hash recompute checkpoints at atom start / completion / stitch-start / acceptance (DA-03).",
+        "Wire drift = unbumped hash change → abort + serial fallback path (DA-03, DA-08)."
+      ],
+      "deterministic_gate": "Static check fails the plan if any contract file appears in a wave owned_files. An injected unbumped-hash mutation deterministically triggers abort + serial with a logged serial_reason. Zero false-green.",
+      "exit_criteria": "Freeze + drift machinery verified in shadow against injected drift; serial fallback fires every time; no false-green observed.",
+      "maps_to": ["DA-01", "DA-03", "DA-08", "DA-12"]
+    },
+    {
+      "phase": "Phase 2 — Contract workpack + isolated parallel build (single-wave dry runs)",
+      "work_items": [
+        "Implement deterministic stub synthesis from the contract (signature→typed stub, golden→canned I/O, error taxonomy→error cases, invariants→assertions), placed in the consumer's ephemeral test-double path (DA-04).",
+        "Build the contract workpack and run dependent atoms in isolated worktrees via worktrees.ps1 with REAL build+unit-test, tagged acceptance_scope='contract' (DA-04).",
+        "If a contract cannot produce a faithful stub, mark the atom serial (do not diffuse)."
+      ],
+      "deterministic_gate": "Stub hash recorded in the freeze manifest matches the regenerated stub. Worker acceptance requires a REAL green build+unit-test (no mock-only acceptance). Stubs never touch provider-owned files.",
+      "exit_criteria": "Each dependent atom in the slice builds + unit-tests green in isolation against its frozen-contract stub; acceptance_scope='contract' recorded for each.",
+      "maps_to": ["DA-04"]
+    },
+    {
+      "phase": "Phase 3 — Integration, consolidation, and repair loop",
+      "work_items": [
+        "Add dedicated integration atoms: merge worktrees, swap real bindings for stubs, run provider-real-vs-contract conformance (golden/invariants/postconditions/error taxonomy) (DA-05).",
+        "Add the mandatory consolidation atom running the FULL unchanged acceptance gate, acceptance_scope='integrated'; no per-atom landing (DA-06).",
+        "Implement 'contract is law' bounded-escalation repair: provider-repair → version-bump+re-freeze+sub-DAG rebuild → serial fallback; atomic wave landing (DA-07)."
+      ],
+      "deterministic_gate": "A red integrated tree never partially lands (atomicity assertion). Injected provider-divergence deterministically routes to provider-repair; injected contract-underspecification routes to version-bump+re-freeze+sub-DAG rebuild; budget exhaustion routes to serial.",
+      "exit_criteria": "Slice integrates with conformance + full acceptance green; each injected failure mode hits its categorized repair path and, on budget exhaustion, falls back to serial from a clean base.",
+      "maps_to": ["DA-05", "DA-06", "DA-07", "DA-08"]
+    },
+    {
+      "phase": "Phase 4 — Measured rollout on one ~1h glass-interpreter chapter (diffusion_mode='measured')",
+      "work_items": [
+        "Run the slice serially (authoritative ship) and the diffusion plan on the SAME git base (DA-09).",
+        "Record diffusion wall-clock including all overhead; compute speedup = serial/diffusion; set the correctness-parity flag from identical acceptance (DA-09).",
+        "Report speedup VOID unless parity passes."
+      ],
+      "deterministic_gate": "Speedup is emitted only when correctness-parity=true; otherwise VOID. The diffusion-integrated tree must pass the identical acceptance the serial ship passed.",
+      "exit_criteria": "Measured, parity-verified speedup > 1.0 on the slice with zero acceptance regressions across N repeated runs.",
+      "maps_to": ["DA-09", "DA-08"]
+    },
+    {
+      "phase": "Phase 5 — Limited rollout (diffusion_mode='limited')",
+      "work_items": [
+        "Enable real diffusion emission only for chapters meeting the existing gate (independent-atom-count >= K, wave-size <= N) AND all-mature per-contract maturity (DA-12, DA-10 folded).",
+        "Keep serial fallback armed for every failure mode (DA-08).",
+        "Set concrete K/N and promotion thresholds from Phase 4 data (DA-11)."
+      ],
+      "deterministic_gate": "Promotion measured→limited requires prior-phase measured reliability = 100% acceptance parity and speedup > threshold over the sample (DA-11).",
+      "exit_criteria": "Multiple low-risk chapters ship via diffusion with full acceptance parity and net measured speedup; no reliability regression vs serial.",
+      "maps_to": ["DA-08", "DA-10 (folded)", "DA-11", "DA-12"]
+    },
+    {
+      "phase": "Phase 6 — Full rollout (diffusion_mode='full')",
+      "work_items": [
+        "Promote to full only after the limited-phase reliability + speedup gates pass (DA-11).",
+        "Diffusion remains strictly additive; serial fallback permanent (DA-08).",
+        "Continuous honest measurement remains on (DA-09)."
+      ],
+      "deterministic_gate": "Promotion limited→full requires sustained 100% acceptance parity over the limited sample and positive aggregate measured speedup.",
+      "exit_criteria": "Diffusion is the default for gate-eligible chapters; reliability matches serial; aggregate measured speedup is positive and reported honestly.",
+      "maps_to": ["DA-08", "DA-09", "DA-11"]
+    }
+  ],
+  "next_step": "Operator architect-review of this decision record. On approval, implement Phase 0 — the deterministic stability predicate (DA-02), canonical-payload hashing + freeze manifest (DA-01), and the would-be hard→soft edge computation (DA-12) — entirely behind diffusion_mode='shadow' with emission unchanged, and validate the markers on one ~1h glass-interpreter chapter with a clean provider/consumer split."
+}
