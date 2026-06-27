@@ -6,6 +6,11 @@ packet. It does not approve P2+ execution or further control-plane changes. Thos
 operator architect-review, including the P2 emit-shaping decision recorded below.
 First proving ground: the paused glass-interpreter build slice chosen for measurement.
 
+Follow-up architect packet for cross-chapter diffusion:
+`PROJECT_AUTOPILOT_GLOBAL_UPFRONT_DECOMPOSITION.md`. That packet designs the global upfront chapter
+decomposition pass, durable `PROJECT_WAVE_SCHEDULE`, safety classifier, bounded corrective loop, and
+shadow -> limited -> full rollout. It is docs-only and does not approve behavior changes.
+
 ## Scope correction after critic review
 
 Commit `7a1a2b0` was auto-titled as a workpack batch that completed seven independent approved backlog
