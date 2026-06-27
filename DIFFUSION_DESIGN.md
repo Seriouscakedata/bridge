@@ -1,8 +1,10 @@
 # Diffusion Execution — Architect Design & Phased Plan
 
-Status: 2026-06-27 — operator gave GO to implement (phased, by me). Bridge ran a parallel DISCUSS
-design on `main` (sanity check); this doc is the consolidated architect design to reconcile with it.
-First proving ground: the paused glass-interpreter build (chapters 4-8).
+Status: 2026-06-27 - design deliverable plus P1 shadow freeze primitive. Bridge ran a parallel DISCUSS
+design on `main` (sanity check); this doc is the consolidated architect design and architect-review
+packet. It does not approve P2+ execution or further control-plane changes. Those require explicit
+operator architect-review, including the P2 emit-shaping decision recorded below.
+First proving ground: the paused glass-interpreter build slice chosen for measurement.
 
 ## Scope correction after critic review
 
@@ -13,6 +15,10 @@ artifact commit, not as evidence that any independent backlog execution tasks we
 
 The executable P1 work is in the later P1 commit. This document is the durable design deliverable plus
 architect-review notes; it is not a completion proof for a batch of backlog atoms.
+
+Evidence rule for this task: commit titles, line counts, file sizes, and projected wave counts are not
+completion evidence. Any final close-out that uses a number must cite the command output that produced
+that number; otherwise the statement is intentionally omitted.
 
 ## Goal
 Remove the dominant speed bottleneck (dependency-sequenced atoms force chapter waves to run mostly
