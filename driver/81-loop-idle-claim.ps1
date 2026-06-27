@@ -1633,8 +1633,14 @@ $script:DriverLoopIdleClaimBlock = {
           }
         } catch { $operatorAtomFastLane = $false }
         $backlogSynthesisRoute = $null
+        # 2026-06-27 ROUTING FIX: never route EXECUTION tasks to synthesis. Project-autopilot
+        # coordinator/atoms and any task carrying the [[NORMAL]] marker are work-to-DO, not
+        # design-to-DISCUSS. The synthesis depth-router otherwise matched architecture/discuss
+        # substrings inside their prompts and hijacked them into a multi-model debate (ignoring
+        # [[NORMAL]] because NormalOverride was hardcoded $false here), stalling the build.
+        $backlogIsExecutionTask = [bool]([regex]::IsMatch([string]$btext, '(?im)(\[\[NORMAL\]\]|\[project-autopilot)'))
         try {
-          if (Get-Command Get-SynthesisRouteDecision -ErrorAction SilentlyContinue) {
+          if ((-not $backlogIsExecutionTask) -and (Get-Command Get-SynthesisRouteDecision -ErrorAction SilentlyContinue)) {
             $backlogDiscussMark = [bool]([regex]::IsMatch([string]$btext, '(?im)(^\s*\[DISCUSS\]|\bобсуди|обсуждени|\bdiscuss\b|deep-think|architecture decision|architectural decision)'))
             $backlogSynthesisRoute = Get-SynthesisRouteDecision `
               -Text ([string]$btext) `
