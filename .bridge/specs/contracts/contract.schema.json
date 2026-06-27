@@ -28,7 +28,11 @@
     },
     "content_hash": {
       "type": "string",
-      "description": "Optional canonical content hash used when stable is not true."
+      "description": "Legacy optional content hash. Diffusion freeze uses canonical_hash in the channel-local freeze lock."
+    },
+    "canonical_hash": {
+      "type": "string",
+      "description": "Canonical payload hash. For diffusion execution this must match the channel-local freeze lock; a bare field in the contract file is not sufficient."
     },
     "signature": {
       "type": ["object", "array", "string"]

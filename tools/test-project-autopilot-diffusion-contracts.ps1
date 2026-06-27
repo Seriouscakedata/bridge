@@ -92,18 +92,34 @@ try {
   }
   [System.IO.File]::WriteAllText((Join-Path $contractDir 'user-api.json'), (($contract | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
-  $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot)
+  $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $script:EffectiveChannel)
   Assert-True ($contracts.Count -eq 1) ("expected one interface contract, got {0}" -f $contracts.Count)
   Assert-True ([string]$contracts[0].id -eq 'user-api') ("contract id mismatch: {0}" -f [string]$contracts[0].id)
   Assert-True ([bool]$contracts[0].valid) 'valid contract must pass required-field validation'
-  Assert-True ([bool]$contracts[0].stable) 'stable:true contract must pass stability gate'
+  Assert-True (-not [bool]$contracts[0].stable) 'contract without freeze lock must not pass stability gate'
 
   $tasks = @(
     (New-Atom -Slug 'provider' -Chapter 'chapter-1' -Files @('src/provider.ts') -Provides @('user-api')),
     (New-Atom -Slug 'consumer' -Chapter 'chapter-2' -Files @('src/consumer.ts') -Consumes @('user-api')),
     (New-Atom -Slug 'stitch' -Chapter 'integration' -Files @('tests/user-api.integration.ts') -Kind 'consolidation' -Checks @('npm test -- user-api.integration'))
   )
-  $graph = New-ProjectAutopilotUnifiedGraph -Tasks $tasks -Contracts $contracts
+  $preFreezeGraph = New-ProjectAutopilotUnifiedGraph -Tasks $tasks -Contracts $contracts
+  $preFreezeSoftEdges = @($preFreezeGraph.edges | Where-Object { [string]$_.edge_type -eq 'soft' })
+  Assert-True ($preFreezeSoftEdges.Count -eq 0) 'graph must not create soft edges before diffusion mode allows them'
+
+  $manifest = New-ProjectAutopilotContractFreezeManifest -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -Channel $script:EffectiveChannel -Mode 'shadow' -WriteLocks:$true
+  Assert-True ([bool]$manifest.ok) ('freeze manifest should be ok; manifest=' + ($manifest | ConvertTo-Json -Compress -Depth 8))
+  Assert-True (@($manifest.contracts).Count -eq 1) 'freeze manifest must include the user-api contract'
+  Assert-True ([bool]$manifest.contracts[0].lock_written) 'freeze manifest must write a channel-local lock'
+
+  $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $script:EffectiveChannel)
+  Assert-True ([bool]$contracts[0].stable) ('lock-pinned contract must pass stability gate; reasons=' + ((@($contracts[0].maturity_reasons) | Sort-Object -Unique) -join ', '))
+
+  $defaultGraph = New-ProjectAutopilotUnifiedGraph -Tasks $tasks -Contracts $contracts
+  $defaultSoftEdges = @($defaultGraph.edges | Where-Object { [string]$_.edge_type -eq 'soft' })
+  Assert-True ($defaultSoftEdges.Count -eq 0) 'unified graph default must keep contract edges hard outside diffusion gate'
+
+  $graph = New-ProjectAutopilotUnifiedGraph -Tasks $tasks -Contracts $contracts -AllowContractSoftEdges:$true
   $softEdges = @($graph.edges | Where-Object { [string]$_.from -eq 'provider' -and [string]$_.to -eq 'consumer' -and [string]$_.edge_type -eq 'soft' -and [string]$_.provenance -eq 'contract' })
   Assert-True ($softEdges.Count -eq 1) ("expected one soft contract edge provider->consumer, got {0}" -f $softEdges.Count)
   Assert-True ([bool]$graph.acyclic) 'valid graph must be acyclic'
@@ -116,6 +132,15 @@ try {
 
   $onGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -OptIn:$true -CleanKnownState $true -StitchingTestsPresent $true -MinIndependentAtoms 1 -MaxWaveSize 6
   Assert-True ([bool]$onGate.enabled) ('valid opt-in diffusion gate should pass; reasons=' + ((@($onGate.reasons) -join ', ')))
+
+  $contract.behavior.postconditions = @('returns a user object or typed not_found error', 'new drift after freeze')
+  [System.IO.File]::WriteAllText((Join-Path $contractDir 'user-api.json'), (($contract | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $driftedContracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $script:EffectiveChannel)
+  Assert-True (-not [bool]$driftedContracts[0].stable) 'unbumped payload drift after freeze must make contract unstable'
+  Assert-True (@($driftedContracts[0].maturity_reasons) -contains 'freeze-lock-hash-mismatch') 'drift must be reported as freeze-lock-hash-mismatch'
+  $contract.behavior.postconditions = @('returns a user object or typed not_found error')
+  [System.IO.File]::WriteAllText((Join-Path $contractDir 'user-api.json'), (($contract | ConvertTo-Json -Depth 10) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+  $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $script:EffectiveChannel)
 
   $unstable = [pscustomobject]@{ id='user-api'; valid=$true; stable=$false; hash='unstable' }
   $unstableGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts @($unstable) -OptIn:$true -CleanKnownState $true -StitchingTestsPresent $true -MinIndependentAtoms 1 -MaxWaveSize 6

@@ -421,9 +421,102 @@ function Get-ProjectAutopilotCanonicalJson {
   return ((ConvertTo-ProjectAutopilotCanonicalValue -Value $Value) | ConvertTo-Json -Compress -Depth 10)
 }
 
+function Get-ProjectAutopilotInterfaceContractCanonicalPayload {
+  param($Contract)
+  return [ordered]@{
+    signature = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('signature') -Default $null
+    behavior = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('behavior') -Default $null
+    invariants = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('invariants') -Default $null
+    errors = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('errors','error_taxonomy','failure_taxonomy') -Default $null
+    golden_examples = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('golden_examples','goldenExamples','examples') -Default @()
+    owned_files = @(ConvertTo-ProjectAutopilotPathArray (Get-ProjectAutopilotContractValue -Obj $Contract -Names @('owned_files','ownedFiles') -Default @()))
+    owned_regions = @(Get-ProjectAutopilotContractValue -Obj $Contract -Names @('owned_regions','ownedRegions') -Default @())
+  }
+}
+
 function Get-ProjectAutopilotInterfaceContractHash {
   param($Contract)
-  try { return (Get-ProjectAutopilotSha256 (Get-ProjectAutopilotCanonicalJson -Value $Contract)) } catch { return '' }
+  try { return (Get-ProjectAutopilotSha256 (Get-ProjectAutopilotCanonicalJson -Value (Get-ProjectAutopilotInterfaceContractCanonicalPayload -Contract $Contract))) } catch { return '' }
+}
+
+function Get-ProjectAutopilotContractFreezeDir {
+  param([string]$ProjectRoot, [string]$Channel = '')
+  $slug = ([string]$Channel).Trim()
+  if ([string]::IsNullOrWhiteSpace($slug)) {
+    try { $slug = [string](Get-EffectiveChannel) } catch { $slug = 'main' }
+  }
+  $channelDir = ''
+  try { $channelDir = [string](Get-ChannelDir -Slug $slug) } catch { $channelDir = '' }
+  if ([string]::IsNullOrWhiteSpace($channelDir)) { return '' }
+  $keySource = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { 'unknown-project' } else { ([string]$ProjectRoot).Trim().ToLowerInvariant() }
+  $projectKey = (Get-ProjectAutopilotSha256 -Text $keySource)
+  if ([string]::IsNullOrWhiteSpace($projectKey)) { $projectKey = 'unknown-project' }
+  return (Join-Path (Join-Path $channelDir 'diffusion-contract-freezes') $projectKey)
+}
+
+function Get-ProjectAutopilotInterfaceContractLockPath {
+  param([string]$ProjectRoot, [string]$Channel = '', [string]$ContractId)
+  $dir = Get-ProjectAutopilotContractFreezeDir -ProjectRoot $ProjectRoot -Channel $Channel
+  if ([string]::IsNullOrWhiteSpace($dir) -or [string]::IsNullOrWhiteSpace($ContractId)) { return '' }
+  return (Join-Path $dir ((ConvertTo-ProjectAutopilotSlug $ContractId) + '.lock.json'))
+}
+
+function Read-ProjectAutopilotInterfaceContractLock {
+  param([string]$ProjectRoot, [string]$Channel = '', [string]$ContractId)
+  $path = Get-ProjectAutopilotInterfaceContractLockPath -ProjectRoot $ProjectRoot -Channel $Channel -ContractId $ContractId
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  try {
+    return ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
+function Test-ProjectAutopilotGoldenExamplesWellFormed {
+  param($Examples)
+  foreach ($ex in @($Examples)) {
+    if ($null -eq $ex) { continue }
+    $input = Get-ProjectAutopilotContractValue -Obj $ex -Names @('input','inputs','given') -Default $null
+    $output = Get-ProjectAutopilotContractValue -Obj $ex -Names @('output','outputs','result','expected') -Default $null
+    $inputJson = if ($null -eq $input) { '' } else { [string]($input | ConvertTo-Json -Compress -Depth 8) }
+    $outputJson = if ($null -eq $output) { '' } else { [string]($output | ConvertTo-Json -Compress -Depth 8) }
+    if (-not [string]::IsNullOrWhiteSpace($inputJson) -and -not [string]::IsNullOrWhiteSpace($outputJson)) { return $true }
+  }
+  return $false
+}
+
+function Get-ProjectAutopilotOpenQuestionText {
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) { return '' }
+  $parts = New-Object 'System.Collections.Generic.List[string]'
+  $roots = @($ProjectRoot, (Join-Path $ProjectRoot '.bridge'))
+  foreach ($root in $roots) {
+    if (-not (Test-Path -LiteralPath $root)) { continue }
+    try {
+      foreach ($file in @(Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md','.json') })) {
+        $text = Get-ProjectAutopilotFileText -Path $file.FullName
+        if ($text -match 'PROJECT_OPEN_QUESTION|open[-_ ]question|blocking question') { [void]$parts.Add($text) }
+      }
+    } catch {}
+  }
+  foreach ($sub in @('.bridge\changes','.bridge\specs')) {
+    $dir = Join-Path $ProjectRoot $sub
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+    try {
+      foreach ($file in @(Get-ChildItem -LiteralPath $dir -Recurse -File -Include '*.md','*.json' -ErrorAction SilentlyContinue | Select-Object -First 200)) {
+        $text = Get-ProjectAutopilotFileText -Path $file.FullName
+        if ($text -match 'PROJECT_OPEN_QUESTION|open[-_ ]question|blocking question') { [void]$parts.Add($text) }
+      }
+    } catch {}
+  }
+  return (($parts.ToArray()) -join "`n")
+}
+
+function Test-ProjectAutopilotContractOpenQuestionBlocked {
+  param([string]$ContractId, [string]$OpenQuestionText = '')
+  if ([string]::IsNullOrWhiteSpace($ContractId) -or [string]::IsNullOrWhiteSpace($OpenQuestionText)) { return $false }
+  $escaped = [regex]::Escape($ContractId)
+  return ([regex]::IsMatch($OpenQuestionText, "(?is)(PROJECT_OPEN_QUESTION|open[-_ ]question|blocking question).{0,240}\b$escaped\b|\b$escaped\b.{0,240}(PROJECT_OPEN_QUESTION|open[-_ ]question|blocking question)"))
 }
 
 function Get-ProjectAutopilotInterfaceContractId {
@@ -442,8 +535,9 @@ function Get-ProjectAutopilotInterfaceContractId {
 }
 
 function Test-ProjectAutopilotInterfaceContract {
-  param($Contract, [string]$Path = '')
+  param($Contract, [string]$Path = '', [string]$ProjectRoot = '', [string]$Channel = '', [string]$OpenQuestionText = '')
   $missing = New-Object 'System.Collections.Generic.List[string]'
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
   $id = Get-ProjectAutopilotInterfaceContractId -Contract $Contract -Path $Path
   if ([string]::IsNullOrWhiteSpace($id)) { [void]$missing.Add('id') }
   foreach ($field in @('version','signature','behavior','invariants','golden_examples','owned_files')) {
@@ -453,37 +547,84 @@ function Test-ProjectAutopilotInterfaceContract {
   $errors = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('errors','error_taxonomy','failure_taxonomy') -Default $null
   if ($null -eq $errors -or [string]::IsNullOrWhiteSpace([string]($errors | ConvertTo-Json -Compress -Depth 8))) { [void]$missing.Add('errors') }
   $hash = Get-ProjectAutopilotInterfaceContractHash -Contract $Contract
-  $declaredHash = [string](Get-ProjectAutopilotContractValue -Obj $Contract -Names @('content_hash','hash','frozen_hash') -Default '')
-  $stableFlag = Test-ProjectAutopilotTruthy (Get-ProjectAutopilotContractValue -Obj $Contract -Names @('stable','frozen') -Default $false)
-  $stable = ($stableFlag -or (-not [string]::IsNullOrWhiteSpace($declaredHash) -and $declaredHash.Trim().ToLowerInvariant() -eq $hash))
+  $version = [string](Get-ProjectAutopilotContractValue -Obj $Contract -Names @('version') -Default '')
+  $examples = Get-ProjectAutopilotContractValue -Obj $Contract -Names @('golden_examples','goldenExamples','examples') -Default @()
+  $hasGolden = Test-ProjectAutopilotGoldenExamplesWellFormed -Examples $examples
+  $openQuestionBlocked = Test-ProjectAutopilotContractOpenQuestionBlocked -ContractId $id -OpenQuestionText $OpenQuestionText
+  $lock = Read-ProjectAutopilotInterfaceContractLock -ProjectRoot $ProjectRoot -Channel $Channel -ContractId $id
+  $lockStable = ($lock -and (Test-ProjectAutopilotTruthy (Get-ProjectAutopilotContractValue -Obj $lock -Names @('stable','frozen') -Default $false)))
+  $lockHash = if ($lock) { [string](Get-ProjectAutopilotContractValue -Obj $lock -Names @('canonical_hash','content_hash','hash') -Default '') } else { '' }
+  $lockVersion = if ($lock) { [string](Get-ProjectAutopilotContractValue -Obj $lock -Names @('version') -Default '') } else { '' }
+  $hashMatches = (-not [string]::IsNullOrWhiteSpace($lockHash) -and $lockHash.Trim().ToLowerInvariant() -eq $hash)
+  $versionMatches = (-not [string]::IsNullOrWhiteSpace($lockVersion) -and $lockVersion -eq $version)
+  if ($missing.Count -gt 0) { [void]$reasons.Add('required-field-missing') }
+  if (-not $hasGolden) { [void]$reasons.Add('golden-example-missing-or-malformed') }
+  if ($openQuestionBlocked) { [void]$reasons.Add('open-question-blocks-contract') }
+  if (-not $lockStable) { [void]$reasons.Add('freeze-lock-missing-or-not-stable') }
+  if (-not $versionMatches) { [void]$reasons.Add('freeze-lock-version-mismatch') }
+  if (-not $hashMatches) { [void]$reasons.Add('freeze-lock-hash-mismatch') }
+  $valid = ($missing.Count -eq 0)
+  $rawMature = ($valid -and $hasGolden -and -not $openQuestionBlocked)
+  $stable = ($rawMature -and $lockStable -and $versionMatches -and $hashMatches)
   return [pscustomobject]@{
     id = $id
     path = [string]$Path
-    valid = ($missing.Count -eq 0)
+    version = $version
+    valid = [bool]$valid
+    raw_mature = [bool]$rawMature
     stable = [bool]$stable
+    canonical_hash = $hash
     hash = $hash
+    lock_path = (Get-ProjectAutopilotInterfaceContractLockPath -ProjectRoot $ProjectRoot -Channel $Channel -ContractId $id)
+    lock_present = ($null -ne $lock)
+    lock_stable = [bool]$lockStable
+    lock_hash = $lockHash
+    lock_version = $lockVersion
+    hash_matches_lock = [bool]$hashMatches
+    version_matches_lock = [bool]$versionMatches
+    has_golden_example = [bool]$hasGolden
+    open_question_blocked = [bool]$openQuestionBlocked
     missing = @($missing.ToArray())
+    maturity_reasons = @($reasons.ToArray() | Sort-Object -Unique)
   }
 }
 
 function Get-ProjectAutopilotInterfaceContracts {
-  param([string]$ProjectRoot)
+  param([string]$ProjectRoot, [string]$Channel = '')
   $dir = Get-ProjectAutopilotInterfaceContractDir -ProjectRoot $ProjectRoot
   if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
   $out = New-Object 'System.Collections.Generic.List[object]'
+  $openQuestionText = Get-ProjectAutopilotOpenQuestionText -ProjectRoot $ProjectRoot
   foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
     if ($file.Name -match '\.schema\.json$' -or $file.Name -eq 'contract.schema.json') { continue }
+    if ($file.Name -match '\.(lock|freeze|manifest)\.json$') { continue }
     try {
       $obj = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-      $check = Test-ProjectAutopilotInterfaceContract -Contract $obj -Path $file.FullName
+      $check = Test-ProjectAutopilotInterfaceContract -Contract $obj -Path $file.FullName -ProjectRoot $ProjectRoot -Channel $Channel -OpenQuestionText $openQuestionText
+      $payload = Get-ProjectAutopilotInterfaceContractCanonicalPayload -Contract $obj
       $out.Add([pscustomobject]@{
         id = [string]$check.id
         path = $file.FullName
         contract = $obj
         valid = [bool]$check.valid
         stable = [bool]$check.stable
+        raw_mature = [bool]$check.raw_mature
+        version = [string]$check.version
+        canonical_hash = [string]$check.canonical_hash
         hash = [string]$check.hash
+        lock_path = [string]$check.lock_path
+        lock_present = [bool]$check.lock_present
+        lock_stable = [bool]$check.lock_stable
+        lock_hash = [string]$check.lock_hash
+        lock_version = [string]$check.lock_version
+        hash_matches_lock = [bool]$check.hash_matches_lock
+        version_matches_lock = [bool]$check.version_matches_lock
+        has_golden_example = [bool]$check.has_golden_example
+        open_question_blocked = [bool]$check.open_question_blocked
+        owned_files = @($payload.owned_files)
+        owned_regions = @($payload.owned_regions)
         missing = @($check.missing)
+        maturity_reasons = @($check.maturity_reasons)
       }) | Out-Null
     } catch {
       $out.Add([pscustomobject]@{
@@ -493,11 +634,108 @@ function Get-ProjectAutopilotInterfaceContracts {
         valid = $false
         stable = $false
         hash = ''
+        canonical_hash = ''
+        raw_mature = $false
         missing = @('valid_json')
+        maturity_reasons = @('valid-json-required')
       }) | Out-Null
     }
   }
-  return @($out.ToArray())
+  $arr = @($out.ToArray())
+  for ($i = 0; $i -lt $arr.Count; $i++) {
+    for ($j = $i + 1; $j -lt $arr.Count; $j++) {
+      if (Test-ProjectAutopilotPathOverlap -Left @($arr[$i].owned_files) -Right @($arr[$j].owned_files)) {
+        foreach ($idx in @($i,$j)) {
+          $other = if ($idx -eq $i) { [string]$arr[$j].id } else { [string]$arr[$i].id }
+          $reasons2 = @($arr[$idx].maturity_reasons) + @('owned-files-overlap:' + $other)
+          $arr[$idx] | Add-Member -NotePropertyName maturity_reasons -NotePropertyValue @($reasons2 | Sort-Object -Unique) -Force
+          $arr[$idx] | Add-Member -NotePropertyName stable -NotePropertyValue $false -Force
+          $arr[$idx] | Add-Member -NotePropertyName raw_mature -NotePropertyValue $false -Force
+        }
+      }
+    }
+  }
+  return @($arr)
+}
+
+function New-ProjectAutopilotContractFreezeManifest {
+  param(
+    [object[]]$Tasks = @(),
+    [object[]]$Contracts = @(),
+    [string]$ProjectRoot = '',
+    [string]$Channel = '',
+    [string]$Mode = 'shadow',
+    [bool]$WriteLocks = $false
+  )
+  $now = (Get-Date).ToUniversalTime().ToString('o')
+  $contractEntries = New-Object 'System.Collections.Generic.List[object]'
+  $allOk = $true
+  foreach ($contract in @($Contracts)) {
+    $id = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $contract -Name 'id' -Default ''))
+    if ([string]::IsNullOrWhiteSpace($id)) { continue }
+    $providerAtoms = @($Tasks | Where-Object { @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $_ -Name 'provides' -Default @())) -contains $id } | ForEach-Object { ConvertTo-ProjectAutopilotSlug (Get-ProjectAutopilotTaskStringField -Task $_ -Names @('slug','id','title')) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $consumerAtoms = @($Tasks | Where-Object { @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $_ -Name 'consumes' -Default @())) -contains $id } | ForEach-Object { ConvertTo-ProjectAutopilotSlug (Get-ProjectAutopilotTaskStringField -Task $_ -Names @('slug','id','title')) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $version = [string](Get-BacklogPackObjectValue -Obj $contract -Name 'version' -Default '')
+    $hash = [string](Get-BacklogPackObjectValue -Obj $contract -Name 'canonical_hash' -Default (Get-BacklogPackObjectValue -Obj $contract -Name 'hash' -Default ''))
+    $stubHash = Get-ProjectAutopilotSha256 -Text ("contract-stub-v1`n$id`n$version`n$hash")
+    $reasons = @($contract.maturity_reasons)
+    $freezeBlockers = @($reasons | Where-Object { $_ -notin @('freeze-lock-missing-or-not-stable','freeze-lock-version-mismatch','freeze-lock-hash-mismatch') })
+    $freezeReady = ([bool](Get-BacklogPackObjectValue -Obj $contract -Name 'raw_mature' -Default $false) -and $providerAtoms.Count -gt 0 -and $consumerAtoms.Count -gt 0 -and $freezeBlockers.Count -eq 0)
+    if ($providerAtoms.Count -eq 0) { $reasons = @($reasons) + @('provider-atom-missing') }
+    if ($consumerAtoms.Count -eq 0) { $reasons = @($reasons) + @('consumer-atom-missing') }
+    $lockPath = [string](Get-BacklogPackObjectValue -Obj $contract -Name 'lock_path' -Default '')
+    $lockWritten = $false
+    $lockError = ''
+    if ($WriteLocks -and $freezeReady) {
+      try {
+        if ([string]::IsNullOrWhiteSpace($lockPath)) { $lockPath = Get-ProjectAutopilotInterfaceContractLockPath -ProjectRoot $ProjectRoot -Channel $Channel -ContractId $id }
+        $lockDir = Split-Path -Parent $lockPath
+        if (-not (Test-Path -LiteralPath $lockDir -PathType Container)) { New-Item -ItemType Directory -Path $lockDir -Force | Out-Null }
+        $lock = [ordered]@{
+          lock_schema_version = 1
+          contract_id = $id
+          version = $version
+          canonical_hash = $hash
+          stable = $true
+          source_path = [string](Get-BacklogPackObjectValue -Obj $contract -Name 'path' -Default '')
+          generated_stub_hash = $stubHash
+          frozen_at = $now
+        }
+        [System.IO.File]::WriteAllText($lockPath, (($lock | ConvertTo-Json -Depth 8) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        $lockWritten = $true
+      } catch {
+        $lockError = $_.Exception.Message
+        $allOk = $false
+      }
+    }
+    if (-not $freezeReady) { $allOk = $false }
+    $contractEntries.Add([pscustomobject]@{
+      id = $id
+      version = $version
+      canonical_hash = $hash
+      provider_atoms = @($providerAtoms)
+      consumer_atoms = @($consumerAtoms)
+      owned_files = @(Get-BacklogPackObjectValue -Obj $contract -Name 'owned_files' -Default @())
+      owned_regions = @(Get-BacklogPackObjectValue -Obj $contract -Name 'owned_regions' -Default @())
+      generated_stub_hash = $stubHash
+      lock_path = $lockPath
+      lock_written = [bool]$lockWritten
+      freeze_ready = [bool]$freezeReady
+      reasons = @($reasons | Sort-Object -Unique)
+      error = $lockError
+    }) | Out-Null
+  }
+  return [pscustomobject]@{
+    schema_version = 1
+    manifest_id = ('freeze-' + (Get-ProjectAutopilotSha256 -Text (($now + '|' + [string]$ProjectRoot + '|' + [string]$Channel) )))
+    mode = ([string]$Mode).Trim().ToLowerInvariant()
+    channel = [string]$Channel
+    project_root = [string]$ProjectRoot
+    frozen_at = $now
+    write_locks = [bool]$WriteLocks
+    ok = [bool]$allOk
+    contracts = @($contractEntries.ToArray())
+  }
 }
 
 function Test-ProjectAutopilotPathOverlap {
@@ -541,7 +779,8 @@ function Test-ProjectAutopilotGraphAcyclic {
 function New-ProjectAutopilotUnifiedGraph {
   param(
     [object[]]$Tasks = @(),
-    [object[]]$Contracts = @()
+    [object[]]$Contracts = @(),
+    [bool]$AllowContractSoftEdges = $false
   )
   $nodes = New-Object 'System.Collections.Generic.List[object]'
   $edges = New-Object 'System.Collections.Generic.List[object]'
@@ -580,15 +819,16 @@ function New-ProjectAutopilotUnifiedGraph {
       $contract = if ($contractsById.ContainsKey($contractId)) { $contractsById[$contractId] } else { $null }
       $valid = ($contract -and [bool](Get-BacklogPackObjectValue -Obj $contract -Name 'valid' -Default $false))
       $stable = ($contract -and [bool](Get-BacklogPackObjectValue -Obj $contract -Name 'stable' -Default $false))
+      $softAllowed = ($AllowContractSoftEdges -and $valid -and $stable)
       foreach ($provider in $providers) {
         if ([string]$provider.slug -eq [string]$consumer.slug) { continue }
         $edges.Add([pscustomobject]@{
           from = [string]$provider.slug
           to = [string]$consumer.slug
           contract = $contractId
-          edge_type = if ($valid -and $stable) { 'soft' } else { 'hard' }
+          edge_type = if ($softAllowed) { 'soft' } else { 'hard' }
           provenance = 'contract'
-          confidence = if ($valid -and $stable) { 'high' } else { 'uncertain' }
+          confidence = if ($softAllowed) { 'high' } else { 'uncertain' }
         }) | Out-Null
       }
     }
@@ -637,7 +877,7 @@ function Test-ProjectAutopilotDiffusionGate {
   if ($null -ne $CleanKnownState) { $clean = [bool]$CleanKnownState }
   elseif (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $clean = [bool](Test-ProjectAutopilotProjectClean -ProjectRoot $ProjectRoot) }
   if (-not $clean) { [void]$reasons.Add('worktree-not-clean-or-unknown') }
-  $graph = New-ProjectAutopilotUnifiedGraph -Tasks @($Tasks) -Contracts @($Contracts)
+  $graph = New-ProjectAutopilotUnifiedGraph -Tasks @($Tasks) -Contracts @($Contracts) -AllowContractSoftEdges:$OptIn
   $contractIds = @($Contracts | ForEach-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
   $neededContracts = @($graph.nodes | ForEach-Object { @($_.consumes) + @($_.provides) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
   $missingContracts = @($neededContracts | Where-Object { $contractIds -notcontains $_ })
@@ -646,6 +886,23 @@ function Test-ProjectAutopilotDiffusionGate {
   if ($badContracts.Count -gt 0) { [void]$reasons.Add('contract-invalid') }
   $unstableContracts = @($Contracts | Where-Object { -not [bool](Get-BacklogPackObjectValue -Obj $_ -Name 'stable' -Default $false) })
   if ($unstableContracts.Count -gt 0) { [void]$reasons.Add('contract-unstable') }
+  $contractFilePaths = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($c in @($Contracts)) {
+    $cp = ([string](Get-BacklogPackObjectValue -Obj $c -Name 'path' -Default '')).Replace('\','/').Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($cp)) { [void]$contractFilePaths.Add($cp) }
+    if (-not [string]::IsNullOrWhiteSpace($ProjectRoot) -and -not [string]::IsNullOrWhiteSpace($cp)) {
+      $rootNorm = ([string]$ProjectRoot).Replace('\','/').TrimEnd('/').ToLowerInvariant()
+      if ($cp.StartsWith($rootNorm + '/')) { [void]$contractFilePaths.Add($cp.Substring($rootNorm.Length + 1)) }
+    }
+  }
+  $contractFileOwned = $false
+  foreach ($task in @($Tasks)) {
+    foreach ($f in @(ConvertTo-ProjectAutopilotPathArray (Get-BacklogPackObjectValue -Obj $task -Name 'files' -Default @()))) {
+      if ($contractFilePaths.Contains($f)) { $contractFileOwned = $true; break }
+    }
+    if ($contractFileOwned) { break }
+  }
+  if ($contractFileOwned) { [void]$reasons.Add('contract-file-owned-in-wave') }
   if (-not [bool]$graph.acyclic) { [void]$reasons.Add('graph-cyclic') }
   if (@($graph.file_conflicts).Count -gt 0) { [void]$reasons.Add('file-conflict-unresolved') }
   $hasStitch = $false
@@ -1340,7 +1597,7 @@ Rules:
 - For full/large projects and high-risk changes, create or update .bridge/changes/<change-id>/proposal.md, design.md, tasks.md, and acceptance.md before implementation atoms, and archive completed change packages under .bridge/archive/<change-id>. Do not force change-package ceremony on lite/small work.
 - Default decomposition is still ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
 - Diffusion/cross-chapter decomposition is opt-in only. If diffusion_mode is off, always use the one-chapter default. If diffusion_mode is shadow, compute and report the would-be cross-chapter graph/gate result as durable markers but still emit only the one-chapter default. If diffusion_mode is diffusion, do not emit a cross-chapter PROJECT_BACKLOG unless every deterministic gate is satisfied: complete and stable .bridge/specs/contracts/<contract-id>.json coverage for every cross-atom interface, no [[PROJECT_OPEN_QUESTION]] blocking scope/architecture, a validated acyclic depends_on graph, known non-overlapping file ownership or explicit serial_reason, stitching/integration tests, clean git worktree, independent atom count >= $diffK, and wave size <= $diffN. If any condition is missing, fall back to the one-chapter default and emit [[PROJECT_OPEN_QUESTION: diffusion gate blocked: ...]] or a concise [[PROJECT_RISK: ...]] marker instead of guessing.
-- Interface contracts live in .bridge/specs/contracts/<contract-id>.json. A contract must cover signature, behavior/preconditions/postconditions/side-effects/idempotency, invariants, error taxonomy, golden input/output examples, owned files/regions, version, content hash or stable:true. Atoms may reference them through provides and consumes arrays; a stable frozen contract may justify a soft edge, while missing/unstable contracts require hard depends_on serialization.
+- Interface contracts live in .bridge/specs/contracts/<contract-id>.json. A contract must cover signature, behavior/preconditions/postconditions/side-effects/idempotency, invariants, error taxonomy, golden input/output examples, owned files/regions, and version. A contract is stable only after the deterministic freeze step writes a channel-local freeze lock with stable:true plus canonical_hash matching the canonical payload; a bare stable:true in the contract file is not sufficient. Atoms may reference contracts through provides and consumes arrays; a lock-verified frozen contract may justify a soft edge, while missing/unstable contracts require hard depends_on serialization.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
 - Keep each atom to a SINGLE focused concern with a SMALL diff (ideally one function/class/area). Do NOT bundle multiple changes into one atom (e.g., new implementation + a refactor + cross-file tests): a large diff makes the completion-critic find many issues per pass and iterate for many slow rounds. Tests for a module are their own atom, separate from the implementation atoms they cover; a bug fix is its own atom. Small single-concern diffs let the critic converge in 1-2 rounds even when atoms run batched in parallel.
 - Order infra-first: shared modules, contracts, schemas, adapters, migrations, and test harnesses must be emitted before feature atoms that consume them. Feature atoms that depend on shared infra must list the infra atom slug in depends_on.
@@ -2005,7 +2262,18 @@ function Add-ProjectBacklogFromMarker {
       if ([string]::IsNullOrWhiteSpace($projectRoot) -and (([string]$Channel).Trim().ToLowerInvariant() -eq 'main')) {
         try { $projectRoot = Get-BridgeRoot } catch {}
       }
-      $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot)
+      $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+      $freezeManifest = New-ProjectAutopilotContractFreezeManifest -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -Channel $Channel -Mode $diffusionMode -WriteLocks:($true)
+      if ($freezeManifest) {
+        Write-BacklogJsonLine ([ordered]@{
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          action = 'project-autopilot-diffusion-freeze-manifest'
+          channel = [string]$Channel
+          mode = $diffusionMode
+          manifest = $freezeManifest
+        })
+        $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+      }
       $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
       Write-BacklogJsonLine ([ordered]@{
         ts = (Get-Date).ToUniversalTime().ToString('o')
@@ -2017,6 +2285,7 @@ function Add-ProjectBacklogFromMarker {
         reasons = @($diffusionGate.reasons)
         atoms = [int]$diffusionGate.wave_size
         independent_atoms = [int]$diffusionGate.independent_atom_count
+        freeze_manifest_id = if ($freezeManifest) { [string]$freezeManifest.manifest_id } else { '' }
       })
     }
   } catch {}

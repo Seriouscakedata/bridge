@@ -68,3 +68,51 @@ then stitching + integration-testing at the end. Target: run atoms in tens/hundr
 - Contracts must be `stable` before any parallel dependent work (no parallelizing on a moving target).
 - Stitching/integration tests must catch contract-mismatch; corrective loop is bounded (no infinite re-plan).
 - Worktree isolation per worker (already enforced). Bridge repo itself never parallelized.
+
+## P1 freeze primitive (accepted Decision Record dec-20260627-161352-c39b46)
+
+Diffusion execution is additive over the serial default. The first executable primitive is a
+deterministic **contract freeze**:
+
+1. Read `.bridge/specs/contracts/<id>.json`.
+2. Compute `canonical_hash` over only the interface payload:
+   `signature`, `behavior`, `invariants`, `errors`, `golden_examples`, `owned_files`, `owned_regions`.
+3. A contract is freeze-ready only when all required fields are present, at least one golden example has
+   input and output, no blocking open-question references the contract id, provider/consumer atoms exist,
+   and contract-owned files do not overlap another contract.
+4. The freeze step writes a channel-local lock under
+   `channels/<channel>/diffusion-contract-freezes/<project-hash>/<contract-id>.lock.json` with
+   `{ stable:true, version, canonical_hash, generated_stub_hash, frozen_at }`.
+   The lock is deliberately outside the project repo so freezing does not dirty the project worktree and
+   does not defeat the clean-git gate.
+5. Runtime stability is then binary and LLM-free:
+   `raw_mature && lock.stable && lock.version == contract.version && lock.canonical_hash == recomputed_hash`.
+   A bare `stable:true` in the contract file is not sufficient.
+6. `New-ProjectAutopilotUnifiedGraph` keeps contract edges hard by default. A stable lock can flip a
+   provider->consumer edge to `soft` only when the diffusion gate calls the graph with
+   `AllowContractSoftEdges=true`.
+7. Any unbumped payload change after freeze is drift (`freeze-lock-hash-mismatch`) and blocks diffusion;
+   the affected sub-DAG must fall back to serial until the contract is explicitly re-frozen with a new
+   version/hash.
+
+Deterministic gates for P1:
+
+- Freeze manifest includes contract id, version, canonical hash, provider atoms, consumer atoms, owned
+  files/regions, generated stub hash, lock path, lock write result, timestamp.
+- The diffusion gate fails if contract coverage is incomplete, any contract is invalid/unstable, the graph
+  is cyclic, contract files are listed in atom `files`, file ownership overlaps, stitching tests are absent,
+  independent atom count is below K, or wave size exceeds N.
+- In `shadow` mode the coordinator writes freeze/gate markers but still emits only the serial one-chapter
+  default. In `diffusion` mode a red gate structurally falls back to serial and logs the reason.
+
+Rollout phases:
+
+- P0 shadow: compute graph/gate/freeze markers only.
+- P1 freeze predicate: lock/hash maturity and mode-gated soft edges.
+- P2 contract workpacks: isolated consumers build against deterministic stubs with
+  `acceptance_scope=contract`.
+- P3 stitching: integration atoms replace stubs with real bindings and run conformance + full acceptance,
+  yielding only `acceptance_scope=integrated`.
+- P4 fault fallback: injected drift, merge conflict, conformance red, timeout all collapse to serial.
+- P5 measured rollout: speedup is non-VOID only when diffusion integrated acceptance equals the serial gate
+  on the same git base.
