@@ -2229,6 +2229,52 @@ function Set-ProjectAutopilotIdeaMetadata {
   }.GetNewClosure()))
 }
 
+function Repair-ProjectAutopilotAtomFileOwnership {
+  # 2026-06-27 Phase-1 diffusion (clean per-atom file ownership): the coordinator sometimes emits a
+  # batch where MANY atoms over-declare `files` — each atom lists the SAME multi-file set (e.g. every
+  # audio-chapter atom lists all 7 audio files) even though each atom really creates ONE file. The
+  # file-conflict guard then serializes atoms that are actually independent, killing parallelism.
+  # Detect that signature (>=2 atoms sharing an identical multi-file set) and re-derive each atom's
+  # true owned file by matching its slug to the declared files' basenames. CONSERVATIVE: only acts on
+  # the shared-identical-set signature, and only when EXACTLY ONE declared file's basename clearly
+  # matches the slug; otherwise leaves `files` untouched (never guesses, never drops a genuine file).
+  param([object[]]$Tasks)
+  $tArr = @($Tasks)
+  if ($tArr.Count -lt 2) { return $tArr }
+  $withSig = @(foreach ($t in $tArr) {
+    $f = @(); try { $f = @(@($t.files) | ForEach-Object { ([string]$_).Replace('\','/').Trim() } | Where-Object { $_ }) } catch {}
+    $sig = ''
+    if ($f.Count -ge 2) { $sig = (@($f | Sort-Object) -join '|').ToLowerInvariant() }
+    [pscustomobject]@{ task = $t; sig = $sig }
+  })
+  $repaired = 0
+  foreach ($grp in @($withSig | Where-Object { $_.sig -ne '' } | Group-Object -Property sig)) {
+    if ([int]$grp.Count -lt 2) { continue }   # only the over-declaration signature: >=2 atoms, identical multi-file set
+    foreach ($w in @($grp.Group)) {
+      $t = $w.task
+      $slug = ''
+      try { $slug = (([string]$t.slug).ToLowerInvariant() -replace '[^a-z0-9]','') } catch {}
+      if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+      $files = @(@($t.files) | ForEach-Object { [string]$_ })
+      $hits = @()
+      foreach ($file in $files) {
+        $base = ''
+        try { $base = ([System.IO.Path]::GetFileNameWithoutExtension($file)).ToLowerInvariant() -replace '[^a-z0-9]','' } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($base) -and $slug.Contains($base)) { $hits += $file }
+      }
+      if (@($hits).Count -eq 1) {
+        $t | Add-Member -NotePropertyName files -NotePropertyValue @($hits) -Force
+        $t | Add-Member -NotePropertyName files_ownership_repaired -NotePropertyValue $true -Force
+        $repaired++
+      }
+    }
+  }
+  if ($repaired -gt 0) {
+    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='project-autopilot-file-ownership-repaired'; repaired=$repaired }) } catch {}
+  }
+  return $tArr
+}
+
 function Add-ProjectBacklogFromMarker {
   param(
     [string]$Block,
@@ -2243,6 +2289,9 @@ function Add-ProjectBacklogFromMarker {
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
   $tasks = @(Get-ProjectAutopilotTaskArrayFromMarker -Block $Block | Select-Object -First $max)
   if ($tasks.Count -eq 0) { return [pscustomobject]@{ created=0; skipped=0; errors=@('no valid JSON tasks found'); ids=@() } }
+  # 2026-06-27 Phase-1 diffusion: clean over-declared per-atom file ownership BEFORE the diffusion gate
+  # and backlog write, so independent atoms are not falsely serialized by a shared (over-declared) touch set.
+  try { $tasks = @(Repair-ProjectAutopilotAtomFileOwnership -Tasks $tasks) } catch {}
 
   $diffusionMode = 'off'
   $diffusionGate = $null
