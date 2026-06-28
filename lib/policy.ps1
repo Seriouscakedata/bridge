@@ -316,5 +316,25 @@ function Test-PolicyAutotaskExecutionBlocked {
   if ($auth -eq 'operator') {
     return [pscustomobject]@{ blocked=$false; risk=[string]$danger.risk; reason=[string]$danger.reason; authorization=$auth; exempt='operator' }
   }
+  # 2026-06-28 (operator root-fix, authorized): the project-autopilot COORDINATOR is a bridge-generated
+  # planner -- it emits NO feature code, only durable planning docs + a [[PROJECT_BACKLOG]] list of atoms,
+  # and runs read-mostly in the project sandbox. Each emitted atom is re-vetted by THIS gate at its own
+  # claim time. Its prompt is a teaching template that legitimately contains safety/DAG vocabulary
+  # (e.g. "do not skip a chapter", a JSON schema example value "auth|gallery|chat|...") as instructions
+  # for the worker, never as an action the coordinator performs. The danger scan AND-rule false-positives
+  # on that boilerplate (verb 'skip' + noun 'auth') and parked EVERY coordinator to 'held' attempts=0,
+  # deadlocking project autopilot (a chapter never decomposes). Treat the coordinator like [[DISCUSS]]:
+  # the gate still runs and warns, but does not auto-hold a trusted planner.
+  $isAutopilotCoordinator = $false
+  try {
+    if (Get-Command Test-ProjectAutopilotCoordinatorText -ErrorAction SilentlyContinue) {
+      $isAutopilotCoordinator = [bool](Test-ProjectAutopilotCoordinatorText -Text $text)
+    } else {
+      $isAutopilotCoordinator = [bool]($text -match '(?is)\[project-autopilot\s+[^\]]+\].*Project Autopilot coordinator for channel')
+    }
+  } catch {}
+  if ($isAutopilotCoordinator) {
+    return [pscustomobject]@{ blocked=$false; risk=[string]$danger.risk; reason=[string]$danger.reason; authorization=$auth; exempt='autopilot-coordinator' }
+  }
   return [pscustomobject]@{ blocked=$true; risk=[string]$danger.risk; reason=[string]$danger.reason; authorization=$auth; exempt='' }
 }
