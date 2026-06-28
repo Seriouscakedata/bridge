@@ -9,6 +9,7 @@ function Get-ProjectAutopilotConfig {
     diffusionMode = 'off'
     diffusionMinIndependentAtoms = 2
     diffusionMaxWaveSize = 6
+    decomposeAheadLimit = 1
   }
   $dotted = @{
     'projectAutopilot.enabled' = 'enabled'
@@ -18,6 +19,7 @@ function Get-ProjectAutopilotConfig {
     'projectAutopilot.diffusionMode' = 'diffusionMode'
     'projectAutopilot.diffusionMinIndependentAtoms' = 'diffusionMinIndependentAtoms'
     'projectAutopilot.diffusionMaxWaveSize' = 'diffusionMaxWaveSize'
+    'projectAutopilot.decomposeAheadLimit' = 'decomposeAheadLimit'
   }
   $flat = @{
     projectAutopilotEnabled = 'enabled'
@@ -27,6 +29,7 @@ function Get-ProjectAutopilotConfig {
     projectAutopilotDiffusionMode = 'diffusionMode'
     projectAutopilotDiffusionMinIndependentAtoms = 'diffusionMinIndependentAtoms'
     projectAutopilotDiffusionMaxWaveSize = 'diffusionMaxWaveSize'
+    projectAutopilotDecomposeAheadLimit = 'decomposeAheadLimit'
   }
   try {
     if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
@@ -59,6 +62,7 @@ function Get-ProjectAutopilotConfig {
   if ($cfg.diffusionMode -notin @('off','shadow','diffusion')) { $cfg.diffusionMode = 'off' }
   $cfg.diffusionMinIndependentAtoms = ConvertTo-BacklogPackInt -Value $cfg.diffusionMinIndependentAtoms -Default 2 -Min 1 -Max 50
   $cfg.diffusionMaxWaveSize = ConvertTo-BacklogPackInt -Value $cfg.diffusionMaxWaveSize -Default 6 -Min 1 -Max 50
+  $cfg.decomposeAheadLimit = ConvertTo-BacklogPackInt -Value $cfg.decomposeAheadLimit -Default 1 -Min 1 -Max 8
   return [pscustomobject]$cfg
 }
 
@@ -1856,7 +1860,45 @@ function Start-ProjectAutopilotIfNeeded {
   } catch {}
 
   $pressure = Get-ProjectAutopilotBacklogPressure
-  if ([int]$pressure.runnable -gt 0) { return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure } }
+  # 2026-06-28 diffusion P2 (limited cross-chapter, flag-gated): normally the autopilot waits for the
+  # current chapter's atoms to finish (runnable=0) before decomposing the next chapter, so only one
+  # chapter's atoms are ever approved at once and the executor never batches across chapters. With
+  # config projectAutopilot.decomposeAheadLimit > 1, allow decomposing the NEXT chapter ahead while the
+  # current chapter's atoms are still runnable, bounded by the number of distinct chapters with pending
+  # atoms, and never the LAST plan chapter (final/integration chapter typically depends on everything).
+  # The executor frontier then batches disjoint touch-set atoms across the in-flight chapters in parallel.
+  # Default limit 1 = today's strict one-chapter-at-a-time (no behavior change).
+  $decomposeAheadLimit = 1
+  try { $cfgDA = Get-ProjectAutopilotConfig; if ($cfgDA.PSObject.Properties.Name -contains 'decomposeAheadLimit') { $decomposeAheadLimit = [int]$cfgDA.decomposeAheadLimit } } catch {}
+  if ([int]$pressure.runnable -gt 0) {
+    $aheadOk = $false
+    if ($decomposeAheadLimit -gt 1) {
+      try {
+        $cfSet = @{}; $allCh = @{}
+        foreach ($bi in @(Get-Backlog)) {
+          if ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+          $chx = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'chapter' -Default '')).Trim()
+          if ([string]::IsNullOrWhiteSpace($chx)) { continue }
+          $allCh[$chx] = $true
+          $stx = [string](Get-BacklogPackObjectValue -Obj $bi -Name 'status' -Default '')
+          if ($stx -notin @('done','rejected','auto-dropped','held')) { $cfSet[$chx] = $true }
+        }
+        $chaptersInFlight = @($cfSet.Keys).Count
+        $decomposedCount = @($allCh.Keys).Count
+        $totalCh = 0
+        $planP = Join-Path $root 'PROJECT_PLAN.md'
+        if (Test-Path -LiteralPath $planP) {
+          $ptxt = [System.IO.File]::ReadAllText($planP, [System.Text.Encoding]::UTF8)
+          $totalCh = ([regex]::Matches($ptxt, '(?m)^##\s+\S+\s+(\d+)\s*[—–:\-]')).Count
+        }
+        if ($chaptersInFlight -lt $decomposeAheadLimit -and $totalCh -gt 0 -and ($decomposedCount + 1) -lt $totalCh) { $aheadOk = $true }
+      } catch { $aheadOk = $false }
+    }
+    if (-not $aheadOk) {
+      return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure }
+    }
+    try { Add-Message -From system -Text ("🧩 Diffusion decompose-ahead: декомпозирую следующую главу параллельно текущей (cross-chapter, limit=$decomposeAheadLimit).") -Kind event | Out-Null } catch {}
+  }
   if ([int]$pressure.autopilot_open -gt 0) { return [pscustomobject]@{ queued=$false; reason='autopilot-already-open'; pressure=$pressure } }
 
   $last = Read-ProjectAutopilotState
