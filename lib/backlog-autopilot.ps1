@@ -2571,26 +2571,6 @@ function Test-ShouldBackgroundDecompose {
     } catch {}
     if ([string]::IsNullOrWhiteSpace($projectRoot)) { $result.reason = 'not-project-channel'; return $result }
 
-    # Total approved chapters from the durable plan (centralized tolerant parser, defect #5).
-    $totalCh = Get-ProjectAutopilotPlanChapterCount -ProjectRoot $projectRoot
-    $result.total_chapters = $totalCh
-    if ($totalCh -le 0) {
-      # Loud-log defect #5, but ONCE per channel per driver session (not every idle tick) and ONLY when a
-      # PROJECT_PLAN.md actually exists but parsed to 0 chapters (a real header-format problem). Channels
-      # with no plan file (e.g. bridge-self 'main') stay silent — they legitimately have nothing to plan,
-      # and an unthrottled log spams driver.out.log every ~10s for every such channel.
-      try {
-        if (Test-Path -LiteralPath (Join-Path $projectRoot 'PROJECT_PLAN.md') -PathType Leaf) {
-          if ($null -eq $script:BgDecomposeNoPlanWarned) { $script:BgDecomposeNoPlanWarned = @{} }
-          if (-not $script:BgDecomposeNoPlanWarned.ContainsKey($Channel)) {
-            $script:BgDecomposeNoPlanWarned[$Channel] = $true
-            Add-Content -LiteralPath (Join-Path (Get-BridgeRoot) 'driver.out.log') -Value ((Get-Date).ToString('s') + " background-decompose: decomposeAheadLimit=$limit but PROJECT_PLAN.md yielded 0 chapters (unrecognized '## N' header format?) channel=$Channel root=$projectRoot") -Encoding UTF8
-          }
-        }
-      } catch {}
-      $result.reason = 'no-plan-chapters'; return $result
-    }
-
     # Walk this channel's project-autopilot atoms once: decomposed chapters + in-flight + runnable.
     $decomposedSet = New-Object System.Collections.Generic.HashSet[string]
     $inFlightSet   = New-Object System.Collections.Generic.HashSet[string]
@@ -2613,10 +2593,31 @@ function Test-ShouldBackgroundDecompose {
     $result.chapters_in_flight = $inFlightSet.Count
     $result.runnable = $runnable
 
-    # Gate the decision:
-    #  - only pre-plan while there is current work executing (overlap planning with execution);
-    #    if the channel is idle-empty, the normal foreground coordinator handles it (nothing to block).
+    # Decompose-ahead only makes sense while THIS channel is actively executing (has runnable work). A
+    # dormant channel (runnable=0) returns here SILENTLY — this also keeps the plan-format warning below
+    # from firing every idle tick for every idle project channel (the warning is reached only by an
+    # actively-building channel, where an unparseable plan is a real, worth-knowing problem).
     if ($runnable -le 0) { $result.reason = 'no-runnable-atoms'; return $result }
+
+    # Total approved chapters from the durable plan (centralized tolerant parser, defect #5).
+    $totalCh = Get-ProjectAutopilotPlanChapterCount -ProjectRoot $projectRoot
+    $result.total_chapters = $totalCh
+    if ($totalCh -le 0) {
+      # Reached only by an actively-executing channel whose PROJECT_PLAN.md exists but parsed to 0 chapters
+      # (a real header-format problem). Throttled once per channel per driver session.
+      try {
+        if (Test-Path -LiteralPath (Join-Path $projectRoot 'PROJECT_PLAN.md') -PathType Leaf) {
+          if ($null -eq $script:BgDecomposeNoPlanWarned) { $script:BgDecomposeNoPlanWarned = @{} }
+          if (-not $script:BgDecomposeNoPlanWarned.ContainsKey($Channel)) {
+            $script:BgDecomposeNoPlanWarned[$Channel] = $true
+            Add-Content -LiteralPath (Join-Path (Get-BridgeRoot) 'driver.out.log') -Value ((Get-Date).ToString('s') + " background-decompose: decomposeAheadLimit=$limit but PROJECT_PLAN.md yielded 0 chapters (unrecognized '## N' header format?) channel=$Channel root=$projectRoot") -Encoding UTF8
+          }
+        }
+      } catch {}
+      $result.reason = 'no-plan-chapters'; return $result
+    }
+
+    # Gate the decision:
     #  - bound how many chapters may be pending at once.
     if ($inFlightSet.Count -ge $limit) { $result.reason = 'in-flight-at-limit'; return $result }
     #  - there must still be an undecomposed chapter to plan.

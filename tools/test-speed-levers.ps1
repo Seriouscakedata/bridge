@@ -11,22 +11,26 @@ A ((Test-ProjectAutopilotAtomDocsOnly -Paths @('app/src/Main.kt','docs/x.md')) -
 A ((Test-ProjectAutopilotAtomDocsOnly -Paths @('app/build.gradle.kts')) -eq $false)      "kts => NOT docs-only"
 A ((Test-ProjectAutopilotAtomDocsOnly -Paths @()) -eq $false)                            "empty => NOT docs-only (conservative)"
 
-"== config defaults (must be OFF = default-safe) =="
-$c = Get-ProjectAutopilotConfig
-A ($c.skipBuildOnDocsOnly -eq $false) "skipBuildOnDocsOnly default false"
-A ($c.cleanFileOwnership -eq $false)  "cleanFileOwnership default false"
+"== code-level config default is OFF (the [ordered] literal, independent of operator settings overlay) =="
+# Read the source default directly so this test does not depend on whether the operator has enabled the
+# flag in the gitignored settings.json overlay.
+$src = Get-Content 'C:\Users\rafie\OneDrive\Documents\bridge\lib\backlog-autopilot.ps1' -Raw
+A ($src -match 'skipBuildOnDocsOnly\s*=\s*\$false') "skipBuildOnDocsOnly source default false"
+A ($src -match 'cleanFileOwnership\s*=\s*\$false')  "cleanFileOwnership source default false"
 
-"== cleanFileOwnership repair: flag OFF (default) leaves partial-overlap atoms UNCHANGED =="
 $mk = { @(
   [pscustomobject]@{ slug='login-screen';    files=@('app/ui/MainUiState.kt','app/ui/LoginScreen.kt') },
   [pscustomobject]@{ slug='home-screen';     files=@('app/ui/MainUiState.kt','app/ui/HomeScreen.kt') },
   [pscustomobject]@{ slug='settings-screen'; files=@('app/ui/MainUiState.kt','app/ui/SettingsScreen.kt') }
 ) }
+
+"== cleanFileOwnership repair: flag OFF (stub) leaves partial-overlap atoms UNCHANGED =="
+function Get-ProjectAutopilotConfig { [pscustomobject]@{ cleanFileOwnership = $false } }
 $off = Repair-ProjectAutopilotAtomFileOwnership -Tasks (& $mk)
 $offLogin = $off | Where-Object { $_.slug -eq 'login-screen' }
 A (@($offLogin.files).Count -eq 2) "flag OFF: god-file NOT stripped (2 files kept)"
 
-"== cleanFileOwnership repair: flag ON strips the shared god-file, keeps each atom's own file =="
+"== cleanFileOwnership repair: flag ON (stub) strips the shared god-file, keeps each atom's own file =="
 function Get-ProjectAutopilotConfig { [pscustomobject]@{ cleanFileOwnership = $true } }
 $on = Repair-ProjectAutopilotAtomFileOwnership -Tasks (& $mk)
 foreach($a in $on){ "    $($a.slug): [$(@($a.files) -join ', ')]" }
