@@ -1002,7 +1002,21 @@ function Cleanup-WorkerWorktree {
 
   $git = Get-GitExe
   try { & $git -C (Get-ParallelRepoRoot) worktree remove --force $path 2>&1 | Out-Null } catch {}
-  if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $path) {
+    # 2026-06-28: OneDrive holds read-only/sync locks on worktree files, so the plain Remove-Item
+    # silently failed (SilentlyContinue) and ~200 orphan worktrees accumulated — the OneDrive git-I/O
+    # speed ceiling. Clear attributes + retry so cleanup actually succeeds on every exit path.
+    try { Get-ChildItem -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} } } catch {}
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $path) { Start-Sleep -Milliseconds 150; Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  # Drop the now-empty <taskHash> parent dir so empty parents don't pile up either.
+  try {
+    $parentDir = Split-Path -Parent $path
+    if ($parentDir -and $parentDir.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) -and ($parentDir.TrimEnd('\') -ne $root) -and (Test-Path -LiteralPath $parentDir) -and (@(Get-ChildItem -LiteralPath $parentDir -Force -ErrorAction SilentlyContinue)).Count -eq 0) {
+      Remove-Item -LiteralPath $parentDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  } catch {}
   # L2 (load audit): also reap this worker's job files (worker_<sid>_*.{in,msg,out,err}.txt).
   # Invoke-ParallelDispatch leaked them (only Invoke-CodexParallel cleaned up) -- 4 files/spawn x
   # respawns x 100s of tasks bloated jobs/parallel and inflated the jobs-weighted adaptive probe
