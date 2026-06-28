@@ -2285,6 +2285,22 @@ function Add-ParallelDispatchIncompleteWorkersToQuarantine {
   }
 }
 
+function Get-ParallelCrossStreamClaimedCollisions {
+  # Zero-conflict enforcement helper: return the subset of $AllowedPaths (a stream's actual changed files)
+  # that were ALREADY claimed (delivered) by an EARLIER collected stream this wave. A non-empty result
+  # means two streams target the same bridge-root file -> the second must be quarantined (serial-retry)
+  # so the file-copy collect never silently last-write-wins. Paths normalized (lowercase, forward-slash).
+  param([object[]]$AllowedPaths, $ClaimedPaths)
+  $hits = New-Object 'System.Collections.Generic.List[string]'
+  if (-not $ClaimedPaths) { return @($hits.ToArray()) }
+  foreach ($rel in @($AllowedPaths)) {
+    $n = ([string]$rel).Trim().ToLowerInvariant() -replace '\\','/'
+    if ([string]::IsNullOrWhiteSpace($n)) { continue }
+    if ($ClaimedPaths.Contains($n)) { [void]$hits.Add([string]$rel) }
+  }
+  return @($hits.ToArray())
+}
+
 function Collect-ParallelDispatchWorkerOutput {
   param(
     [hashtable]$Context,
@@ -2408,6 +2424,24 @@ function Collect-ParallelDispatchWorkerOutput {
       return
     }
 
+    # 2026-06-28 (zero-conflict enforcement): cross-stream actual-path guard. The collect path copies whole
+    # files into the bridge root with last-write-wins and never cross-checks one collected stream's ACTUAL
+    # changed files against another's. If two streams in the SAME wave really changed the same file (a
+    # touch-set mis-declaration the frontier could not see, the dir-prefix allow rule, or eager-collect
+    # ordering), the second copy would SILENTLY overwrite the first. Quarantine any stream whose actual
+    # changed file was already delivered by an earlier collected stream this wave; it re-runs serially on
+    # top of the landed change. Makes wide waves conflict-free by ENFORCEMENT, not by frontier assumption.
+    # (deliveredPaths is reset per-stream in eager mode, so a dedicated wave-persistent claim set is used.)
+    if (-not $Context.ContainsKey('claimedPaths') -or $null -eq $Context.claimedPaths) {
+      $Context.claimedPaths = New-Object 'System.Collections.Generic.List[string]'
+    }
+    $crossClaimed = @(Get-ParallelCrossStreamClaimedCollisions -AllowedPaths $allowedPaths -ClaimedPaths $Context.claimedPaths)
+    if ($crossClaimed.Count -gt 0) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+      try { Add-Message -From system -Text ("Quarantine stream " + $Worker.id + ": cross-stream conflict - file(s) already delivered by another stream this wave: " + ($crossClaimed -join ', ') + " - will serial-retry") -Kind event | Out-Null } catch {}
+      return
+    }
+
     $copiedHere = 0
     $actuallyDelivered = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rel in $allowedPaths) {
@@ -2424,6 +2458,10 @@ function Collect-ParallelDispatchWorkerOutput {
       if ($gitDiffOut.Count -gt 0) {
         [void]$actuallyDelivered.Add($rel)
         [void]$Context.deliveredPaths.Add($rel)
+        # wave-persistent claim (not reset in eager mode) so the cross-stream guard above sees every
+        # path delivered earlier this wave by ANY stream (eager or final collect).
+        if (-not $Context.ContainsKey('claimedPaths') -or $null -eq $Context.claimedPaths) { $Context.claimedPaths = New-Object 'System.Collections.Generic.List[string]' }
+        [void]$Context.claimedPaths.Add((([string]$rel).Trim().ToLowerInvariant() -replace '\\','/'))
       }
     }
 
