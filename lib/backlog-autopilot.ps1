@@ -1981,6 +1981,22 @@ function Start-ProjectAutopilotIfNeeded {
     return [pscustomobject]@{ queued=$false; reason='project-dirty-or-git-unavailable'; pressure=$pressure }
   }
 
+  # 2026-06-28 (upfront-speed #2): retire the redundant FOREGROUND coordinator whenever decompose-ahead is
+  # ON (decomposeAheadLimit > 1). A foreground coordinator is CLAIMED into the channel's single driver slot
+  # and runs a ~10-25 min LLM decompose turn; while it runs, the driver takes the active-task branch
+  # (driver/81-loop-idle-claim.ps1:1958) and NEVER reaches the atom-batch claim (81:704). So already-packed,
+  # ready atoms sit at status=approved/running=0 and the parallel build cannot start -- observed live on
+  # selfie-styler: 8 atoms workpack_id-ready (fix#1) but blocked 14+ min behind a foreground coordinator.
+  # With decompose-ahead enabled, the DETACHED background worker (Test-ShouldBackgroundDecompose, which now
+  # has a cold-start carve-out) is the SOLE decomposer and plans every chapter OFF the critical slot, so the
+  # slot is only ever used to EXECUTE atoms -> ready atoms dispatch the instant they are packed. When the
+  # flag is <=1 (default), this returns false and the foreground remains the sole decomposer (unchanged).
+  $decomposeAheadLimit = 1
+  try { $decomposeAheadLimit = [int]$cfg.decomposeAheadLimit } catch { $decomposeAheadLimit = 1 }
+  if ($decomposeAheadLimit -gt 1) {
+    return [pscustomobject]@{ queued=$false; reason='decompose-ahead-owns-decomposition'; pressure=$pressure }
+  }
+
   $task = New-ProjectAutopilotCoordinatorTaskText -Slug $slug -ProjectRoot $root -MaxTasks ([int]$cfg.maxTasksPerBatch) -DiffusionMode ([string]$cfg.diffusionMode) -DiffusionMinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -DiffusionMaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
   $id = Add-Idea -Text $task -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'approved' -Severity 'critical' -Project $slug -Scope 'project' -SkipCurator
   if ([string]::IsNullOrWhiteSpace([string]$id)) { return [pscustomobject]@{ queued=$false; reason='add-idea-failed'; pressure=$pressure } }
@@ -2598,7 +2614,15 @@ function Test-ShouldBackgroundDecompose {
     # dormant channel (runnable=0) returns here SILENTLY — this also keeps the plan-format warning below
     # from firing every idle tick for every idle project channel (the warning is reached only by an
     # actively-building channel, where an unparseable plan is a real, worth-knowing problem).
-    if ($runnable -le 0) { $result.reason = 'no-runnable-atoms'; return $result }
+    # 2026-06-28 (upfront-speed #2): cold-start bootstrap carve-out. Decompose-ahead normally only fires
+    # while the channel has runnable work to overlap. BUT once the foreground coordinator is retired
+    # (decomposeAheadLimit>1, see Start-ProjectAutopilotIfNeeded), the background worker is the SOLE
+    # decomposer, so it MUST also fire at true cold start or chapter 1 never gets planned (deadlock). Carve
+    # out ONLY the genuine cold start -- nothing decomposed yet (decomposedSet empty). A dormant/finished
+    # channel (atoms exist, none runnable) still returns silently as before, so idle channels don't spin up
+    # workers. The chapter-count / in-flight-limit / all-decomposed / singleton gates below still apply, so a
+    # no-plan or already-running channel still returns safely without spawning.
+    if ($runnable -le 0 -and $decomposedSet.Count -gt 0) { $result.reason = 'no-runnable-atoms'; return $result }
 
     # Total approved chapters from the durable plan (centralized tolerant parser, defect #5).
     $totalCh = Get-ProjectAutopilotPlanChapterCount -ProjectRoot $projectRoot
