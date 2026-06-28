@@ -2372,6 +2372,159 @@ function Repair-ProjectAutopilotAtomFileOwnership {
   return $tArr
 }
 
+# ── Background decompose-ahead (concurrent planning) ────────────────────────────
+# Problem this solves: the project coordinator (decomposition) and the executor
+# share ONE channel slot. A foreground coordinator turn blocks execution for ~15 min
+# every time the next chapter needs planning, so already-planned atoms sit idle. The
+# fix is to run the NEXT chapter's decomposition OUT-OF-BAND in a detached worker
+# (tools/decompose-worker.ps1) while the main loop keeps claiming + executing the
+# current chapter's atoms. Flag-gated by projectAutopilot.decomposeAheadLimit
+# (default 1 = OFF; the foreground path is unchanged when the flag is at its default).
+
+function Get-BackgroundDecomposeLockPath {
+  param([string]$Channel)
+  $chDir = Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel
+  return (Join-Path $chDir '.decompose-worker.lock')
+}
+
+function Test-BackgroundDecomposeRunning {
+  param([string]$Channel)
+  $lock = Get-BackgroundDecomposeLockPath -Channel $Channel
+  if (-not (Test-Path -LiteralPath $lock)) { return $false }
+  try {
+    $data = ((Get-Content -LiteralPath $lock -Raw -Encoding UTF8) | Out-String).Trim()
+    $parts = @($data -split '\|')
+    $lpid = 0
+    if ($parts.Count -gt 0) { [int]::TryParse([string]$parts[0], [ref]$lpid) | Out-Null }
+    if ($lpid -gt 0) {
+      $p = Get-Process -Id $lpid -ErrorAction SilentlyContinue
+      if ($p) {
+        $ageMin = 999
+        try { $ageMin = ((Get-Date) - (Get-Item -LiteralPath $lock).LastWriteTime).TotalMinutes } catch {}
+        if ($ageMin -lt 30) { return $true }   # live + fresh => a worker is genuinely running
+      }
+    }
+  } catch {}
+  # stale (dead pid, unreadable, or older than the 25-min worker cap) -> clear it
+  try { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue } catch {}
+  return $false
+}
+
+function Start-BackgroundProjectDecompose {
+  param([string]$Channel)
+  if ([string]::IsNullOrWhiteSpace($Channel)) { return [pscustomobject]@{ started=$false; reason='no-channel' } }
+  if (Test-BackgroundDecomposeRunning -Channel $Channel) { return [pscustomobject]@{ started=$false; reason='already-running' } }
+  $root = Get-BridgeRoot
+  $worker = Join-Path $root 'tools\decompose-worker.ps1'
+  if (-not (Test-Path -LiteralPath $worker)) { return [pscustomobject]@{ started=$false; reason='worker-missing' } }
+  try {
+    $p = Start-Process -FilePath 'powershell.exe' `
+      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$worker,'-Channel',$Channel) `
+      -WindowStyle Hidden -PassThru
+    $lock = Get-BackgroundDecomposeLockPath -Channel $Channel
+    $lockDir = Split-Path -Parent $lock
+    if (-not (Test-Path -LiteralPath $lockDir)) { New-Item -ItemType Directory -Force -Path $lockDir | Out-Null }
+    Set-Content -LiteralPath $lock -Value ("{0}|{1}" -f $p.Id, ((Get-Date).ToUniversalTime().ToString('o'))) -Encoding ASCII
+    return [pscustomobject]@{ started=$true; pid=$p.Id }
+  } catch {
+    return [pscustomobject]@{ started=$false; reason=('spawn-error: ' + $_.Exception.Message) }
+  }
+}
+
+function Test-ShouldBackgroundDecompose {
+  param([string]$Channel)
+  $result = [pscustomobject]@{
+    should = $false; reason = ''; limit = 1; runnable = 0
+    chapters_in_flight = 0; decomposed = 0; total_chapters = 0
+  }
+  try {
+    $cfg = Get-ProjectAutopilotConfig
+    $limit = 1
+    try { $limit = [int]$cfg.decomposeAheadLimit } catch { $limit = 1 }
+    if ($limit -lt 1) { $limit = 1 }
+    $result.limit = $limit
+    if ($limit -le 1) { $result.reason = 'flag-off'; return $result }
+
+    # Must be a bound project channel.
+    $projectRoot = ''
+    try {
+      $binding = Get-ChannelProjectBinding -Slug $Channel
+      if ($binding -and [bool](Get-BacklogPackObjectValue -Obj $binding -Name 'ok' -Default $false)) {
+        $projectRoot = [string](Get-BacklogPackObjectValue -Obj $binding -Name 'project_root' -Default '')
+      }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($projectRoot)) { $result.reason = 'not-project-channel'; return $result }
+
+    # Total approved chapters from the durable plan.
+    $totalCh = 0
+    try {
+      $planFile = Join-Path $projectRoot 'PROJECT_PLAN.md'
+      if (Test-Path -LiteralPath $planFile -PathType Leaf) {
+        $planTxt = [System.IO.File]::ReadAllText($planFile, [System.Text.Encoding]::UTF8)
+        $totalCh = ([regex]::Matches($planTxt, '(?m)^##\s+\S+\s+(\d+)\s*[—–:\-]\s*(.+?)\s*$')).Count
+      }
+    } catch {}
+    $result.total_chapters = $totalCh
+    if ($totalCh -le 0) { $result.reason = 'no-plan-chapters'; return $result }
+
+    # Walk this channel's project-autopilot atoms once: decomposed chapters + in-flight + runnable.
+    $decomposedSet = New-Object System.Collections.Generic.HashSet[string]
+    $inFlightSet   = New-Object System.Collections.Generic.HashSet[string]
+    $runnable = 0
+    $terminal = @('done','failed','rejected','dropped','archived','duplicate','cancelled','canceled')
+    try {
+      foreach ($bi in @(Get-Backlog)) {
+        if ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+        $chp = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'chapter' -Default '')).Trim()
+        $st  = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'status' -Default '')).Trim().ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($chp)) { [void]$decomposedSet.Add($chp) }
+        if ($terminal -notcontains $st) {
+          if (-not [string]::IsNullOrWhiteSpace($chp)) { [void]$inFlightSet.Add($chp) }
+          if ($st -eq 'approved' -or $st -eq 'working') { $runnable++ }
+        }
+      }
+    } catch {}
+    $result.decomposed = $decomposedSet.Count
+    $result.chapters_in_flight = $inFlightSet.Count
+    $result.runnable = $runnable
+
+    # Gate the decision:
+    #  - only pre-plan while there is current work executing (overlap planning with execution);
+    #    if the channel is idle-empty, the normal foreground coordinator handles it (nothing to block).
+    if ($runnable -le 0) { $result.reason = 'no-runnable-atoms'; return $result }
+    #  - bound how many chapters may be pending at once.
+    if ($inFlightSet.Count -ge $limit) { $result.reason = 'in-flight-at-limit'; return $result }
+    #  - there must still be an undecomposed chapter to plan.
+    if ($decomposedSet.Count -ge $totalCh) { $result.reason = 'all-chapters-decomposed'; return $result }
+    #  - singleton.
+    if (Test-BackgroundDecomposeRunning -Channel $Channel) { $result.reason = 'already-running'; return $result }
+
+    $result.should = $true
+    $result.reason = 'ok'
+    return $result
+  } catch {
+    $result.reason = ('error: ' + $_.Exception.Message)
+    return $result
+  }
+}
+
+function Invoke-BackgroundDecomposeAheadIfNeeded {
+  param([string]$Channel)
+  $decision = Test-ShouldBackgroundDecompose -Channel $Channel
+  if (-not $decision.should) { return $decision }
+  $spawn = Start-BackgroundProjectDecompose -Channel $Channel
+  if ($spawn.started) {
+    try {
+      Add-Message -From system -Text ("Background planner: pre-decomposing the next chapter for '" + $Channel + "' (in-flight " + [int]$decision.chapters_in_flight + "/" + [int]$decision.limit + ", decomposed " + [int]$decision.decomposed + "/" + [int]$decision.total_chapters + ") while execution continues.") -Kind event | Out-Null
+    } catch {}
+    try {
+      Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='background-decompose-spawned'; channel=$Channel; pid=$spawn.pid; in_flight=[int]$decision.chapters_in_flight; limit=[int]$decision.limit; decomposed=[int]$decision.decomposed; total=[int]$decision.total_chapters }) | Out-Null
+    } catch {}
+  }
+  $decision | Add-Member -NotePropertyName spawn -NotePropertyValue $spawn -Force
+  return $decision
+}
+
 function Add-ProjectBacklogFromMarker {
   param(
     [string]$Block,

@@ -692,6 +692,15 @@ $script:DriverLoopIdleClaimBlock = {
           }
         } catch {}
       }
+      # Background decompose-ahead (concurrent planning): when enabled
+      # (projectAutopilot.decomposeAheadLimit > 1), pre-decompose the NEXT chapter in a
+      # detached read-only worker WHILE this loop keeps executing the current chapter's atoms,
+      # so planning no longer blocks already-planned work. The helper is fully self-gating
+      # (flag default 1 = OFF; spawns only with current runnable work, a chapter still to plan,
+      # and no worker already running), so this call is a no-op under default config.
+      if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady) -and (Get-Command Invoke-BackgroundDecomposeAheadIfNeeded -ErrorAction SilentlyContinue)) {
+        try { Invoke-BackgroundDecomposeAheadIfNeeded -Channel $Channel | Out-Null } catch {}
+      }
       if ((-not $auditBusyForAutonomy) -and (Test-AutonomyReady)) {
         # Workpack execution layer: before claiming a single backlog item, try to claim a small
         # batch of already-approved, non-conflicting workpack items. The batch still enters the
