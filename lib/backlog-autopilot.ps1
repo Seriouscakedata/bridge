@@ -2494,9 +2494,19 @@ function Test-ShouldBackgroundDecompose {
     $totalCh = Get-ProjectAutopilotPlanChapterCount -ProjectRoot $projectRoot
     $result.total_chapters = $totalCh
     if ($totalCh -le 0) {
-      # Loud-log: a header format the parser does not recognize would otherwise SILENTLY disable
-      # decompose-ahead while the operator believes it is active (defect #5).
-      try { Add-Content -LiteralPath (Join-Path (Get-BridgeRoot) 'driver.out.log') -Value ((Get-Date).ToString('s') + " background-decompose: decomposeAheadLimit=$limit but PROJECT_PLAN.md yielded 0 chapters (unrecognized '## N' header format?) channel=$Channel root=$projectRoot") -Encoding UTF8 } catch {}
+      # Loud-log defect #5, but ONCE per channel per driver session (not every idle tick) and ONLY when a
+      # PROJECT_PLAN.md actually exists but parsed to 0 chapters (a real header-format problem). Channels
+      # with no plan file (e.g. bridge-self 'main') stay silent — they legitimately have nothing to plan,
+      # and an unthrottled log spams driver.out.log every ~10s for every such channel.
+      try {
+        if (Test-Path -LiteralPath (Join-Path $projectRoot 'PROJECT_PLAN.md') -PathType Leaf) {
+          if ($null -eq $script:BgDecomposeNoPlanWarned) { $script:BgDecomposeNoPlanWarned = @{} }
+          if (-not $script:BgDecomposeNoPlanWarned.ContainsKey($Channel)) {
+            $script:BgDecomposeNoPlanWarned[$Channel] = $true
+            Add-Content -LiteralPath (Join-Path (Get-BridgeRoot) 'driver.out.log') -Value ((Get-Date).ToString('s') + " background-decompose: decomposeAheadLimit=$limit but PROJECT_PLAN.md yielded 0 chapters (unrecognized '## N' header format?) channel=$Channel root=$projectRoot") -Encoding UTF8
+          }
+        }
+      } catch {}
       $result.reason = 'no-plan-chapters'; return $result
     }
 
