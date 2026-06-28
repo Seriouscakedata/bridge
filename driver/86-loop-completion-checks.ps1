@@ -1720,7 +1720,21 @@ $script:DriverLoopCompletionInitialChecksBlock = {
       $noopEvidenceChecked = $false
     }
     try {
-      $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?im)^\s*\[project-autopilot\b'))
+      # 2026-06-28 (root fix — done-gate recycle): the driver wraps autotasks with a "[Автозадача из
+      # бэклога] " prefix, so the old ^\s*\[project-autopilot regex no longer matched the wrapped
+      # coordinator text -> the planner exemption failed -> the project-autopilot COORDINATOR (which only
+      # EMITS [[PROJECT_BACKLOG]] atoms, never a code commit) was rejected by the action-evidence guard
+      # (missing_action_evidence) -> DONE-gate recycle loop holding the channel slot, so its decomposed
+      # atoms never built. Detect the coordinator by its canonical signature (prefix-independent). ATOM
+      # tasks do NOT carry this signature, so atoms still require real code evidence to close.
+      $noopProjectAutopilot = $false
+      try {
+        if (Get-Command Test-ProjectAutopilotCoordinatorText -ErrorAction SilentlyContinue) {
+          $noopProjectAutopilot = [bool](Test-ProjectAutopilotCoordinatorText -Text $noopTask)
+        } else {
+          $noopProjectAutopilot = [bool]([regex]::IsMatch($noopTask, '(?is)Project Autopilot coordinator for channel'))
+        }
+      } catch {}
       $noopDecision = Get-TaskDoneEvidenceDecision -HasBacklogId $noopHasBacklogId -ProjectAutopilot $noopProjectAutopilot -ProjectBacklogCreated ([int]$projectBacklogCreated) -EvidenceChecked $noopEvidenceChecked -HasEvidence $noopHasEvidence -HasCoveredVerifiedEvidence $noopHasCoveredVerifiedEvidence -HasDoneQaPassCommit $noopHasDoneQaPassCommit
       $noopAllowDone = [bool]$noopDecision.allow
       $noopRejectReason = [string]$noopDecision.reason
