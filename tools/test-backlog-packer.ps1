@@ -375,6 +375,12 @@ try {
   Assert-True ([string]$externalItem[0].scope -eq 'project') 'external project item scope changed'
   Assert-True ([string]$externalItem[0].project -eq 'external-project') 'external project item project slug changed'
   Assert-True (-not (@($externalItem[0].tags) -contains 'bridge-self')) 'external project item got bridge-self tag'
+  # 2026-06-28 (upfront-speed #1): a PROJECT atom must get its workpack_id IMMEDIATELY at emit time, because
+  # Add-ProjectBacklogFromMarker now runs the cooldown-free packer for project channels. Without workpack_id the
+  # parallel frontier rejects the atom ('missing-workpack') and it can only be claimed one-at-a-time until the
+  # delayed packer fires up to backlogPack.cooldownMinutes (30m) later — the upfront stall this lever removes.
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$externalItem[0].workpack_id)) 'external project atom did not get an immediate workpack_id at emit time (upfront-speed #1 regressed)'
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$externalItem[0].workpack_root_cause_key)) 'external project atom did not get a workpack_root_cause_key at emit time'
   $script:EffectiveChannel = 'main'
 
   Write-Host ('OK backlog packer: packed {0} items into {1} workpacks; marker and forbidden touch-set tests passed' -f [int]$run.packed_items, [int]$run.workpack_count)

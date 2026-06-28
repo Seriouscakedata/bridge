@@ -2801,7 +2801,24 @@ function Add-ProjectBacklogFromMarker {
     try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='project-backlog-add'; channel=$Channel; item_id=[string]$id; slug=$slug; source=$Source }) } catch {}
   }
 
-  try { Request-BacklogPackIfNeeded | Out-Null } catch {}
+  # 2026-06-28 (upfront-speed #1): pack the freshly-emitted PROJECT atoms IMMEDIATELY instead of waiting
+  # up to backlogPack.cooldownMinutes (30m) for Invoke-BacklogPackerIfDue. Without a workpack_id an approved
+  # atom is NOT frontier-eligible (Get-BacklogWorkpackExecEligibility -> 'missing-workpack', backlog-workpack.ps1:1729),
+  # so it can only be claimed one-at-a-time by the single-item path -> the parallel wave can't form until the
+  # delayed packer fires. Invoke-BacklogPacker itself has NO cooldown (the cooldown lives only in ...IfDue),
+  # reuses the exact same battle-tested file:<path> grouping the delayed packer would apply, and is idempotent
+  # (already-packed items are skipped), so this changes only TIMING, not grouping — the proven 4-wide build
+  # behaviour is preserved, just reached ~30m sooner. Scoped to project channels (not bridge-self/main) to keep
+  # the blast radius on the user's actual concern (project build start-up) and leave main dynamics unchanged.
+  if ($created.Count -gt 0 -and -not $isBridgeSelfBacklog) {
+    try {
+      $packCfg = Get-BacklogPackConfig
+      try { $packCfg.minItems = 1 } catch {}  # a single-atom chapter must still pack (default minItems=2)
+      Invoke-BacklogPacker -Reason @('project-autopilot-emit') -Config $packCfg | Out-Null
+    } catch { try { Request-BacklogPackIfNeeded | Out-Null } catch {} }
+  } else {
+    try { Request-BacklogPackIfNeeded | Out-Null } catch {}
+  }
   $chapterHint = ''
   try { $chapterHint = (@($createdChapters.ToArray() | Sort-Object -Unique) | Select-Object -First 1) -join ',' } catch {}
   try {
