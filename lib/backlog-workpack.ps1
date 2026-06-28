@@ -1558,33 +1558,26 @@ function Get-BacklogWorkpackItemEditTouches {
   param($Item)
   $scopeContract = Get-BacklogTaskScopeContract -Item $Item
   $touches = New-Object 'System.Collections.Generic.List[string]'
-  foreach ($prop in @('edit_touches','files')) {
+  # 2026-06-28 (speed lever #4 — frontier width): the over-listed 'files' array (which the LLM fills
+  # with files an atom only READS for context, not just its deliverable) used to WIN over the already
+  # narrowed 'workpack_touch_set' (the atom's own owned file). The frontier reads THIS touch-set to
+  # decide which atoms may run in parallel, so reading 'files' made independent atoms look like they
+  # collide and waves collapsed to ~1 atom (61/106 glass atoms had files>1 but workpack_touch_set==1).
+  # Prefer the narrowed touch_set over 'files'. NOTE: the control-plane gate is NOT loosened by this —
+  # Get-PolicyItemDeclaredEditTargets (policy.ps1:80) reads $Item.files DIRECTLY first. For touch_set
+  # props, only PATH-LIKE values count: the packer can stamp a COARSE conflict-group word
+  # ('general'/'llm'/'core') into workpack_touch_set (2026-06-12 W1b) which is NOT a file.
+  foreach ($prop in @('edit_touches','workpack_touch_set','touch_set','files')) {
+    $isTouchSetProp = ($prop -eq 'workpack_touch_set' -or $prop -eq 'touch_set')
     foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @())) {
       $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
       if ([string]::IsNullOrWhiteSpace($v)) { continue }
+      if ($isTouchSetProp -and ($v -notmatch '[./]')) { continue }
       if ((Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.forbidden_files) -or
           (Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.read_only_context)) { continue }
       if (-not $touches.Contains($v)) { [void]$touches.Add($v) }
     }
     if ($touches.Count -gt 0) { break }
-  }
-  if ($touches.Count -eq 0) {
-    foreach ($prop in @('touch_set','workpack_touch_set')) {
-      foreach ($t in @(Get-BacklogPackObjectValue -Obj $Item -Name $prop -Default @())) {
-        $v = ([string]$t).Trim().ToLowerInvariant() -replace '\\','/'
-        if ([string]::IsNullOrWhiteSpace($v)) { continue }
-        # 2026-06-12 W1b: the packer stamps the COARSE conflict group ('general', 'llm', 'core')
-        # into workpack_touch_set — a bare word, not a file. Treating it as a touch pre-empted
-        # the Files:-from-text parse below, so the batch [[PARALLEL]] blocks carried
-        # "Files: general" and every worker stream got quarantined as outside-touch (the wasted
-        # first wave, ~9 min). Only path-like values (a '/' or an extension dot) are touches.
-        if ($v -notmatch '[./]') { continue }
-        if ((Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.forbidden_files) -or
-            (Test-BacklogScopeContractForbidden -Path $v -Forbidden $scopeContract.read_only_context)) { continue }
-        if (-not $touches.Contains($v)) { [void]$touches.Add($v) }
-      }
-      if ($touches.Count -gt 0) { break }
-    }
   }
   if ($touches.Count -eq 0) {
     # 2026-06-11 W1 (width precondition): many atoms declare their files only as a "Files: a, b"
