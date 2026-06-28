@@ -251,6 +251,7 @@
                  },
     "parallel":  {
                      "enabled":  true,
+                     "preferLowEffortForSimple":  true,
                      "maxStreams":  20,
                      "claudeCoderModel":  "sonnet",
                      "drainingTimeoutSec":  30,
