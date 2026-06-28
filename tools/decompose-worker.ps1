@@ -42,6 +42,26 @@ function Remove-WorkerLock {
     if (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue }
   } catch {}
 }
+function Remove-WorkerTemp {
+  # Delete THIS run's prompt/msg/out/err files (problem-hunt defect #6: unbounded jobs\decompose growth +
+  # OneDrive sync churn). Script-scoped so it works from any exit path.
+  foreach ($f in @($script:inF, $script:msgF, $script:outF, $script:errF)) {
+    try { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } } catch {}
+  }
+}
+function Clear-OldWorkerTemp {
+  # Backstop retention: prune leftover prompt/msg/out/err files older than 2 days (e.g. from externally
+  # killed runs that skipped Remove-WorkerTemp), so the dir cannot grow without bound.
+  try {
+    $dir = Join-Path (Join-Path $repoRoot 'jobs\decompose') $Channel
+    if (Test-Path -LiteralPath $dir) {
+      $cut = (Get-Date).AddDays(-2)
+      Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+        Where-Object { ($_.Name -like 'prompt-*' -or $_.Name -like 'msg-*' -or $_.Name -like 'out-*' -or $_.Name -like 'err-*') -and $_.LastWriteTime -lt $cut } |
+        ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+  } catch {}
+}
 
 try {
   Write-WLog "START channel=$Channel pid=$PID"
@@ -105,11 +125,13 @@ try {
   # 5) IO files.
   $tmpBase = Join-Path $repoRoot ('jobs\decompose\' + $Channel)
   if (-not (Test-Path -LiteralPath $tmpBase)) { New-Item -ItemType Directory -Force -Path $tmpBase | Out-Null }
+  Clear-OldWorkerTemp
   $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-  $inF  = Join-Path $tmpBase "prompt-$stamp.txt"
-  $msgF = Join-Path $tmpBase "msg-$stamp.txt"
-  $outF = Join-Path $tmpBase "out-$stamp.txt"
-  $errF = Join-Path $tmpBase "err-$stamp.txt"
+  $script:inF  = Join-Path $tmpBase "prompt-$stamp.txt"
+  $script:msgF = Join-Path $tmpBase "msg-$stamp.txt"
+  $script:outF = Join-Path $tmpBase "out-$stamp.txt"
+  $script:errF = Join-Path $tmpBase "err-$stamp.txt"
+  $inF = $script:inF; $msgF = $script:msgF; $outF = $script:outF; $errF = $script:errF
   $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($inF, $prompt, $Utf8NoBom)
 
@@ -129,8 +151,12 @@ try {
   $timeoutMs = 1500000  # 25 min hard cap
   $exited = $proc.WaitForExit($timeoutMs)
   if (-not $exited) {
-    try { $proc.Kill() } catch {}
-    Write-WLog "TIMEOUT after ${timeoutMs}ms; killed codex pid=$($proc.Id)"
+    # Tree-kill (defect #3): bare $proc.Kill() can orphan the codex child + its grandchildren. Use
+    # taskkill /T /F like lib/parallel.ps1, then fall back to .Kill() if the process still lingers.
+    try { Start-Process -FilePath 'taskkill.exe' -ArgumentList @('/PID', [string]$proc.Id, '/T', '/F') -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
+    Write-WLog "TIMEOUT after ${timeoutMs}ms; tree-killed codex pid=$($proc.Id)"
+    Remove-WorkerTemp
     Remove-WorkerLock
     exit 2
   }
@@ -144,6 +170,7 @@ try {
   }
   if ([string]::IsNullOrWhiteSpace($reply)) {
     Write-WLog "ABORT empty codex reply"
+    Remove-WorkerTemp
     Remove-WorkerLock
     exit 3
   }
@@ -170,10 +197,12 @@ try {
     try { Add-Message -From system -Text ("Background planner: pre-decomposed next chapter -- added $created approved atom-task(s) for channel '$Channel' without blocking execution.") -Kind event | Out-Null } catch {}
   }
   Write-WLog "DONE channel=$Channel created=$created"
+  Remove-WorkerTemp
   Remove-WorkerLock
   exit 0
 } catch {
   Write-WLog ("FATAL " + $_.Exception.Message)
+  Remove-WorkerTemp
   Remove-WorkerLock
   exit 1
 }

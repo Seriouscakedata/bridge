@@ -1547,7 +1547,8 @@ function New-ProjectAutopilotCoordinatorTaskText {
           foreach ($biCP in @(Get-Backlog)) {
             if ([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'from' -Default '') -ne 'project-autopilot') { continue }
             $chpCP = ([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'chapter' -Default '')).Trim()
-            if (-not [string]::IsNullOrWhiteSpace($chpCP)) { [void]$doneChaptersCP.Add($chpCP) }
+            $chkCP = Get-ProjectAutopilotChapterKey -Chapter $chpCP
+            if (-not [string]::IsNullOrWhiteSpace($chkCP)) { [void]$doneChaptersCP.Add($chkCP) }
           }
         } catch {}
         $decCountCP = $doneChaptersCP.Count
@@ -1629,7 +1630,7 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
     "slug": "short-stable-atom-id",
     "title": "Human readable atom title",
     "task": "Full task text for the worker. Include project path, dependencies, acceptance checks, and commit requirement.",
-    "chapter": "approved chapter / project area",
+    "chapter": "Chapter <N> - <title>",
     "wave": "wave-1",
     "kind": "infra|feature|consolidation|planning",
     "parallel_group": "auth|gallery|chat|admin|docs|tests|...",
@@ -1648,7 +1649,7 @@ When you have the next atom batch, output it as STRICT JSON inside this exact ma
 ]
 [[/PROJECT_BACKLOG]]
 
-depends_on may be []; kind may be omitted and then defaults to feature; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. Incomplete atoms are rejected by the deterministic ingest gate.
+depends_on may be []; kind may be omitted and then defaults to feature; serial_reason may be "" for parallel atoms. acceptance/checks must be concrete, not generic "looks good". files must be the real touch-set / scheduler-allowed paths. workpack_touch_set and workpack_conflict_group are optional explicit scheduler metadata; omit them unless files alone would be ambiguous. Incomplete atoms are rejected by the deterministic ingest gate. IMPORTANT: every atom's "chapter" MUST begin with the plan chapter NUMBER it belongs to (the leading integer from the matching PROJECT_PLAN.md "## ... N ..." heading), e.g. "Chapter 7 - Hardware triggers". Decomposed-chapter progress is keyed on that ordinal, so a missing/inconsistent number makes the planner miscount and can skip or repeat a chapter.
 
 The driver will add those atoms to approved project backlog automatically. Do not use operator-delegate and do not edit backlog.jsonl manually.
 
@@ -1860,45 +1861,26 @@ function Start-ProjectAutopilotIfNeeded {
   } catch {}
 
   $pressure = Get-ProjectAutopilotBacklogPressure
-  # 2026-06-28 diffusion P2 (limited cross-chapter, flag-gated): normally the autopilot waits for the
-  # current chapter's atoms to finish (runnable=0) before decomposing the next chapter, so only one
-  # chapter's atoms are ever approved at once and the executor never batches across chapters. With
-  # config projectAutopilot.decomposeAheadLimit > 1, allow decomposing the NEXT chapter ahead while the
-  # current chapter's atoms are still runnable, bounded by the number of distinct chapters with pending
-  # atoms, and never the LAST plan chapter (final/integration chapter typically depends on everything).
-  # The executor frontier then batches disjoint touch-set atoms across the in-flight chapters in parallel.
-  # Default limit 1 = today's strict one-chapter-at-a-time (no behavior change).
-  $decomposeAheadLimit = 1
-  try { $cfgDA = Get-ProjectAutopilotConfig; if ($cfgDA.PSObject.Properties.Name -contains 'decomposeAheadLimit') { $decomposeAheadLimit = [int]$cfgDA.decomposeAheadLimit } } catch {}
+  # 2026-06-28 fix (problem-hunt defect #2 — double-decompose): decompose-ahead is owned SOLELY by the
+  # detached background worker (Invoke-BackgroundDecomposeAheadIfNeeded) when decomposeAheadLimit > 1.
+  # The foreground path must NEVER decompose ahead: a foreground coordinator is a blocking ~15-min agent
+  # turn that monopolizes the single channel slot (the reverted d2ffe2d wedge) AND would race the
+  # background worker on the same next chapter, producing two concurrent planning turns + duplicate atoms.
+  # So while the current chapter still has runnable atoms, yield and let the executor drain them; the
+  # background worker plans the next chapter out-of-band. (No flag dependency here on purpose: foreground
+  # is always one-chapter-at-a-time; concurrency comes from the background owner.)
   if ([int]$pressure.runnable -gt 0) {
-    $aheadOk = $false
-    if ($decomposeAheadLimit -gt 1) {
-      try {
-        $cfSet = @{}; $allCh = @{}
-        foreach ($bi in @(Get-Backlog)) {
-          if ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'from' -Default '') -ne 'project-autopilot') { continue }
-          $chx = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'chapter' -Default '')).Trim()
-          if ([string]::IsNullOrWhiteSpace($chx)) { continue }
-          $allCh[$chx] = $true
-          $stx = [string](Get-BacklogPackObjectValue -Obj $bi -Name 'status' -Default '')
-          if ($stx -notin @('done','rejected','auto-dropped','held')) { $cfSet[$chx] = $true }
-        }
-        $chaptersInFlight = @($cfSet.Keys).Count
-        $decomposedCount = @($allCh.Keys).Count
-        $totalCh = 0
-        $planP = Join-Path $root 'PROJECT_PLAN.md'
-        if (Test-Path -LiteralPath $planP) {
-          $ptxt = [System.IO.File]::ReadAllText($planP, [System.Text.Encoding]::UTF8)
-          $totalCh = ([regex]::Matches($ptxt, '(?m)^##\s+\S+\s+(\d+)\s*[—–:\-]')).Count
-        }
-        if ($chaptersInFlight -lt $decomposeAheadLimit -and $totalCh -gt 0 -and ($decomposedCount + 1) -lt $totalCh) { $aheadOk = $true }
-      } catch { $aheadOk = $false }
-    }
-    if (-not $aheadOk) {
-      return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure }
-    }
-    try { Add-Message -From system -Text ("🧩 Diffusion decompose-ahead: декомпозирую следующую главу параллельно текущей (cross-chapter, limit=$decomposeAheadLimit).") -Kind event | Out-Null } catch {}
+    return [pscustomobject]@{ queued=$false; reason='backlog-not-empty'; pressure=$pressure }
   }
+  # Defect #2 belt-and-suspenders: even on the idle-empty path, if a detached background decompose worker
+  # is live for this channel it is already planning the next chapter — do not also queue a foreground
+  # coordinator targeting the same chapter (avoids the double-decompose at chapter boundaries). Let the
+  # background worker finish; the next idle tick re-evaluates.
+  try {
+    if ((Get-Command Test-BackgroundDecomposeRunning -ErrorAction SilentlyContinue) -and (Test-BackgroundDecomposeRunning -Channel $slug)) {
+      return [pscustomobject]@{ queued=$false; reason='background-decompose-running'; pressure=$pressure }
+    }
+  } catch {}
   if ([int]$pressure.autopilot_open -gt 0) { return [pscustomobject]@{ queued=$false; reason='autopilot-already-open'; pressure=$pressure } }
 
   $last = Read-ProjectAutopilotState
@@ -2394,18 +2376,27 @@ function Test-BackgroundDecomposeRunning {
   try {
     $data = ((Get-Content -LiteralPath $lock -Raw -Encoding UTF8) | Out-String).Trim()
     $parts = @($data -split '\|')
-    $lpid = 0
+    $lpid = 0; $lticks = [long]0
     if ($parts.Count -gt 0) { [int]::TryParse([string]$parts[0], [ref]$lpid) | Out-Null }
+    if ($parts.Count -gt 1) { [long]::TryParse([string]$parts[1], [ref]$lticks) | Out-Null }
     if ($lpid -gt 0) {
       $p = Get-Process -Id $lpid -ErrorAction SilentlyContinue
       if ($p) {
-        $ageMin = 999
-        try { $ageMin = ((Get-Date) - (Get-Item -LiteralPath $lock).LastWriteTime).TotalMinutes } catch {}
-        if ($ageMin -lt 30) { return $true }   # live + fresh => a worker is genuinely running
+        # Liveness is the PRIMARY signal (problem-hunt defect #3): a worker's Add phase can run many
+        # minutes, so we must NOT declare a still-running worker stale on age alone. Verify the SAME
+        # process via StartTime ticks (guards against pid recycling), and use only a 45-min backstop
+        # ceiling (> 25-min codex cap + bounded Add) to clear a genuinely wedged or dead-then-recycled pid.
+        $sameProc = $true
+        if ($lticks -gt 0) { try { $sameProc = ($p.StartTime.Ticks -eq $lticks) } catch { $sameProc = $true } }
+        if ($sameProc) {
+          $ageMin = 0
+          try { $ageMin = ((Get-Date) - (Get-Item -LiteralPath $lock).LastWriteTime).TotalMinutes } catch {}
+          if ($ageMin -lt 45) { return $true }
+        }
       }
     }
   } catch {}
-  # stale (dead pid, unreadable, or older than the 25-min worker cap) -> clear it
+  # stale: dead pid, recycled pid (start-ticks mismatch), unreadable, or wedged beyond 45 min -> clear it
   try { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue } catch {}
   return $false
 }
@@ -2424,11 +2415,55 @@ function Start-BackgroundProjectDecompose {
     $lock = Get-BackgroundDecomposeLockPath -Channel $Channel
     $lockDir = Split-Path -Parent $lock
     if (-not (Test-Path -LiteralPath $lockDir)) { New-Item -ItemType Directory -Force -Path $lockDir | Out-Null }
-    Set-Content -LiteralPath $lock -Value ("{0}|{1}" -f $p.Id, ((Get-Date).ToUniversalTime().ToString('o'))) -Encoding ASCII
+    # Record pid|startTicks|spawn-ts: startTicks lets Test-BackgroundDecomposeRunning verify it is the
+    # SAME process (not a recycled pid) before treating the lock as a live worker (defect #3).
+    $startTicks = [long]0
+    try { $startTicks = (Get-Process -Id $p.Id -ErrorAction Stop).StartTime.Ticks } catch { $startTicks = 0 }
+    Set-Content -LiteralPath $lock -Value ("{0}|{1}|{2}" -f $p.Id, $startTicks, ((Get-Date).ToUniversalTime().ToString('o'))) -Encoding ASCII
     return [pscustomobject]@{ started=$true; pid=$p.Id }
   } catch {
     return [pscustomobject]@{ started=$false; reason=('spawn-error: ' + $_.Exception.Message) }
   }
+}
+
+function Get-ProjectAutopilotPlanChapterCount {
+  # Single tolerant parser for PROJECT_PLAN.md chapter headings (problem-hunt defect #5: the count regex
+  # was brittle '(?m)^##\s+\S+\s+(\d+)...' and triplicated across 3 sites). Accepts '## Chapter 7 - X',
+  # '## Phase 7: X', '## Глава 7 — X', '## 7. X', '## 7) X' with -/:/. separators and en/em dashes.
+  # Returns the count of DISTINCT chapter ordinals.
+  param([string]$ProjectRoot)
+  $ords = New-Object System.Collections.Generic.HashSet[int]
+  try {
+    $planFile = Join-Path $ProjectRoot 'PROJECT_PLAN.md'
+    if (-not (Test-Path -LiteralPath $planFile -PathType Leaf)) { return 0 }
+    $txt = [System.IO.File]::ReadAllText($planFile, [System.Text.Encoding]::UTF8)
+    foreach ($line in ($txt -split "`r?`n")) {
+      $m = [regex]::Match($line, '^\s{0,3}#{2,3}\s+(?:[^\d\r\n]*?\s)?(\d{1,3})\s*[\.\):—–\-]\s', 'IgnoreCase')
+      if ($m.Success) {
+        $ord = 0; [int]::TryParse($m.Groups[1].Value, [ref]$ord) | Out-Null
+        if ($ord -gt 0) { [void]$ords.Add($ord) }
+      }
+    }
+  } catch {}
+  return $ords.Count
+}
+
+function Get-ProjectAutopilotChapterKey {
+  # Canonicalize a free-text 'chapter' field to a stable key (problem-hunt defect #1: counting raw strings
+  # let 'Chapter 4 - X' and a clean slug / mojibake variant inflate the decomposed count and silently skip
+  # a chapter). Prefer the PLAN ORDINAL: a number near the start (optionally after Chapter/Phase/Глава/etc.)
+  # -> 'n<N>', so numbered/mojibake/title variants of the same chapter collapse. Otherwise a stable ascii
+  # slug. (Legacy atoms that used a bare English slug for a Russian-titled chapter can't be collapsed to the
+  # numbered form without re-stamping; the coordinator prompt now requires a leading ordinal going forward.)
+  param([string]$Chapter)
+  $c = ([string]$Chapter).Trim()
+  if ([string]::IsNullOrWhiteSpace($c)) { return '' }
+  $m = [regex]::Match($c, '^(?:\s*(?:chapter|phase|глава|section|part|часть|глава)\s*)?#?\s*(\d{1,3})\b', 'IgnoreCase')
+  if ($m.Success) { return ('n' + [int]$m.Groups[1].Value) }
+  $s = $c.ToLowerInvariant()
+  $s = ($s -replace '[^a-z0-9]+', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($s)) { return $c.ToLowerInvariant() }
+  return $s
 }
 
 function Test-ShouldBackgroundDecompose {
@@ -2455,17 +2490,15 @@ function Test-ShouldBackgroundDecompose {
     } catch {}
     if ([string]::IsNullOrWhiteSpace($projectRoot)) { $result.reason = 'not-project-channel'; return $result }
 
-    # Total approved chapters from the durable plan.
-    $totalCh = 0
-    try {
-      $planFile = Join-Path $projectRoot 'PROJECT_PLAN.md'
-      if (Test-Path -LiteralPath $planFile -PathType Leaf) {
-        $planTxt = [System.IO.File]::ReadAllText($planFile, [System.Text.Encoding]::UTF8)
-        $totalCh = ([regex]::Matches($planTxt, '(?m)^##\s+\S+\s+(\d+)\s*[—–:\-]\s*(.+?)\s*$')).Count
-      }
-    } catch {}
+    # Total approved chapters from the durable plan (centralized tolerant parser, defect #5).
+    $totalCh = Get-ProjectAutopilotPlanChapterCount -ProjectRoot $projectRoot
     $result.total_chapters = $totalCh
-    if ($totalCh -le 0) { $result.reason = 'no-plan-chapters'; return $result }
+    if ($totalCh -le 0) {
+      # Loud-log: a header format the parser does not recognize would otherwise SILENTLY disable
+      # decompose-ahead while the operator believes it is active (defect #5).
+      try { Add-Content -LiteralPath (Join-Path (Get-BridgeRoot) 'driver.out.log') -Value ((Get-Date).ToString('s') + " background-decompose: decomposeAheadLimit=$limit but PROJECT_PLAN.md yielded 0 chapters (unrecognized '## N' header format?) channel=$Channel root=$projectRoot") -Encoding UTF8 } catch {}
+      $result.reason = 'no-plan-chapters'; return $result
+    }
 
     # Walk this channel's project-autopilot atoms once: decomposed chapters + in-flight + runnable.
     $decomposedSet = New-Object System.Collections.Generic.HashSet[string]
@@ -2476,10 +2509,11 @@ function Test-ShouldBackgroundDecompose {
       foreach ($bi in @(Get-Backlog)) {
         if ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'from' -Default '') -ne 'project-autopilot') { continue }
         $chp = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'chapter' -Default '')).Trim()
+        $chk = Get-ProjectAutopilotChapterKey -Chapter $chp
         $st  = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'status' -Default '')).Trim().ToLowerInvariant()
-        if (-not [string]::IsNullOrWhiteSpace($chp)) { [void]$decomposedSet.Add($chp) }
+        if (-not [string]::IsNullOrWhiteSpace($chk)) { [void]$decomposedSet.Add($chk) }
         if ($terminal -notcontains $st) {
-          if (-not [string]::IsNullOrWhiteSpace($chp)) { [void]$inFlightSet.Add($chp) }
+          if (-not [string]::IsNullOrWhiteSpace($chk)) { [void]$inFlightSet.Add($chk) }
           if ($st -eq 'approved' -or $st -eq 'working') { $runnable++ }
         }
       }
