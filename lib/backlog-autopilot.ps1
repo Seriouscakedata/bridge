@@ -2604,12 +2604,15 @@ function Test-ShouldBackgroundDecompose {
     $result.total_chapters = $totalCh
     if ($totalCh -le 0) {
       # Reached only by an actively-executing channel whose PROJECT_PLAN.md exists but parsed to 0 chapters
-      # (a real header-format problem). Throttled once per channel per driver session.
+      # (a real header-format problem). Throttled to once per 6h per channel via a marker FILE (a script-
+      # scoped variable does not survive the driver's per-iteration module reloads, which caused log spam).
       try {
         if (Test-Path -LiteralPath (Join-Path $projectRoot 'PROJECT_PLAN.md') -PathType Leaf) {
-          if ($null -eq $script:BgDecomposeNoPlanWarned) { $script:BgDecomposeNoPlanWarned = @{} }
-          if (-not $script:BgDecomposeNoPlanWarned.ContainsKey($Channel)) {
-            $script:BgDecomposeNoPlanWarned[$Channel] = $true
+          $warnMark = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.bg-noplan-warned'
+          $warnDue = $true
+          try { if ((Test-Path -LiteralPath $warnMark) -and (((Get-Date) - (Get-Item -LiteralPath $warnMark).LastWriteTime).TotalHours -lt 6)) { $warnDue = $false } } catch {}
+          if ($warnDue) {
+            try { Set-Content -LiteralPath $warnMark -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII } catch {}
             Add-Content -LiteralPath (Join-Path (Get-BridgeRoot) 'driver.out.log') -Value ((Get-Date).ToString('s') + " background-decompose: decomposeAheadLimit=$limit but PROJECT_PLAN.md yielded 0 chapters (unrecognized '## N' header format?) channel=$Channel root=$projectRoot") -Encoding UTF8
           }
         }
