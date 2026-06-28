@@ -336,5 +336,33 @@ function Test-PolicyAutotaskExecutionBlocked {
   if ($isAutopilotCoordinator) {
     return [pscustomobject]@{ blocked=$false; risk=[string]$danger.risk; reason=[string]$danger.reason; authorization=$auth; exempt='autopilot-coordinator' }
   }
+  # 2026-06-28 (operator root-fix, authorized; sibling of the coordinator wedge one level down):
+  # project-autopilot ATOMS are bridge-generated single-file code tasks the (trusted) coordinator
+  # decomposed from an approved plan. They hit the SAME danger-scan false-positive -- teaching/example
+  # vocabulary inside the atom's own description (verb 'disabled/skip/удалить' + noun 'secret/проверк')
+  # trips the AND-rule and parked the atom to 'held', so a wave that has only that atom ready claims 0 and
+  # project autopilot stalls (the coordinator deadlock, one level down). Exempt ONLY project-scope autopilot
+  # atoms that do NOT touch the control plane (those still block) and are NOT bridge-self. Safety preserved:
+  # such atoms are sandboxed to the PROJECT tree (cannot edit bridge control-plane), and each still passes
+  # its per-atom critic + QA + acceptance. The strong action-class rules (irreversible/destructive on core
+  # files) and the control-plane guard remain in force.
+  $isAutopilotAtom = $false
+  try {
+    $itFrom = [string]$Item.from
+    $itScope = [string]$Item.scope
+    $itTags = @($Item.tags | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    $touchesCP = $false
+    try { if (Get-Command Test-PolicyItemTouchesControlPlane -ErrorAction SilentlyContinue) { $touchesCP = [bool](Test-PolicyItemTouchesControlPlane -Item $Item) } } catch { $touchesCP = $true }
+    $isAutopilotAtom = (
+      ($itFrom -eq 'project-autopilot') -and
+      ($itScope -eq 'project') -and
+      (@($itTags) -contains 'atom') -and
+      (-not (@($itTags) -contains 'bridge-self')) -and
+      (-not $touchesCP)
+    )
+  } catch { $isAutopilotAtom = $false }
+  if ($isAutopilotAtom) {
+    return [pscustomobject]@{ blocked=$false; risk=[string]$danger.risk; reason=[string]$danger.reason; authorization=$auth; exempt='autopilot-atom' }
+  }
   return [pscustomobject]@{ blocked=$true; risk=[string]$danger.risk; reason=[string]$danger.reason; authorization=$auth; exempt='' }
 }

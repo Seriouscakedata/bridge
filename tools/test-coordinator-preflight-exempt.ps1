@@ -56,5 +56,24 @@ $fakeItem = [pscustomobject]@{ id='t-fake'; from='project-autopilot'; scope='bri
 $vf = Test-PolicyAutotaskExecutionBlocked -Item $fakeItem -TaskText $fake -BridgeRoot $root
 Check "non-signature 'coordinator' text NOT exempt (still blocked)" ([bool]$vf.blocked -and [string]$vf.exempt -ne 'autopilot-coordinator')
 
+# --- H1: project-autopilot ATOM exemption (sibling wedge one level down) ---
+# An atom whose description trips the danger scan (verb 'disable' + noun 'secret') but which only edits
+# PROJECT files must NOT be auto-held.
+$atomText = 'Disable the text-history toggle and ensure the project never persists secrets to disk'
+$atomItem = [pscustomobject]@{ id='t-atom'; from='project-autopilot'; scope='project'; tags=@('project-autopilot','auto-generated','atom'); text=$atomText; files=@('app/src/main/java/com/glass/interpreter/storage/settingsrepository.kt') }
+$va = Test-PolicyAutotaskExecutionBlocked -Item $atomItem -TaskText $atomText -BridgeRoot $root
+Check "project-autopilot atom (project files) NOT blocked" (-not [bool]$va.blocked)
+Check "project-autopilot atom exempt='autopilot-atom'" ([string]$va.exempt -eq 'autopilot-atom')
+
+# An atom that declares a CONTROL-PLANE file target must STILL block (the guard holds).
+$cpAtomItem = [pscustomobject]@{ id='t-cpatom'; from='project-autopilot'; scope='project'; tags=@('project-autopilot','auto-generated','atom'); text=$atomText; files=@('lib/policy.ps1') }
+$vcp = Test-PolicyAutotaskExecutionBlocked -Item $cpAtomItem -TaskText $atomText -BridgeRoot $root
+Check "project-autopilot atom touching control-plane STILL blocked" ([bool]$vcp.blocked)
+
+# A bridge-self atom must STILL block (not exempt).
+$bsAtomItem = [pscustomobject]@{ id='t-bsatom'; from='project-autopilot'; scope='bridge'; tags=@('atom','bridge-self'); text=$atomText; files=@('app/foo.kt') }
+$vbs = Test-PolicyAutotaskExecutionBlocked -Item $bsAtomItem -TaskText $atomText -BridgeRoot $root
+Check "bridge-self atom NOT exempt (still blocked)" ([bool]$vbs.blocked -and [string]$vbs.exempt -ne 'autopilot-atom')
+
 Write-Output ("`n=== RESULT pass=" + $pass + " fail=" + $fail + " ===")
 if ($fail -gt 0) { exit 1 } else { exit 0 }
