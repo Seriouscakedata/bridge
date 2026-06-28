@@ -10,6 +10,8 @@ function Get-ProjectAutopilotConfig {
     diffusionMinIndependentAtoms = 2
     diffusionMaxWaveSize = 6
     decomposeAheadLimit = 1
+    skipBuildOnDocsOnly = $false
+    cleanFileOwnership = $false
   }
   $dotted = @{
     'projectAutopilot.enabled' = 'enabled'
@@ -20,6 +22,8 @@ function Get-ProjectAutopilotConfig {
     'projectAutopilot.diffusionMinIndependentAtoms' = 'diffusionMinIndependentAtoms'
     'projectAutopilot.diffusionMaxWaveSize' = 'diffusionMaxWaveSize'
     'projectAutopilot.decomposeAheadLimit' = 'decomposeAheadLimit'
+    'projectAutopilot.skipBuildOnDocsOnly' = 'skipBuildOnDocsOnly'
+    'projectAutopilot.cleanFileOwnership' = 'cleanFileOwnership'
   }
   $flat = @{
     projectAutopilotEnabled = 'enabled'
@@ -30,6 +34,8 @@ function Get-ProjectAutopilotConfig {
     projectAutopilotDiffusionMinIndependentAtoms = 'diffusionMinIndependentAtoms'
     projectAutopilotDiffusionMaxWaveSize = 'diffusionMaxWaveSize'
     projectAutopilotDecomposeAheadLimit = 'decomposeAheadLimit'
+    projectAutopilotSkipBuildOnDocsOnly = 'skipBuildOnDocsOnly'
+    projectAutopilotCleanFileOwnership = 'cleanFileOwnership'
   }
   try {
     if (Get-Command Get-AutonomySettings -ErrorAction SilentlyContinue) {
@@ -63,7 +69,25 @@ function Get-ProjectAutopilotConfig {
   $cfg.diffusionMinIndependentAtoms = ConvertTo-BacklogPackInt -Value $cfg.diffusionMinIndependentAtoms -Default 2 -Min 1 -Max 50
   $cfg.diffusionMaxWaveSize = ConvertTo-BacklogPackInt -Value $cfg.diffusionMaxWaveSize -Default 6 -Min 1 -Max 50
   $cfg.decomposeAheadLimit = ConvertTo-BacklogPackInt -Value $cfg.decomposeAheadLimit -Default 1 -Min 1 -Max 8
+  $cfg.skipBuildOnDocsOnly = ConvertTo-BacklogPackBool -Value $cfg.skipBuildOnDocsOnly -Default $false
+  $cfg.cleanFileOwnership = ConvertTo-BacklogPackBool -Value $cfg.cleanFileOwnership -Default $false
   return [pscustomobject]$cfg
+}
+
+function Test-ProjectAutopilotAtomDocsOnly {
+  # True iff EVERY path in the atom touch-set is documentation/text. Used (gated by skipBuildOnDocsOnly) to
+  # strip the heavy per-atom project build/typecheck from a docs-only atom's checks — a markdown/text edit
+  # cannot break the compile, and the full build still runs at chapter-close acceptance. Conservative:
+  # empty/unknown touch-set -> $false (never strip when we don't know what the atom touches).
+  param([string[]]$Paths)
+  $list = @($Paths | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($list.Count -eq 0) { return $false }
+  foreach ($p in $list) {
+    $n = (($p -replace '\\','/').Trim()).TrimStart('.').TrimStart('/')
+    $isDoc = ($n -match '^(?i:(docs|memory|decisions)/)') -or ($n -match '\.(?i:md|markdown|mdx|txt)$')
+    if (-not $isDoc) { return $false }
+  }
+  return $true
 }
 
 function Get-ProjectAutopilotStatePath {
@@ -1609,6 +1633,7 @@ Rules:
 - Model the execution DAG explicitly: independent atoms have empty depends_on; dependent atoms reference prerequisite slugs.
 - Prefer a ready frontier: several independent atoms in the same wave, then dependent atoms in later waves.
 - Design for PARALLELISM at the file level: prefer small, focused files (one concern per file) so atoms in the same wave touch DIFFERENT files and run concurrently. Avoid mega-files (one file accumulating many concerns) -- they force same-file atoms to serialize and bottleneck the parallel team. When a module would grow large, split it into a package of focused sibling submodules (re-exported via the package init) so each atom owns its own file. Two atoms in the same wave must not write the same file; if they must share a file, mark serial_reason and put them in different waves.
+- CRITICAL for parallel speed: each atom's "files" MUST list ONLY the file(s) THAT ATOM itself creates or edits -- exactly ONE file for most atoms. Do NOT list a directory, do NOT list a sibling atom's file, and do NOT list files you only READ for context (mention those in the task text instead, never in "files"). Over-listing "files" makes the scheduler think independent atoms collide, and it serializes them -- this is the single biggest cause of slow, narrow waves. WRONG: three atoms each listing ["app/src/main/.../MainUiState.kt", "app/src/main/.../ui/"]. RIGHT: atom-a files=["app/src/main/.../ui/LoginScreen.kt"], atom-b files=["app/src/main/.../ui/HomeScreen.kt"], atom-c files=["app/src/main/.../ui/SettingsScreen.kt"] -- three distinct files that build in parallel.
 - Use chapter, wave, kind, parallel_group, files, depends_on, acceptance, checks, risk/severity, and serial_reason so the scheduler can run the team safely. Optional kind values are infra, feature, consolidation, and planning; omit kind only for default feature atoms.
 - Project atoms operate ONLY inside the project root and never modify the bridge engine, so they require no special admission. Keep every files entry within the project tree.
 - Every atom acceptance must trace back to a project-contract requirement, journey, surface, or acceptance scenario. Do not use generic "looks good" UX checks.
@@ -2203,6 +2228,20 @@ function Set-ProjectAutopilotIdeaMetadata {
       $metadataChannel = [string](Get-BacklogPackObjectValue -Obj $i -Name 'project' -Default (Get-EffectiveChannel))
       $lane = Get-ProjectAutopilotTaskLane -Task $Task -Channel $metadataChannel -Files @($files) -TouchSet @($touchSet)
       $bridgeSelfAdmission = Get-BacklogPackObjectValue -Obj $Task -Name 'bridge_self_admission' -Default $null
+      # Lever skipBuildOnDocsOnly (default OFF): a docs-only atom cannot break the compile, so drop the heavy
+      # per-atom project build/typecheck from its checks. The full project build still runs unconditionally at
+      # chapter-close acceptance (Invoke-ProjectAcceptance), so coverage is preserved. Conservative: only strips
+      # when the flag is on AND every touched path is docs AND the touch-set is actually known.
+      if ($checks.Count -gt 0) {
+        try {
+          if ((Get-ProjectAutopilotConfig).skipBuildOnDocsOnly) {
+            $atomPaths = @(@($touchSet) + @($files) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($atomPaths.Count -gt 0 -and (Test-ProjectAutopilotAtomDocsOnly -Paths $atomPaths)) {
+              $checks = @($checks | Where-Object { [string]$_ -notmatch '(?i)(gradlew|gradle\s|assemble|:build|npm(\.cmd)?\s+run\s+(build|typecheck|tsc)|\btsc\b)' })
+            }
+          }
+        } catch {}
+      }
       $i | Add-Member -NotePropertyName slug -NotePropertyValue $slug -Force
       $i | Add-Member -NotePropertyName title -NotePropertyValue $title -Force
       $i | Add-Member -NotePropertyName task -NotePropertyValue $body -Force
@@ -2348,6 +2387,48 @@ function Repair-ProjectAutopilotAtomFileOwnership {
       }
     }
   }
+  # 2026-06-28 cleanFileOwnership (flag-gated, default OFF): the identical-set signature above misses the
+  # more common PARTIAL-overlap god-file case — many atoms each list a shared "god file" PLUS their own file
+  # (e.g. all list MainUiState.kt + their own screen). That is not an identical set, so the loop above never
+  # fires, yet the shared file still serializes the whole batch. When enabled, drop a shared god-file from an
+  # atom's `files` IF the atom keeps its own slug-matched file and that god-file is owned by >=2 OTHER atoms.
+  try {
+    if ((Get-ProjectAutopilotConfig).cleanFileOwnership) {
+      $ownerCount = @{}
+      foreach ($t in $tArr) {
+        $seen = @{}
+        foreach ($file in @(@($t.files) | ForEach-Object { ([string]$_).Replace('\','/').Trim().ToLowerInvariant() } | Where-Object { $_ })) {
+          if (-not $seen.ContainsKey($file)) { $seen[$file] = $true; if ($ownerCount.ContainsKey($file)) { $ownerCount[$file]++ } else { $ownerCount[$file] = 1 } }
+        }
+      }
+      foreach ($t in $tArr) {
+        $files = @(@($t.files) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($files.Count -lt 2) { continue }
+        $slug = ''
+        try { $slug = (([string]$t.slug).ToLowerInvariant() -replace '[^a-z0-9]','') } catch {}
+        if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+        $owned = @()
+        foreach ($file in $files) {
+          $base = ''
+          try { $base = ([System.IO.Path]::GetFileNameWithoutExtension($file)).ToLowerInvariant() -replace '[^a-z0-9]','' } catch {}
+          if (-not [string]::IsNullOrWhiteSpace($base) -and $slug.Contains($base)) { $owned += $file }
+        }
+        if (@($owned).Count -lt 1) { continue }   # can't identify the atom's own file -> leave untouched
+        $kept = @()
+        foreach ($file in $files) {
+          $norm = ($file.Replace('\','/').Trim().ToLowerInvariant())
+          $others = 0; if ($ownerCount.ContainsKey($norm)) { $others = [int]$ownerCount[$norm] - 1 }
+          if (($owned -contains $file) -or ($others -lt 2)) { $kept += $file }
+        }
+        $kept = @($kept | Select-Object -Unique)
+        if (@($kept).Count -ge 1 -and @($kept).Count -lt $files.Count) {
+          $t | Add-Member -NotePropertyName files -NotePropertyValue @($kept) -Force
+          $t | Add-Member -NotePropertyName files_ownership_repaired -NotePropertyValue $true -Force
+          $repaired++
+        }
+      }
+    }
+  } catch {}
   if ($repaired -gt 0) {
     try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='project-autopilot-file-ownership-repaired'; repaired=$repaired }) } catch {}
   }

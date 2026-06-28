@@ -353,8 +353,18 @@ function Select-WorkerForStream {
   # (observed: repeated failures on complex streams routed to cost-winner non-codex).
   # For simple/moderate: unchanged cost-asc behaviour.
   $isHeavyComplexity = ($complexity -eq 'complex' -or $complexity -eq 'architectural')
+  # 2026-06-28 preferLowEffortForSimple (flag-gated, default OFF): for simple/moderate streams prefer a
+  # LOWER codex reasoning effort (medium) over higher (high/xhigh) BEFORE cost — a simple atom does not
+  # need xhigh reasoning and medium is faster/cheaper. Without this, the cost-asc tiebreak can route a
+  # 'simple' atom to a high-effort codex worker that merely happens to be a cheaper model. Heavy
+  # (complex/architectural) streams are untouched; default OFF preserves the exact cost-asc behaviour.
+  $preferLowEffort = $false
+  try { $pc = (Get-BridgeConfig).parallel; if ($pc -and ($pc.PSObject.Properties.Name -contains 'preferLowEffortForSimple')) { $preferLowEffort = [bool]$pc.preferLowEffortForSimple } } catch {}
+  $effortRank = { param($w) switch (([string]$w.reasoning).ToLowerInvariant()) { 'xhigh' { 2 } 'high' { 1 } default { 0 } } }
   $sorted = if ($isHeavyComplexity) {
     @($candidates | Sort-Object @{Expression={ if ([string]$_.cli -eq 'codex') { 0 } else { 1 } }; Descending=$false}, @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
+  } elseif ($preferLowEffort) {
+    @($candidates | Sort-Object @{Expression={ & $effortRank $_ }; Descending=$false}, @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
   } else {
     @($candidates | Sort-Object @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
   }
