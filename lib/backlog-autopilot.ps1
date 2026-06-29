@@ -1406,6 +1406,68 @@ function Test-ProjectAutopilotExplicitProjectSectionsRequired {
   return $false
 }
 
+function Get-ProjectContractSchemaInstruction {
+  # 2026-06-29 Option-A fix for the planner<->approval-gate mismatch. Single source
+  # of truth for the .bridge/project-contract.json schema the deterministic
+  # delivery-contract gate (Test-DeliveryContract) validates by EXACT snake_case
+  # top-level keys. The selfie-styler build stalled because the planner invented its
+  # own keys (scope/users/capabilities/interfaces/invariants/risks) instead of the
+  # keys the gate string-matches -- so half the required sections read as missing and
+  # approval was blocked. This teaches the planner the exact keys, the silent traps
+  # (acceptance vs acceptance_scenarios, interfaces vs surfaces, mandatory
+  # parallel_policy) and the spec_profile choice, without relaxing the gate.
+  param([switch]$Concise)
+  if ($Concise) {
+    return @'
+КОНТРАКТ .bridge/project-contract.json -- ТОЧНЫЕ ключи (gate проверяет строгим совпадением snake_case, синонимы НЕ засчитываются): goal, scope, non_goals, users, surfaces, backend (или data), acceptance_scenarios (именно так, НЕ "acceptance"), checks, risk, parallel_policy (ОБЯЗАТЕЛЕН). Каждая секция >= 12 непробельных символов реального содержания. acceptance_scenarios = массив объектов {id,given,when,then}; parallel_policy = объект {mode,rationale,barrier}; surfaces = массив типизированных объектов (kind/name/command|path|route), слово "interfaces" НЕ распознаётся. Заполняй значения, НЕ переименовывай ключи и НЕ выдумывай свои. Всегда ставь spec_profile: "lite" для малых (<= ~3 поверхности), "standard"/"full" крупнее. Эталон: bridge-projects/glass-interpreter/.bridge/project-contract.json.
+'@
+  }
+  return @'
+- .bridge/project-contract.json is the machine-readable contract the deterministic delivery-contract gate validates by EXACT snake_case top-level keys. FILL each value with real content; do NOT rename keys or invent your own -- a synonym like "acceptance" (instead of acceptance_scenarios) or "interfaces" (instead of surfaces) is NOT recognized and silently fails the gate. ALL nine sections are required, each with real content (>= 12 non-whitespace chars; empty/one-word is rejected as shallow):
+    1. "goal"                  - one clear outcome statement (>= 40 chars).
+    2. "scope" and "non_goals"  - explicit in-scope list AND explicit out-of-scope list.
+    3. "users"                 - users/roles/personas/actors.
+    4. "surfaces"              - app surfaces as typed objects, e.g. {"kind":"screen|cli|artifact|api","name":...,"command"|"path"|"route":...}. Use key "surfaces" (or "routes"/"screens"); "interfaces" is NOT recognized.
+    5. "backend" (or "data")    - data/backend ownership: providers, models, storage, secrets.
+    6. "acceptance_scenarios"  - MUST be this exact snake_case key (a key named just "acceptance" is NOT counted). Array of objects, each {"id","given","when","then"}.
+    7. "checks"                - concrete verification commands, e.g. [{"name","command","expect"}].
+    8. "risk"                  - risks + mitigations.
+    9. "parallel_policy"       - REQUIRED (hard blocker if missing under autopilot). Object {"mode","rationale","barrier"}, not a bare sentence.
+  Also include requirements (>=1), user_journeys (>=1) and ux_contract/interface_contract for the plan gate. The gate passes only with zero missing/shallow required sections (internal score >= 80). Mirror the proven shape of bridge-projects/glass-interpreter/.bridge/project-contract.json.
+- Always set the top-level "spec_profile" field deliberately (when omitted the gate falls back to the heavy 'legacy' profile and blocks small work): "lite" for small/narrow work (roughly <= 3 surfaces / single-surface app -> avoids unnecessary DISCUSS_* bureaucracy), "standard" for normal multi-surface apps, "full" for large/complex/production (full requires deeper specs and DISCUSS_* stages before implementation).
+'@
+}
+
+function Get-ProjectContractSchemaReminder {
+  # Rides the project focus block on every project turn (driver Get-ProjectFocusPromptBlock).
+  # Returns '' once the contract passes the delivery-contract gate; otherwise returns the
+  # exact-key schema instruction PLUS the specific sections the gate still finds
+  # missing/shallow, so the DISCUSS planner gets precise feedback WHILE it is authoring
+  # the contract -- closing the loop that previously left the planner guessing.
+  param([string]$ProjectRoot)
+  if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+  try {
+    if (-not (Get-Command Get-ProjectAutopilotPlanContractPath -ErrorAction SilentlyContinue)) { return '' }
+    $contractPath = Get-ProjectAutopilotPlanContractPath -ProjectRoot $ProjectRoot
+    $concise = Get-ProjectContractSchemaInstruction -Concise
+    if ([string]::IsNullOrWhiteSpace($contractPath) -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+      return "`n`nКОНТРАКТ ещё не создан. " + $concise
+    }
+    $contract = $null
+    try { $contract = [System.IO.File]::ReadAllText($contractPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch {
+      return "`n`n" + $concise + "`n(контракт не парсится как JSON -- перезапиши валидным JSON)."
+    }
+    $sink = New-Object 'System.Collections.Generic.List[string]'
+    $delivery = Test-ProjectAutopilotDeliveryContractReady -Contract $contract -Issues $sink
+    if ([bool]$delivery.ok) { return '' }
+    $gaps = @()
+    if (@($delivery.missing).Count -gt 0) { $gaps += ('нет/мелко: ' + (@($delivery.missing) -join ', ')) }
+    if (@($delivery.blockers).Count -gt 0) { $gaps += ('блокеры: ' + (@($delivery.blockers) -join ', ')) }
+    $gapLine = if ($gaps.Count -gt 0) { "`nGate не пускает (score=$([string]$delivery.score)): " + ($gaps -join '; ') + '.' } else { '' }
+    return "`n`n" + $concise + $gapLine
+  } catch { return '' }
+}
+
 function Test-ProjectPlanContractReady {
   param([string]$ProjectRoot)
   $issues = New-Object 'System.Collections.Generic.List[string]'
@@ -1613,8 +1675,7 @@ Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
 - Read the Bridge spec layer first: .bridge/constitution.md, .bridge/specs/*.md, .bridge/changes/*, PROJECT_BRIEF.md, DISCUSS_*.md when present, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
 - Read the project memory/context supplied in the prompt. Preserve durable decisions, risks, invariants, tests, and open questions.
-- Treat .bridge/project-contract.json as the machine-readable product/UX/acceptance contract. It must include spec_profile/project_size plus explicit scope plus explicit non_goals, explicit users/roles/personas, data/backend ownership, checks, risk, parallel_policy, requirements/capabilities, screens/routes/interfaces/modules, user journeys/workflows, ux_contract/interface_contract, and acceptance scenarios.
-- Choose the lightest valid spec_profile: lite for small/narrow projects, standard for normal multi-surface apps, full for large/complex/production projects. Lite avoids unnecessary DISCUSS_* bureaucracy; full requires deeper specs before implementation.
+$(Get-ProjectContractSchemaInstruction)
 - requirements/capabilities/features do NOT replace explicit scope plus non_goals. user_journeys/journeys/flows/workflows do NOT replace explicit users/roles/personas/actors.
 - Treat planning as staged: brief -> product -> UX -> UI -> backend -> QA -> integration. Every later stage must explicitly use decisions from earlier stages. The integration stage resolves cross-stage conflicts before implementation.
 - If the constitution, required .bridge/specs/*.md files, stage docs, map, plan, or contract are shallow/missing/stale for the selected spec_profile, do NOT emit implementation atoms. Emit durable memory about the gap and finish, or emit docs-only planning atoms that deepen the missing spec/planning files and .bridge/project-contract.json.

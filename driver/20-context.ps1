@@ -650,11 +650,20 @@ function Get-ProjectFocusPromptBlock {
     try { $contractDigest = Get-ProjectContractDigest -ContractPath (Join-Path ([string]$binding.project_root) '.bridge\project-contract.json') } catch { $contractDigest = '' }
   }
 
+  # 2026-06-29 Option-A: ride the exact contract-schema instruction + the gate's
+  # specific missing/shallow sections on every project turn, so the planner that
+  # AUTHORS the contract (during Discuss-First, before approval) sees precise
+  # feedback instead of guessing its own key names. Empty once the contract passes.
+  $schemaReminder = ''
+  if ($slug -ne 'main' -and $binding -and $binding.project_root -and (Get-Command Get-ProjectContractSchemaReminder -ErrorAction SilentlyContinue)) {
+    try { $schemaReminder = Get-ProjectContractSchemaReminder -ProjectRoot ([string]$binding.project_root) } catch { $schemaReminder = '' }
+  }
+
   return @"
 ⚠ АКТИВНЫЙ ПРОЕКТ: $slug
 Путь: $root
 Тип: $ptype
 Описание: $pdesc
-Источник привязки: $source$guard$contractDigest
+Источник привязки: $source$guard$contractDigest$schemaReminder
 "@
 }
