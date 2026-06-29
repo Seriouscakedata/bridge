@@ -27,6 +27,7 @@ try {
     @(
       ('{"id":"task-a","value":"old","padding":"' + $padding + '"}')
       '{"id":"task-b","value":"keep"}'
+      'not-json-but-operator-visible'
       '{"id":"task-a","value":"new"}'
     ),
     [System.Text.UTF8Encoding]::new($false)
@@ -44,9 +45,10 @@ try {
   $mainText = $mainLines -join "`n"
   $sideLines = @([System.IO.File]::ReadAllLines($sideBacklog, [System.Text.Encoding]::UTF8))
 
-  Assert-True ($mainLines.Count -eq 2) 'oversized backlog should be folded by duplicate id'
+  Assert-True ($mainLines.Count -eq 3) 'oversized backlog should be folded by duplicate id while preserving no-id lines'
   Assert-True ($mainText.Contains('"id":"task-a","value":"new"')) 'last line should win for duplicated id'
   Assert-True (-not $mainText.Contains('"value":"old"')) 'old duplicate line should be removed'
+  Assert-True ($mainText.Contains('not-json-but-operator-visible')) 'no-id backlog lines should be preserved during compaction'
   Assert-True (Test-Path -LiteralPath $mainBacklog) 'startup compaction should keep backlog.jsonl at the original path'
   Assert-True (-not (Test-Path -LiteralPath ($mainBacklog + '.compact.tmp'))) 'startup compaction should not leave atomic replace temp files behind'
   Assert-True ($sideLines.Count -eq 2) 'small backlog should stay below threshold and remain unchanged'
