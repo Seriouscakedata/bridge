@@ -158,6 +158,39 @@ function Get-RestartRootCauseClass {
   return 'unknown'
 }
 
+function Test-DriverStartupPendingDoctorSignal {
+  param($State)
+  if (-not $State) { return $false }
+  try { if ([bool]$State.doctor_active) { return $false } } catch {}
+  $cur = ''
+  $held = ''
+  try { $cur = [string]$State.current_task } catch {}
+  try { $held = [string]$State.held_task } catch {}
+  if ([string]::IsNullOrWhiteSpace($cur)) { return $false }
+  if (-not [string]::IsNullOrWhiteSpace($held)) { return $false }
+  $sig = Join-Path (Get-BridgeRoot) 'control\repair.signal'
+  return (Test-Path -LiteralPath $sig -PathType Leaf)
+}
+
+function Invoke-DriverStartupDoctorSignalAdmission {
+  param($State)
+  if (-not (Test-DriverStartupPendingDoctorSignal -State $State)) { return $false }
+  if (-not (Get-Command Test-DoctorSignal -ErrorAction SilentlyContinue)) { return $false }
+  if (-not (Get-Command Activate-Doctor -ErrorAction SilentlyContinue)) { return $false }
+  $reason = 'watchdog_rollback'
+  try {
+    $r = Test-DoctorSignal
+    if (-not [string]::IsNullOrWhiteSpace([string]$r)) { $reason = [string]$r }
+  } catch {
+    return $false
+  }
+  try {
+    return [bool](Activate-Doctor -Reason $reason -Detail 'signal from watchdog before startup resume')
+  } catch {
+    return $false
+  }
+}
+
 Sweep-AgentOrphans
 
 # Resume an interrupted task across restarts instead of dropping it. Conversation,
@@ -165,6 +198,11 @@ Sweep-AgentOrphans
 # task_turn / task_mode / last_user_seq / summarized_seq, and only clear the transient
 # execution state (a killed agent process). The loop re-runs the interrupted turn.
 $boot = Read-State
+try {
+  if (Invoke-DriverStartupDoctorSignalAdmission -State $boot) {
+    $boot = Read-State
+  }
+} catch {}
 $resumeTask = if ($boot -and $boot.current_task) { [string]$boot.current_task } else { '' }
 if (-not [string]::IsNullOrWhiteSpace($resumeTask)) {
   # 2026-05-28: detect "stuck task" — if we've already resumed this task N times
