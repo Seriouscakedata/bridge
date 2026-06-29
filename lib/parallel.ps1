@@ -976,6 +976,14 @@ function Get-WorkerWorktree {
   $git = Get-GitExe
 
   $repoRoot = Get-ParallelRepoRoot
+  # 2026-06-29 (latency root-fix): clear STALE worktree-registry entries from a prior failed/quarantined run
+  # of the SAME task hash BEFORE adding. Forensic of the overnight build found 13x "git worktree add failed":
+  # a retry/fallback of the same task reuses branch wip/parallel/<hash>/<sid>, but git still holds a stale
+  # registration for the (already-deleted) prior worktree dir, so `worktree add` throws -> the whole batch
+  # falls onto the slow no-timeout planner fallback + quarantines a stream + triggers a force_planner repair
+  # turn. That cascade (worktree-fail -> quarantine -> planner) was the dominant ~90 min/night cost. Pruning
+  # stale registrations here releases the branch so the add succeeds and the batch stays on the fast path.
+  try { & $git -C $repoRoot worktree prune 2>&1 | Out-Null } catch {}
   $branchExists = $false
   try {
     & $git -C $repoRoot show-ref --verify --quiet "refs/heads/$branch"
@@ -985,6 +993,16 @@ function Get-WorkerWorktree {
   if ($branchExists) {
     & $git -C $repoRoot worktree add $path $branch 2>&1 | Out-Null
   } else {
+    & $git -C $repoRoot worktree add -b $branch $path $base 2>&1 | Out-Null
+  }
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $path)) {
+    # Retry once with a FRESH branch from base. A stale branch from a prior failed/quarantined run can still
+    # be registered/checked-out even after prune; its partial content is disposable (the atom is re-run), so
+    # remove any leftover dir, prune, delete the stale branch, and recreate clean from base. This keeps the
+    # stream on the fast parallel path instead of throwing (which forced the slow planner fallback).
+    try { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
+    try { & $git -C $repoRoot worktree prune 2>&1 | Out-Null } catch {}
+    try { if ($branchExists) { & $git -C $repoRoot branch -D $branch 2>&1 | Out-Null } } catch {}
     & $git -C $repoRoot worktree add -b $branch $path $base 2>&1 | Out-Null
   }
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $path)) { throw "parallel: git worktree add failed for $branch" }
