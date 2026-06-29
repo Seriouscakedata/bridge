@@ -4,5 +4,32 @@
     "description":  "Deliberate bridge stress-test harness: a Python text-transform plugin framework with dozens of independent plugins (wide parallel), a shared registry (single-file contention), an integration engine (heavy stitching), and a stress test suite.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\stress-forge",
     "created":  "2026-06-29T07:17:57.8475362+03:00",
-    "archived":  false
+    "archived":  false,
+    "plan_approved":  true,
+    "plan_approved_at":  "2026-06-29T04:25:08.0388054Z",
+    "plan_approved_signature":  "9d33b8ea3dc7829eb806ca6afdb27ad5d4ebe7b0658870c38c45b0d13721c6a6",
+    "plan_approved_signature_version":  "bridge-spec-v1",
+    "plan_approved_files":  [
+                                "PROJECT_BRIEF.md",
+                                ".bridge\\constitution.md",
+                                ".bridge\\specs\\acceptance.md",
+                                "PROJECT_MAP.md",
+                                "PROJECT_PLAN.md",
+                                ".bridge\\project-contract.json"
+                            ],
+    "plan_spec_profile":  "lite",
+    "plan_approved_git_head":  "53a5875c5e3bbff91b8550d3b4859068e2629fe6",
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\stress-forge\\.bridge\\project-contract.json",
+    "plan_contract_score":  100,
+    "plan_contract_required_sections":  [
+                                            "goal",
+                                            "scope/non_goals",
+                                            "users/roles",
+                                            "surfaces/routes/screens",
+                                            "data/backend",
+                                            "acceptance_scenarios",
+                                            "checks",
+                                            "risk",
+                                            "parallel_policy"
+                                        ]
 }
