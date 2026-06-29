@@ -37,6 +37,15 @@ try {
   & $scriptPath -Path $backlog -ThresholdMB 0 -WhatIf
   Assert-True (([System.IO.File]::ReadAllText($backlog, [System.Text.Encoding]::UTF8)) -eq $originalText) 'WhatIf should not modify the file'
 
+  $negativeThresholdFailed = $false
+  try {
+    & $scriptPath -Path $backlog -ThresholdMB -1
+  } catch {
+    $negativeThresholdFailed = ($_.Exception.Message -match 'ThresholdMB must be non-negative')
+  }
+  Assert-True $negativeThresholdFailed 'negative threshold should fail before reading or writing the backlog'
+  Assert-True (([System.IO.File]::ReadAllText($backlog, [System.Text.Encoding]::UTF8)) -eq $originalText) 'negative threshold failure should not modify the file'
+
   & $scriptPath -Path $backlog -ThresholdMB 0
   $resultLines = @([System.IO.File]::ReadAllLines($backlog, [System.Text.Encoding]::UTF8))
   $resultText = $resultLines -join "`n"
