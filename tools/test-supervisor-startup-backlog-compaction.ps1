@@ -14,6 +14,7 @@ function Assert-True {
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-supervisor-compact-test-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'tools') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'channels\main') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'channels\other') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'channels\side') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'compact-backlog.ps1') -Destination (Join-Path $tmpRoot 'tools\compact-backlog.ps1') -Force
 
@@ -24,6 +25,7 @@ try {
   Assert-True ($supervisorText -match 'Invoke-StartupBacklogCompaction\s+-BridgeRoot\s+\$root') 'supervisor should run backlog compaction on startup'
 
   $mainBacklog = Join-Path $tmpRoot 'channels\main\backlog.jsonl'
+  $otherBacklog = Join-Path $tmpRoot 'channels\other\backlog.jsonl'
   $sideBacklog = Join-Path $tmpRoot 'channels\side\backlog.jsonl'
   $padding = 'x' * 11000000
 
@@ -34,6 +36,15 @@ try {
       '{"id":"task-b","value":"keep"}'
       'not-json-but-operator-visible'
       '{"id":"task-a","value":"new"}'
+    ),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  [System.IO.File]::WriteAllLines(
+    $otherBacklog,
+    @(
+      ('{"id":"other-a","value":"old","padding":"' + $padding + '"}')
+      '{"id":"other-a","value":"new"}'
+      '{"id":"other-b","value":"keep"}'
     ),
     [System.Text.UTF8Encoding]::new($false)
   )
@@ -50,6 +61,8 @@ try {
   $mainLines = @([System.IO.File]::ReadAllLines($mainBacklog, [System.Text.Encoding]::UTF8))
   $mainText = $mainLines -join "`n"
   $mainCompactedLength = (Get-Item -LiteralPath $mainBacklog).Length
+  $otherLines = @([System.IO.File]::ReadAllLines($otherBacklog, [System.Text.Encoding]::UTF8))
+  $otherText = $otherLines -join "`n"
   $sideLines = @([System.IO.File]::ReadAllLines($sideBacklog, [System.Text.Encoding]::UTF8))
 
   Assert-True ($mainLines.Count -eq 3) 'oversized backlog should be folded by duplicate id while preserving no-id lines'
@@ -59,6 +72,9 @@ try {
   Assert-True ($mainText.Contains('not-json-but-operator-visible')) 'no-id backlog lines should be preserved during compaction'
   Assert-True (Test-Path -LiteralPath $mainBacklog) 'startup compaction should keep backlog.jsonl at the original path'
   Assert-True (-not (Test-Path -LiteralPath ($mainBacklog + '.compact.tmp'))) 'startup compaction should not leave atomic replace temp files behind'
+  Assert-True ($otherLines.Count -eq 2) 'startup compaction should fold every oversized channel backlog, not just the first one'
+  Assert-True ($otherText.Contains('"id":"other-a","value":"new"')) 'last line should win in later oversized channel backlogs'
+  Assert-True (-not $otherText.Contains('"value":"old"')) 'older duplicate line should be removed in later oversized channel backlogs'
   Assert-True ($sideLines.Count -eq 2) 'small backlog should stay below threshold and remain unchanged'
   Assert-True (($messages -join "`n") -match 'startup backlog compaction: compact-backlog: backlog\.jsonl') 'startup compaction should be logged'
   Assert-True (($messages -join "`n") -match 'threshold -- skip') 'startup compaction should scan every channel backlog and log threshold skips'
