@@ -53,6 +53,19 @@ try {
   Assert-True (($messages -join "`n") -match 'startup backlog compaction: compact-backlog: backlog\.jsonl') 'startup compaction should be logged'
   Assert-True (($messages -join "`n") -match 'threshold -- skip') 'startup compaction should scan every channel backlog and log threshold skips'
 
+  $missingScriptRoot = Join-Path $tmpRoot 'missing-script-root'
+  New-Item -ItemType Directory -Path (Join-Path $missingScriptRoot 'channels\main') -Force | Out-Null
+  $missingScriptMessages = [System.Collections.Generic.List[string]]::new()
+  Invoke-StartupBacklogCompaction -BridgeRoot $missingScriptRoot -LogBlock { param($m) $missingScriptMessages.Add([string]$m) }
+  Assert-True (($missingScriptMessages -join "`n") -match 'startup backlog compaction skipped: missing .*tools\\compact-backlog\.ps1') 'startup compaction should log missing helper script'
+
+  $missingChannelsRoot = Join-Path $tmpRoot 'missing-channels-root'
+  New-Item -ItemType Directory -Path (Join-Path $missingChannelsRoot 'tools') -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'compact-backlog.ps1') -Destination (Join-Path $missingChannelsRoot 'tools\compact-backlog.ps1') -Force
+  $missingChannelsMessages = [System.Collections.Generic.List[string]]::new()
+  Invoke-StartupBacklogCompaction -BridgeRoot $missingChannelsRoot -LogBlock { param($m) $missingChannelsMessages.Add([string]$m) }
+  Assert-True (($missingChannelsMessages -join "`n") -match 'startup backlog compaction skipped: missing .*channels') 'startup compaction should log missing channels root'
+
   Write-Output 'PASS supervisor startup backlog compaction test'
 } finally {
   if (Test-Path -LiteralPath $tmpRoot) {
