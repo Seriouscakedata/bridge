@@ -55,6 +55,17 @@ function Test-IsComputerActionTask {
   $t = ([string]$TaskText).Trim()
   if ([string]::IsNullOrWhiteSpace($t)) { return $false }
   if ($t -match '(?i)(удал\w*|сотр\w*|формат\w*|shutdown|restart-computer|перезагруз\w*\s+комп|выключ\w*\s+комп|git\s+push|reset\s+--hard)') { return $false }
+  # 2026-06-29 (selfie-styler real-project test): a software-BUILD request that merely DESCRIBES a UI
+  # (кнопка/нажми/окно inside the app's product spec) must NOT auto-fire into the local computer-use
+  # fast-lane. Root bug: "...одной большой круглой кнопкой «Фото». По нажатию..." matched нажм/кнопк ->
+  # computer_action (rule, 0.9) BEFORE the LLM classifier -> UIAutomation ran + reported FALSE success,
+  # the app was never built. Two guards before the UI-verb match keep terse desktop commands working
+  # while excluding build/product specs (long, complex UI flows should use the explicit [[ЛАПА]] marker):
+  #   (1) length — a terse desktop command is short; a product/build spec is long;
+  #   (2) build-intent — "построй/сделай/создай ... приложение/app/проект/сайт/программу/android".
+  if ($t.Length -gt 200) { return $false }
+  if (($t -match '(?i)(постро|сдела|созда|напиш|разработа|реализ|сверста|свёрст|\bbuild|\bmake|\bcreate|\bdevelop|\bimplement|\bwrite\b)') -and
+      ($t -match '(?i)(приложени|прилож|\bapp\b|андроид|android|\bios\b|сайт|веб|программ|проект|\bигр|экран|фич|интерфейс|компонент|модул)')) { return $false }
   return [bool]([regex]::IsMatch($t, '(?i)(нажм\w*|кликн\w*|щелкн\w*|кнопк\w*|мышк\w*|курсор|закрой\s+(?:это|то)?\s*окн\w*|закрыть\s+(?:это|то)?\s*окн\w*|\bclick\b|\bpress\b|move\s+mouse|close\s+(?:this\s+)?window)'))
 }
 
