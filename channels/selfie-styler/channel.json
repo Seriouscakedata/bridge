@@ -5,20 +5,6 @@
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler",
     "created":  "2026-06-28T22:25:31.4403223+03:00",
     "archived":  false,
-    "plan_approved":  true,
-    "plan_approved_at":  "2026-06-28T19:33:14.1868479Z",
-    "plan_approved_signature":  "e1b51a60e8b2d6f4b78639fa078273639cdd14f30c5941882038dbb685d3ccb7",
-    "plan_approved_signature_version":  "bridge-spec-v1",
-    "plan_approved_files":  [
-                                "PROJECT_BRIEF.md",
-                                ".bridge\\constitution.md",
-                                ".bridge\\specs\\acceptance.md",
-                                "PROJECT_MAP.md",
-                                "PROJECT_PLAN.md",
-                                ".bridge\\project-contract.json"
-                            ],
-    "plan_spec_profile":  "lite",
-    "plan_approved_git_head":  "b40771cdb62de3345372b9b5508861dde9ab55b6",
     "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler\\.bridge\\project-contract.json",
     "plan_contract_score":  100,
     "plan_contract_required_sections":  [
@@ -31,5 +17,14 @@
                                             "checks",
                                             "risk",
                                             "parallel_policy"
-                                        ]
+                                        ],
+    "plan_approved":  false,
+    "plan_approved_at":  "2026-06-29T03:54:07.8064564Z",
+    "plan_approved_signature":  "",
+    "plan_approved_signature_version":  "",
+    "plan_approved_files":  [
+
+                            ],
+    "plan_spec_profile":  "",
+    "plan_approved_git_head":  ""
 }
