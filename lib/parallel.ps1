@@ -3276,6 +3276,64 @@ function Set-ParallelDispatchGiveupBacklogItemsHeld {
   return @($held.ToArray())
 }
 
+function Set-ParallelDispatchBacklogRequeue {
+  # 2026-06-29 close-logic fix: re-queue a quarantined batch atom as a fresh claim (status='approved')
+  # and bump its PERSISTENT per-atom requeue_attempts so Get-ParallelDispatchBatchMixedSplitPlan's cap
+  # can eventually HOLD a genuinely-broken atom instead of re-queuing it forever (the in-batch
+  # quarantine give-up would otherwise reset on every fresh re-claim and never fire). RMW under the
+  # backlog lock; mirrors Set-ParallelDispatchBacklogHeldReason.
+  param([string]$Id)
+  if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+  $getBacklogCmd = Get-Command Get-Backlog -CommandType Function -ErrorAction SilentlyContinue
+  $saveBacklogCmd = Get-Command Save-Backlog -CommandType Function -ErrorAction SilentlyContinue
+  if (-not $getBacklogCmd -or -not $saveBacklogCmd) { return $false }
+  $getBacklogFn = $getBacklogCmd.ScriptBlock
+  $saveBacklogFn = $saveBacklogCmd.ScriptBlock
+  $update = {
+    $items = @(& $getBacklogFn)
+    $found = $false
+    foreach ($item in $items) {
+      if ([string]$item.id -ne $Id) { continue }
+      $prev = 0
+      try { if (($item.PSObject.Properties.Name -contains 'requeue_attempts') -and ($null -ne $item.requeue_attempts)) { $prev = [int]$item.requeue_attempts } } catch { $prev = 0 }
+      $item | Add-Member -NotePropertyName status -NotePropertyValue 'approved' -Force
+      $item | Add-Member -NotePropertyName requeue_attempts -NotePropertyValue ($prev + 1) -Force
+      $item | Add-Member -NotePropertyName held_reason -NotePropertyValue '' -Force
+      $found = $true
+      break
+    }
+    if ($found) { & $saveBacklogFn $items | Out-Null }
+    return $found
+  }.GetNewClosure()
+  try {
+    if (Get-Command Invoke-BacklogLocked -ErrorAction SilentlyContinue) { return [bool](Invoke-BacklogLocked $update) }
+    return [bool](& $update)
+  } catch { return $false }
+}
+
+function Get-ParallelDispatchBacklogRequeueAttempts {
+  # Read persistent per-atom requeue_attempts (0 if absent) for the given backlog ids -> hashtable.
+  # Seeds the mixed-split attempt cap. Read-only.
+  param([string[]]$Ids)
+  $map = @{}
+  if (-not $Ids -or @($Ids).Count -eq 0) { return $map }
+  $getBacklogCmd = Get-Command Get-Backlog -CommandType Function -ErrorAction SilentlyContinue
+  if (-not $getBacklogCmd) { return $map }
+  $idSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($id in @($Ids)) { if (-not [string]::IsNullOrWhiteSpace([string]$id)) { [void]$idSet.Add(([string]$id).Trim()) } }
+  try {
+    foreach ($item in @(& $getBacklogCmd.ScriptBlock)) {
+      $iid = ''
+      try { $iid = ([string]$item.id).Trim() } catch {}
+      if ([string]::IsNullOrWhiteSpace($iid) -or -not $idSet.Contains($iid)) { continue }
+      $n = 0
+      try { if (($item.PSObject.Properties.Name -contains 'requeue_attempts') -and ($null -ne $item.requeue_attempts)) { $n = [int]$item.requeue_attempts } } catch { $n = 0 }
+      $map[$iid] = $n
+    }
+  } catch {}
+  return $map
+}
+
 function Get-ParallelDispatchBatchFinalizePlan {
   param(
     [object]$Result,

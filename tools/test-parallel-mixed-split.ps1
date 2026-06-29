@@ -77,6 +77,41 @@ Assert ((SortJoin $r11.merged_done_ids) -eq 'a1') "multi: a1 done"
 Assert ((SortJoin $r11.requeue_ids) -eq 'a3,a4') "multi: a3,a4 requeued"
 Assert ((SortJoin $r11.hold_ids) -eq 'a2') "multi: a2 held at cap"
 
+# ---- requeue persistence helpers (mocked backlog RMW) ----
+$script:MockBacklog = @(
+  [pscustomobject]@{ id='a1'; status='running' },
+  [pscustomobject]@{ id='a3'; status='running'; requeue_attempts=1; held_reason='x' }
+)
+function Get-Backlog { return $script:MockBacklog }
+function Save-Backlog { param($items) $script:MockBacklog = @($items) }
+function Invoke-BacklogLocked { param($sb) return (& $sb) }
+
+# 12. requeue a fresh atom -> approved + requeue_attempts=1
+$ok1 = Set-ParallelDispatchBacklogRequeue -Id 'a1'
+$ra1 = @($script:MockBacklog | Where-Object { $_.id -eq 'a1' })[0]
+Assert ($ok1 -and ($ra1.status -eq 'approved') -and ([int]$ra1.requeue_attempts -eq 1)) "requeue: a1 -> approved, attempts=1"
+
+# 13. requeue an atom that already had attempts=1 -> attempts=2, held_reason cleared
+$ok2 = Set-ParallelDispatchBacklogRequeue -Id 'a3'
+$ra3 = @($script:MockBacklog | Where-Object { $_.id -eq 'a3' })[0]
+Assert ($ok2 -and ($ra3.status -eq 'approved') -and ([int]$ra3.requeue_attempts -eq 2) -and ([string]$ra3.held_reason -eq '')) "requeue: a3 attempts 1->2, held_reason cleared"
+
+# 14. read attempts back
+$attMap = Get-ParallelDispatchBacklogRequeueAttempts -Ids @('a1','a3','a9')
+Assert (([int]$attMap['a1'] -eq 1) -and ([int]$attMap['a3'] -eq 2) -and (-not $attMap.ContainsKey('a9'))) "read requeue_attempts: a1=1 a3=2 a9 absent"
+
+# 15. requeue unknown id -> false, no mutation
+$okU = Set-ParallelDispatchBacklogRequeue -Id 'zzz'
+Assert (-not $okU) "requeue unknown id -> false"
+
+# 16. blank id -> false
+Assert (-not (Set-ParallelDispatchBacklogRequeue -Id '   ')) "requeue blank id -> false"
+
+# 17. end-to-end: split says requeue a3 (attempts seeded from backlog) -> under cap 3 (attempt 3 -> hold)
+$attSeed = Get-ParallelDispatchBacklogRequeueAttempts -Ids @('a3')   # a3 now has 2
+$splitE = Get-ParallelDispatchBatchMixedSplitPlan -Result ([pscustomobject]@{ merged_ids=@('s1'); quarantined_ids=@('s3') }) -StreamToBacklogId @{ s1='a1'; s3='a3' } -AtomAttempts $attSeed -MaxAttempts 3
+Assert ((SortJoin $splitE.hold_ids) -eq 'a3' -and @($splitE.requeue_ids).Count -eq 0) "e2e: a3 at attempts=2 -> held on this (3rd) round"
+
 Write-Host ""
 Write-Host ("RESULT: pass=$pass fail=$fail")
 if ($fail -gt 0) { exit 1 } else { exit 0 }
