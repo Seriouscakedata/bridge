@@ -3,28 +3,6 @@
     "name":  "Selfie Styler",
     "description":  "Fullscreen selfie camera; one photo button restyles the selfie with a random AI art style each time; result screen shows the style name and a save-to-gallery button.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler",
-    "created":  "2026-06-28T22:25:31.4403223+03:00",
-    "archived":  false,
-    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler\\.bridge\\project-contract.json",
-    "plan_contract_score":  100,
-    "plan_contract_required_sections":  [
-                                            "goal",
-                                            "scope/non_goals",
-                                            "users/roles",
-                                            "surfaces/routes/screens",
-                                            "data/backend",
-                                            "acceptance_scenarios",
-                                            "checks",
-                                            "risk",
-                                            "parallel_policy"
-                                        ],
-    "plan_approved":  false,
-    "plan_approved_at":  "2026-06-29T03:54:07.8064564Z",
-    "plan_approved_signature":  "",
-    "plan_approved_signature_version":  "",
-    "plan_approved_files":  [
-
-                            ],
-    "plan_spec_profile":  "",
-    "plan_approved_git_head":  ""
+    "created":  "2026-06-29T13:31:50.0360389+03:00",
+    "archived":  false
 }

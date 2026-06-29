@@ -1,4 +1,4 @@
-{
+﻿{
     "port":  8787,
     "codexExe":  "C:/Users/rafie/AppData/Local/OpenAI/Codex/bin/codex.exe",
     "claudeGlob":  "C:/Users/rafie/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/*/claude.exe",
@@ -41,14 +41,14 @@
                            "opusOnDiscuss":  true,
                            "opusOnStudy":  true,
                            "opusKeywords":  [
-                                                "архитектур",
-                                                "рефактор",
-                                                "перераб",
-                                                "мигр",
-                                                "интеграц",
-                                                "масштаб",
+                                                "Р°СЂС…РёС‚РµРєС‚СѓСЂ",
+                                                "СЂРµС„Р°РєС‚РѕСЂ",
+                                                "РїРµСЂРµСЂР°Р±",
+                                                "РјРёРіСЂ",
+                                                "РёРЅС‚РµРіСЂР°С†",
+                                                "РјР°СЃС€С‚Р°Р±",
                                                 "overhaul",
-                                                "спроектируй",
+                                                "СЃРїСЂРѕРµРєС‚РёСЂСѓР№",
                                                 "refactor"
                                             ]
                        },
@@ -572,7 +572,7 @@
                                                          "config",
                                                          "docs"
                                                      ],
-                                         "purpose":  "DeepSeek v4 Pro — strong, cheap; single-file edits via LLM-worker."
+                                         "purpose":  "DeepSeek v4 Pro вЂ” strong, cheap; single-file edits via LLM-worker."
                                      },
                                      {
                                          "id":  "deepseek-pro-2",
@@ -603,7 +603,7 @@
                                                          "config",
                                                          "any"
                                                      ],
-                                         "purpose":  "Gemini 2.5 Flash — fast, cheap; simple single-file edits via LLM-worker."
+                                         "purpose":  "Gemini 2.5 Flash вЂ” fast, cheap; simple single-file edits via LLM-worker."
                                      },
                                      {
                                          "id":  "gemini-flash-2",
@@ -652,7 +652,7 @@
                      },
     "radarEveryHours":  720,
     "synthesisMode":  {
-                          "enabled":  true,
+                          "enabled":  false,
                           "defaultDepth":  "smart",
                           "claudeModel":  "claude-opus-4-8",
                           "cheapModel":  "gemini-2.5-flash",
