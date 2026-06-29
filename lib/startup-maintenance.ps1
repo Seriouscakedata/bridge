@@ -1,4 +1,6 @@
-﻿# Invoked by supervisor.ps1 at each startup. Scans all channels/*/backlog.jsonl;nfunction Invoke-StartupBacklogCompaction {
+﻿# Invoked by supervisor.ps1 at each startup. Scans all channels/*/backlog.jsonl;
+# compacts any file over the 10 MB threshold (last-line-wins fold by id, atomic replace).
+function Invoke-StartupBacklogCompaction {
   param(
     [Parameter(Mandatory=$true)][string]$BridgeRoot,
     [scriptblock]$LogBlock = $null
@@ -14,11 +16,11 @@
     $compactBacklogScript = Join-Path $BridgeRoot 'tools\compact-backlog.ps1'
     $channelsRoot = Join-Path $BridgeRoot 'channels'
     if (-not (Test-Path -LiteralPath $compactBacklogScript)) {
-      Write-StartupBacklogCompactionLog ("startup backlog compaction skipped: missing " + $compactBacklogScript)
+      Write-StartupBacklogCompactionLog ('startup backlog compaction skipped: missing ' + $compactBacklogScript)
       return
     }
     if (-not (Test-Path -LiteralPath $channelsRoot)) {
-      Write-StartupBacklogCompactionLog ("startup backlog compaction skipped: missing " + $channelsRoot)
+      Write-StartupBacklogCompactionLog ('startup backlog compaction skipped: missing ' + $channelsRoot)
       return
     }
 
@@ -31,15 +33,15 @@
           $output = @(& $compactBacklogScript -Path $backlogPath *>&1)
           foreach ($line in $output) {
             if ($null -ne $line -and ('' -ne [string]$line)) {
-              Write-StartupBacklogCompactionLog ("startup backlog compaction: " + [string]$line)
+              Write-StartupBacklogCompactionLog ('startup backlog compaction: ' + [string]$line)
             }
           }
         } catch {
-          Write-StartupBacklogCompactionLog ("startup backlog compaction error for " + $backlogPath + ": " + $_.Exception.Message)
+          Write-StartupBacklogCompactionLog ('startup backlog compaction error for ' + $backlogPath + ': ' + $_.Exception.Message)
         }
       }
     }
   } catch {
-    Write-StartupBacklogCompactionLog ("startup backlog compaction error: " + $_.Exception.Message)
+    Write-StartupBacklogCompactionLog ('startup backlog compaction error: ' + $_.Exception.Message)
   }
 }
