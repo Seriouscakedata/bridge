@@ -8,6 +8,7 @@
 . (Join-Path $PSScriptRoot 'lib\replay.ps1')
 . (Join-Path $PSScriptRoot 'lib\script-integrity.ps1')
 . (Join-Path $PSScriptRoot 'lib\bridge-lock.ps1')
+. (Join-Path $PSScriptRoot 'lib\startup-maintenance.ps1')
 $script:supervisorLaunchLock = Acquire-SupervisorLaunchLock -TimeoutMs 0
 if (-not $script:supervisorLaunchLock.acquired) {
   Write-Host ("supervisor: another instance already running ($($script:supervisorLaunchLock.reason)) - exiting")
@@ -88,27 +89,7 @@ try {
 
 # Compact oversized backlog files once at startup. The helper script keeps the
 # policy local: 10MB threshold, last-line-wins by id, atomic replacement.
-try {
-  $compactBacklogScript = Join-Path $root 'tools\compact-backlog.ps1'
-  $channelsRoot = Join-Path $root 'channels'
-  if ((Test-Path -LiteralPath $compactBacklogScript) -and (Test-Path -LiteralPath $channelsRoot)) {
-    Get-ChildItem -LiteralPath $channelsRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-      $backlogPath = Join-Path $_.FullName 'backlog.jsonl'
-      if (Test-Path -LiteralPath $backlogPath) {
-        try {
-          $output = @(& $compactBacklogScript -Path $backlogPath 2>&1)
-          foreach ($line in $output) {
-            if ($null -ne $line -and ('' -ne [string]$line)) {
-              Log ("startup backlog compaction: " + [string]$line)
-            }
-          }
-        } catch {
-          Log ("startup backlog compaction error for " + $backlogPath + ": " + $_.Exception.Message)
-        }
-      }
-    }
-  }
-} catch { Log ("startup backlog compaction error: " + $_.Exception.Message) }
+Invoke-StartupBacklogCompaction -BridgeRoot $root -LogBlock { param($m) Log $m }
 
 # Phase 3 (full): supervisor keeps ONE driver per non-archived channel. Each driver is
 # pinned to its channel for life. $drivers hashtable: slug -> Process object.
