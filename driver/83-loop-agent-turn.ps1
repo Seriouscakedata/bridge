@@ -103,14 +103,51 @@
             Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true } | Out-Null
             $turnResult = [pscustomobject]@{ status = 'ok'; text = ("STATUS: DONE`nПараллельно выполнено потоков: " + $detRes.merged); fallback = '' }
           } elseif ($detRes -and $detRes.ok -and $detQ -gt 0) {
-            # 2026-06-01 ERR-009: MIXED result (some merged, some FAILED/quarantined). Do NOT report a
-            # generic "DONE: N потоков" — that masked failed streams. Partial work did land, so mark
-            # actions, but force a planner turn to finish/repair the quarantined streams (sequentially,
-            # since ERR-002 will gate them) instead of closing the task as done.
-            Add-Message -From system -Text ("⚠ Parallel: СМЕШАННЫЙ результат — слито " + $detRes.merged + " из " + $detRes.total + " потоков, " + $detQ + " в карантине (провалились). НЕ закрываю как DONE; передаю планировщику доделать/починить провалившиеся потоки.") -Kind event | Out-Null
-            try { Add-ProjectWaveMemory -Outcome 'partial' -Streams $detTotal -Merged ([int]$detRes.merged) -Quarantined $detQ -BacklogIds $detIdsForMemory -Reason 'some streams quarantined' | Out-Null } catch {}
-            Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true; $s.force_planner = $true } | Out-Null
-            # leave $turnResult null -> the planner runs this turn and drives the remaining work to DONE
+            # 2026-06-29 (close-logic latency fix, operator-approved): MIXED result (some streams merged,
+            # some quarantined). INCREMENTAL CLOSE — rather than hold the WHOLE wave on a planner turn while
+            # the slow/failing tail is serial-retried (the ~5 min-per-tail-stream lag the operator flagged:
+            # 20 atoms done in 5 min but marked done=0 for ~40 min), close the MERGED atoms NOW through the
+            # SAME STATUS:DONE -> holistic critic/QA gate (no false-green; the gate still runs over the merged
+            # tree before close), and re-queue the quarantined tail as a FRESH parallel batch (attempt-capped
+            # so genuinely-broken atoms are HELD, not looped). FULLY FAIL-SAFE: any error falls back to the
+            # original ERR-009 force-planner behavior below (no worse than before).
+            $incClosed = $false
+            try {
+              $splitMap = Get-ParallelDispatchBatchIdByStream -Streams @($detStreams)
+              $quarBids = New-Object 'System.Collections.Generic.List[string]'
+              foreach ($qsid in @(ConvertTo-ParallelDispatchStringArray -Value $detRes.quarantined_ids)) {
+                if ($splitMap.ContainsKey($qsid)) { $qb = ([string]$splitMap[$qsid]).Trim(); if (-not [string]::IsNullOrWhiteSpace($qb)) { [void]$quarBids.Add($qb) } }
+              }
+              $reqAttempts = Get-ParallelDispatchBacklogRequeueAttempts -Ids @($quarBids.ToArray())
+              $split = Get-ParallelDispatchBatchMixedSplitPlan -Result $detRes -StreamToBacklogId $splitMap -AtomAttempts $reqAttempts -MaxAttempts 3
+              $mergedDone = @($split.merged_done_ids)
+              if ($mergedDone.Count -gt 0) {
+                $reqN = 0; foreach ($rid in @($split.requeue_ids)) { if (Set-ParallelDispatchBacklogRequeue -Id $rid) { $reqN++ } }
+                $holdN = 0; foreach ($hid in @($split.hold_ids)) { if (Set-ParallelDispatchBacklogHeldReason -Id $hid -Reason 'batch-mixed-requeue-cap') { $holdN++ } }
+                Update-State ({ param($s)
+                  $s | Add-Member -NotePropertyName workpack_batch_ids -NotePropertyValue @($mergedDone) -Force
+                  $s | Add-Member -NotePropertyName workpack_batch_quarantine_counts -NotePropertyValue @{} -Force
+                  $s | Add-Member -NotePropertyName workpack_batch_quarantine_giveup_ids -NotePropertyValue @() -Force
+                  $s | Add-Member -NotePropertyName workpack_batch_quarantine_task_hash -NotePropertyValue '' -Force
+                  $s.task_did_actions = $true; $s.coder_fired = $true
+                }.GetNewClosure()) | Out-Null
+                Add-Message -From system -Text ("✅ Parallel: слито " + [int]$detRes.merged + " потоков — закрываю их сразу через критик/QA; хвост (" + $detQ + " в карантине): переочередь " + $reqN + ", отложено по cap " + $holdN + ".") -Kind event | Out-Null
+                try { Add-ProjectWaveMemory -Outcome 'partial' -Streams $detTotal -Merged ([int]$detRes.merged) -Quarantined $detQ -BacklogIds @($mergedDone) -Reason ('incremental-close: requeued ' + $reqN + ', held ' + $holdN) | Out-Null } catch {}
+                $turnResult = [pscustomobject]@{ status = 'ok'; text = ("STATUS: DONE`nПараллельно слито потоков: " + [int]$detRes.merged + " (хвост переочередён отдельной волной)"); fallback = '' }
+                $incClosed = $true
+              }
+            } catch {
+              try { Add-Message -From system -Text ("⚠ Incremental-close split не удался (" + $_.Exception.Message + ") — откат к planner-доделке хвоста.") -Kind event | Out-Null } catch {}
+              $incClosed = $false
+            }
+            if (-not $incClosed) {
+              # FALLBACK = original ERR-009 behavior: partial work landed, force a planner turn to
+              # finish/repair the quarantined streams (sequentially, ERR-002 gates them) instead of closing.
+              Add-Message -From system -Text ("⚠ Parallel: СМЕШАННЫЙ результат — слито " + $detRes.merged + " из " + $detRes.total + " потоков, " + $detQ + " в карантине (провалились). НЕ закрываю как DONE; передаю планировщику доделать/починить провалившиеся потоки.") -Kind event | Out-Null
+              try { Add-ProjectWaveMemory -Outcome 'partial' -Streams $detTotal -Merged ([int]$detRes.merged) -Quarantined $detQ -BacklogIds $detIdsForMemory -Reason 'some streams quarantined' | Out-Null } catch {}
+              Update-State { param($s) $s.task_did_actions = $true; $s.coder_fired = $true; $s.force_planner = $true } | Out-Null
+              # leave $turnResult null -> the planner runs this turn and drives the remaining work to DONE
+            }
           } else {
             Add-Message -From system -Text "⚠ Parallel dispatch не слил ни одного потока (все в карантине/провал) — передаю планировщику для разбора, без повторного слепого dispatch." -Kind event | Out-Null
             try { Add-ProjectWaveMemory -Outcome 'failed' -Streams $detTotal -Merged 0 -Quarantined $detQ -BacklogIds $detIdsForMemory -Reason 'no streams merged' | Out-Null } catch {}
