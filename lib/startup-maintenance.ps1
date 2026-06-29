@@ -1,4 +1,4 @@
-function Invoke-StartupBacklogCompaction {
+﻿# Invoked by supervisor.ps1 at each startup. Scans all channels/*/backlog.jsonl;nfunction Invoke-StartupBacklogCompaction {
   param(
     [Parameter(Mandatory=$true)][string]$BridgeRoot,
     [scriptblock]$LogBlock = $null
