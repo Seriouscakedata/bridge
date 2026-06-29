@@ -49,6 +49,7 @@ try {
   Assert-True (-not $mainText.Contains('"value":"old"')) 'old duplicate line should be removed'
   Assert-True ($sideLines.Count -eq 2) 'small backlog should stay below threshold and remain unchanged'
   Assert-True (($messages -join "`n") -match 'startup backlog compaction: compact-backlog: backlog\.jsonl') 'startup compaction should be logged'
+  Assert-True (($messages -join "`n") -match 'threshold -- skip') 'startup compaction should scan every channel backlog and log threshold skips'
 
   Write-Output 'PASS supervisor startup backlog compaction test'
 } finally {
