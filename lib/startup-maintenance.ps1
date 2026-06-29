@@ -22,7 +22,9 @@ function Invoke-StartupBacklogCompaction {
       return
     }
 
-    Get-ChildItem -LiteralPath $channelsRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -LiteralPath $channelsRoot -Directory -ErrorAction SilentlyContinue |
+      Sort-Object -Property Name |
+      ForEach-Object {
       $backlogPath = Join-Path $_.FullName 'backlog.jsonl'
       if (Test-Path -LiteralPath $backlogPath) {
         try {
