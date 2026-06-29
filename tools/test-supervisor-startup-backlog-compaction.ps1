@@ -47,6 +47,8 @@ try {
   Assert-True ($mainLines.Count -eq 2) 'oversized backlog should be folded by duplicate id'
   Assert-True ($mainText.Contains('"id":"task-a","value":"new"')) 'last line should win for duplicated id'
   Assert-True (-not $mainText.Contains('"value":"old"')) 'old duplicate line should be removed'
+  Assert-True (Test-Path -LiteralPath $mainBacklog) 'startup compaction should keep backlog.jsonl at the original path'
+  Assert-True (-not (Test-Path -LiteralPath ($mainBacklog + '.compact.tmp'))) 'startup compaction should not leave atomic replace temp files behind'
   Assert-True ($sideLines.Count -eq 2) 'small backlog should stay below threshold and remain unchanged'
   Assert-True (($messages -join "`n") -match 'startup backlog compaction: compact-backlog: backlog\.jsonl') 'startup compaction should be logged'
   Assert-True (($messages -join "`n") -match 'threshold -- skip') 'startup compaction should scan every channel backlog and log threshold skips'
