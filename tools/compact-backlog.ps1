@@ -5,6 +5,7 @@
     Path to the backlog.jsonl file.
 .PARAMETER ThresholdMB
     Minimum file size in MB to trigger compaction. Default: 10.
+    Must be non-negative. Use 0 to force a scan.
 .PARAMETER WhatIf
     Dry run: report what would happen without writing.
 #>
@@ -15,6 +16,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($ThresholdMB -lt 0) {
+    throw "compact-backlog: ThresholdMB must be non-negative"
+}
 
 if (-not (Test-Path -LiteralPath $Path)) {
     Write-Host "compact-backlog: file not found: $Path"
