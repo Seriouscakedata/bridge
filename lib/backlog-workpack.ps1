@@ -1169,6 +1169,15 @@ function Get-BacklogWorkpackClassification {
     }
   }
   $files = @($fileList.ToArray())
+  # 2026-06-29 (diffusion/parallel root-fix): if the item carries an explicit DECLARED `files` list (autopilot
+  # atoms do — it's the authoritative EDIT target after ownership repair), use THAT as the conflict surface
+  # instead of the text-mention-derived set. Text mentions pull in READ-only deps (e.g. a shared contract/
+  # interface that every plugin imports), which otherwise become the workpack primary/conflict-group, so all N
+  # independent plugins collapse onto the shared read-dep -> false serialization (~4-wide instead of N-wide;
+  # observed: 24 stress-forge plugins -> only 2 workpacks keyed on core/transform.py). Items with no declared
+  # files (ad-hoc text tasks) keep the text-derived set unchanged.
+  $declaredFiles = @(Get-BacklogPackObjectValue -Obj $Item -Name 'files' -Default @() | ForEach-Object { ([string]$_).Replace('\','/').Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and ($_ -match '[./]') } | Select-Object -Unique)
+  if (@($declaredFiles).Count -gt 0) { $files = @($declaredFiles) }
   $classificationText = $scopeSignalText
   if ([bool]$scopeContract.has_explicit_expected) {
     $classificationText = ((@($scopeContract.expected_files) + @($scopeContract.risk_area)) -join ' ')
@@ -1180,8 +1189,16 @@ function Get-BacklogWorkpackClassification {
     # 2026-05-31 (Foundation #4): prefer the task's TARGET file (after the action verb) over an
     # эталон/reference path, so independent tasks land in distinct workpacks and run in parallel.
     $primary = ''
-    if (-not [bool]$scopeContract.has_explicit_expected) { $primary = Get-BacklogTaskTargetFile -Text $scopeSignalText }
-    if ([string]::IsNullOrWhiteSpace($primary)) { $primary = Get-BacklogPrimaryWorkpackFile -Files $files }
+    if (@($declaredFiles).Count -gt 0) {
+      # Declared edit files are authoritative -> the primary is the atom's own edit target, never a text-mention
+      # read-dep. This is what makes N independent plugins land in N distinct workpacks (run wide).
+      $primary = Get-BacklogPrimaryWorkpackFile -Files $files
+    } else {
+      # 2026-05-31 (Foundation #4): prefer the task's TARGET file (after the action verb) over an
+      # эталон/reference path, so independent text-only tasks land in distinct workpacks and run in parallel.
+      if (-not [bool]$scopeContract.has_explicit_expected) { $primary = Get-BacklogTaskTargetFile -Text $scopeSignalText }
+      if ([string]::IsNullOrWhiteSpace($primary)) { $primary = Get-BacklogPrimaryWorkpackFile -Files $files }
+    }
     $touch = @((@($primary) + @($files)) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique | Select-Object -First 8)
     # 2026-06-01 (Foundation #4 scale): for a PROJECT channel, key by the FULL file path so that N
     # tasks editing N different files form N workpacks (=> up to N parallel streams). Bridge keeps
@@ -1207,6 +1224,13 @@ function Get-BacklogWorkpackClassification {
   }
   if ([string]::IsNullOrWhiteSpace($key)) { $key = 'module:general' }
   $conflict = Get-BacklogWorkpackConflictGroup -Text $classificationText -Files $files
+  # 2026-06-29 (diffusion/parallel root-fix): when the atom DECLARES its edit files, derive the conflict group
+  # from its OWN primary edit target (matching $key) instead of letting Get-BacklogWorkpackConflictGroup's
+  # text-target heuristic latch onto a shared READ-dep -- which would put all N independent plugins into the
+  # same serial lane. Distinct edit files -> distinct conflict groups -> distinct lanes -> parallel.
+  if (@($declaredFiles).Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$primary)) {
+    $conflict = 'file:' + (([string]$primary).ToLowerInvariant() -replace '[^a-z0-9/._-]+','-')
+  }
   return [pscustomobject]@{
     key            = $key.ToLowerInvariant()
     touch_set      = @($touch)

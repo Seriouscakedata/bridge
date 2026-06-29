@@ -381,6 +381,43 @@ try {
   # delayed packer fires up to backlogPack.cooldownMinutes (30m) later — the upfront stall this lever removes.
   Assert-True (-not [string]::IsNullOrWhiteSpace([string]$externalItem[0].workpack_id)) 'external project atom did not get an immediate workpack_id at emit time (upfront-speed #1 regressed)'
   Assert-True (-not [string]::IsNullOrWhiteSpace([string]$externalItem[0].workpack_root_cause_key)) 'external project atom did not get a workpack_root_cause_key at emit time'
+
+  # 2026-06-29 (diffusion/parallel root-fix): an atom's conflict touch-set must reflect the file it EDITS, not a
+  # shared file it only READS (imports). When the LLM over-declares workpack_touch_set = [shared_readdep, own]
+  # while files = [own], the read-dep must be DROPPED so N plugins each editing their own file get DISTINCT
+  # conflict groups (run wide) instead of collapsing onto the shared read-dep (false serialization -> ~4-wide).
+  $readDepMarker = @'
+[
+  {
+    "slug": "readdep-plugin-a",
+    "title": "Read-dep plugin A",
+    "task": "Create src/plugins/p_alpha.py implementing the Plugin interface imported from src/core/base.py. Edit ONLY p_alpha.py; src/core/base.py is read-only context.",
+    "files": ["src/plugins/p_alpha.py"],
+    "workpack_touch_set": ["src/core/base.py", "src/plugins/p_alpha.py"],
+    "acceptance": ["p_alpha.py defines a Plugin subclass"],
+    "checks": ["python -m py_compile src/plugins/p_alpha.py"],
+    "severity": "info"
+  },
+  {
+    "slug": "readdep-plugin-b",
+    "title": "Read-dep plugin B",
+    "task": "Create src/plugins/p_beta.py implementing the Plugin interface imported from src/core/base.py. Edit ONLY p_beta.py; src/core/base.py is read-only context.",
+    "files": ["src/plugins/p_beta.py"],
+    "workpack_touch_set": ["src/core/base.py", "src/plugins/p_beta.py"],
+    "acceptance": ["p_beta.py defines a Plugin subclass"],
+    "checks": ["python -m py_compile src/plugins/p_beta.py"],
+    "severity": "info"
+  }
+]
+'@
+  $readDepResult = Add-ProjectBacklogFromMarker -Block $readDepMarker -Channel 'external-project' -Source 'test' -SourceTaskId 'readdep-test'
+  Assert-True ([int]$readDepResult.created -eq 2) ("expected 2 read-dep plugin atoms, got {0}" -f [int]$readDepResult.created)
+  $pA = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'readdep-plugin-a' } | Select-Object -First 1)[0]
+  $pB = @(Get-Backlog | Where-Object { [string]$_.slug -eq 'readdep-plugin-b' } | Select-Object -First 1)[0]
+  Assert-True (-not (@($pA.workpack_touch_set) -contains 'src/core/base.py')) 'read-dep src/core/base.py must be dropped from plugin A touch-set'
+  Assert-True (@($pA.workpack_touch_set) -contains 'src/plugins/p_alpha.py') 'plugin A touch-set must keep its own edited file'
+  Assert-True (-not (@($pB.workpack_touch_set) -contains 'src/core/base.py')) 'read-dep src/core/base.py must be dropped from plugin B touch-set'
+  Assert-True ([string]$pA.workpack_conflict_group -ne [string]$pB.workpack_conflict_group) 'two read-dep plugins editing different files must get DISTINCT conflict groups (else they serialize 4-wide)'
   $script:EffectiveChannel = 'main'
 
   Write-Host ('OK backlog packer: packed {0} items into {1} workpacks; marker and forbidden touch-set tests passed' -f [int]$run.packed_items, [int]$run.workpack_count)
