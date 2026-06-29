@@ -42,15 +42,18 @@ try {
     @('{"id":"side-a","value":"small-old"}', '{"id":"side-a","value":"small-new"}'),
     [System.Text.UTF8Encoding]::new($false)
   )
+  $mainOriginalLength = (Get-Item -LiteralPath $mainBacklog).Length
 
   $messages = [System.Collections.Generic.List[string]]::new()
   Invoke-StartupBacklogCompaction -BridgeRoot $tmpRoot -LogBlock { param($m) $messages.Add([string]$m) }
 
   $mainLines = @([System.IO.File]::ReadAllLines($mainBacklog, [System.Text.Encoding]::UTF8))
   $mainText = $mainLines -join "`n"
+  $mainCompactedLength = (Get-Item -LiteralPath $mainBacklog).Length
   $sideLines = @([System.IO.File]::ReadAllLines($sideBacklog, [System.Text.Encoding]::UTF8))
 
   Assert-True ($mainLines.Count -eq 3) 'oversized backlog should be folded by duplicate id while preserving no-id lines'
+  Assert-True ($mainCompactedLength -lt $mainOriginalLength) 'startup compaction should rewrite oversized duplicate backlog, not only dry-run'
   Assert-True ($mainText.Contains('"id":"task-a","value":"new"')) 'last line should win for duplicated id'
   Assert-True (-not $mainText.Contains('"value":"old"')) 'old duplicate line should be removed'
   Assert-True ($mainText.Contains('not-json-but-operator-visible')) 'no-id backlog lines should be preserved during compaction'
