@@ -1,0 +1,90 @@
+{
+  "contract_version": "1.0.0",
+  "name": "Transform",
+  "owned_file": "stressforge/core/transform.py",
+  "owned_region": "class Transform(ABC)",
+  "requirement_trace": "Transform ABC — deterministic pure text transform; approved requirement Chapter 1 Core Contracts; acceptance: 40 transforms importable, each round-trips a sample string",
+  "signature": {
+    "type": "abstract_base_class",
+    "module": "stressforge.core.transform",
+    "imports": ["from abc import ABC, abstractmethod"],
+    "class_attributes": [
+      {
+        "name": "name",
+        "type": "str",
+        "description": "Unique transform identifier; declared as class attribute in each concrete subclass; must be non-empty string"
+      }
+    ],
+    "abstract_methods": [
+      {
+        "name": "apply",
+        "signature": "apply(self, text: str) -> str",
+        "description": "Transform input text and return transformed string. Must be overridden by every concrete subclass. No default implementation."
+      }
+    ]
+  },
+  "behavior": {
+    "description": "Deterministic pure text-to-text transformation. Same input always produces same output.",
+    "purity": "pure",
+    "deterministic": true,
+    "io": "none",
+    "network": "none",
+    "registry_mutation": "none",
+    "persistence": "none",
+    "thread_safety": "stateless; safe if subclass has no mutable state"
+  },
+  "preconditions": [
+    "text argument must be an instance of str",
+    "text may be empty string (len 0 is valid)",
+    "caller must not pass None, bytes, or non-str types"
+  ],
+  "postconditions": [
+    "return value is always str",
+    "REGISTRY is unchanged after apply()",
+    "no files, sockets, or environment variables are modified by apply()",
+    "no exception is swallowed silently — domain errors propagate as StressForgeError subclass"
+  ],
+  "side_effects": [],
+  "idempotency": {
+    "per_subclass": true,
+    "note": "The ABC does not enforce idempotency. Subclasses define their own. E.g., Upper is idempotent; Reverse is involutory (apply(apply(x))==x) but not idempotent."
+  },
+  "invariants": [
+    "name class attribute is always a non-empty str on every concrete subclass",
+    "apply() never mutates REGISTRY or any module-level state",
+    "apply() never performs I/O (file, network, stdout, stderr)",
+    "apply() always returns str given valid str input",
+    "instantiating Transform directly raises TypeError (abstract class)"
+  ],
+  "error_taxonomy": {
+    "TypeError": "Raised if text is not str or if Transform is instantiated directly (caller contract violation)",
+    "StressForgeError": "Domain base; subclasses raised by apply() on invalid domain input where explicitly specified by subclass"
+  },
+  "golden_examples": [
+    {
+      "description": "Reverse: 'hello' -> 'olleh'",
+      "transform_class": "Reverse",
+      "input": "hello",
+      "expected_output": "olleh"
+    },
+    {
+      "description": "Reverse: empty string stays empty",
+      "transform_class": "Reverse",
+      "input": "",
+      "expected_output": ""
+    },
+    {
+      "description": "Upper: 'hello' -> 'HELLO'",
+      "transform_class": "Upper",
+      "input": "hello",
+      "expected_output": "HELLO"
+    },
+    {
+      "description": "Lower: 'HELLO' -> 'hello'",
+      "transform_class": "Lower",
+      "input": "HELLO",
+      "expected_output": "hello"
+    }
+  ],
+  "version": "1.0.0"
+}

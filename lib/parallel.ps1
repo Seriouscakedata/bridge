@@ -3304,6 +3304,69 @@ function Get-ParallelDispatchBatchFinalizePlan {
   }
 }
 
+function Get-ParallelDispatchBatchMixedSplitPlan {
+  # 2026-06-29 (close-logic latency fix): on a MIXED parallel result (some streams merged, some
+  # quarantined) split the wave so the MERGED atoms close PROMPTLY through the normal STATUS:DONE ->
+  # critic/QA gate (no false-green: the holistic gate still runs over the merged tree before close),
+  # while the quarantined tail is RE-QUEUED as a fresh parallel batch instead of serial-retried inside
+  # the same wave (the ~5 min-per-tail-stream latency the operator flagged 2026-06-29). A per-atom
+  # attempt cap REPLACES the in-batch quarantine give-up (which would otherwise reset on every re-queue
+  # and never fire) so genuinely-broken atoms are HELD, not re-queued forever.
+  #
+  # Pure / side-effect-free (mirrors Get-ParallelDispatchBatchFinalizePlan): the caller applies the plan.
+  #   merged_done_ids : backlog atom ids whose stream merged -> shrink workpack_batch_ids to these and
+  #                     synthesize STATUS: DONE so the existing completion gate (critic/QA) closes them.
+  #   requeue_ids     : quarantined atoms still under the attempt cap -> set status back to 'approved'
+  #                     so the frontier re-claims them as a fresh (parallel) batch.
+  #   hold_ids        : quarantined atoms at/over the cap -> hold (terminal; needs re-claim/operator).
+  param(
+    [object]$Result,                 # dispatch result: .merged_ids, .quarantined_ids
+    [hashtable]$StreamToBacklogId,   # stream id -> backlog atom id (positional zip captured at dispatch)
+    [hashtable]$AtomAttempts = @{},  # backlog atom id -> requeue attempts already spent (for the cap)
+    [int]$MaxAttempts = 3            # this-round attempt number >= MaxAttempts -> hold instead of requeue
+  )
+  if ($null -eq $StreamToBacklogId) { $StreamToBacklogId = @{} }
+  if ($null -eq $AtomAttempts) { $AtomAttempts = @{} }
+  if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
+
+  $mergedIds = @()
+  try { $mergedIds = @(ConvertTo-ParallelDispatchStringArray -Value $Result.merged_ids) } catch {}
+  $quarIds = @()
+  try { $quarIds = @(ConvertTo-ParallelDispatchStringArray -Value $Result.quarantined_ids) } catch {}
+
+  # merged streams -> backlog atom ids (dedup, order-preserving). merged WINS over quarantined.
+  $mergedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $mergedDone = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($sid in $mergedIds) {
+    if (-not $StreamToBacklogId.ContainsKey($sid)) { continue }
+    $bid = ([string]$StreamToBacklogId[$sid]).Trim()
+    if ([string]::IsNullOrWhiteSpace($bid)) { continue }
+    if ($mergedSet.Add($bid)) { [void]$mergedDone.Add($bid) }
+  }
+
+  $requeue = New-Object 'System.Collections.Generic.List[string]'
+  $hold = New-Object 'System.Collections.Generic.List[string]'
+  $seenTail = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($sid in $quarIds) {
+    if (-not $StreamToBacklogId.ContainsKey($sid)) { continue }
+    $bid = ([string]$StreamToBacklogId[$sid]).Trim()
+    if ([string]::IsNullOrWhiteSpace($bid)) { continue }
+    if ($mergedSet.Contains($bid)) { continue }   # already done via a merged stream
+    if (-not $seenTail.Add($bid)) { continue }     # dedup
+    $attempts = 0
+    if ($AtomAttempts.ContainsKey($bid)) { try { $attempts = [int]$AtomAttempts[$bid] } catch { $attempts = 0 } }
+    # This quarantine round is attempt number ($attempts + 1). At/over the cap -> hold.
+    if (($attempts + 1) -ge $MaxAttempts) { [void]$hold.Add($bid) }
+    else { [void]$requeue.Add($bid) }
+  }
+
+  return [pscustomobject]@{
+    merged_done_ids = @($mergedDone.ToArray())
+    requeue_ids = @($requeue.ToArray())
+    hold_ids = @($hold.ToArray())
+  }
+}
+
 function Update-ParallelDispatchBatchQuarantineState {
   param(
     [object[]]$Streams,
