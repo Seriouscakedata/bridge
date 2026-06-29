@@ -1,6 +1,10 @@
 <#
 .SYNOPSIS
     Deduplicates a backlog.jsonl file by 'id' (last-line-wins), in-place.
+.DESCRIPTION
+    Streams the target file, keeps the last line for each id, and atomically
+    replaces the original file only when the size threshold is reached and
+    duplicate ids are found.
 .PARAMETER Path
     Path to the backlog.jsonl file.
 .PARAMETER ThresholdMB
