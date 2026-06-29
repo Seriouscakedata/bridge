@@ -12,6 +12,14 @@
     Must be non-negative. Use 0 to force a scan.
 .PARAMETER WhatIf
     Dry run: report what would happen without writing.
+.EXAMPLE
+    .\tools\compact-backlog.ps1 -Path .\channels\main\backlog.jsonl -WhatIf
+
+    Scans the main backlog and reports whether duplicates would be removed.
+.EXAMPLE
+    .\tools\compact-backlog.ps1 -Path .\channels\main\backlog.jsonl
+
+    Compacts the main backlog only when it is at least 10 MB and duplicate ids exist.
 #>
 param(
     [Parameter(Mandatory)][string]$Path,
