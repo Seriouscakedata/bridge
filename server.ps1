@@ -1927,26 +1927,7 @@ try {
         }
         $lsCurrentTask = [string](Get-RunbookPropertyValue $lsState 'current_task')
         $lsTaskTitle = ''; $lsTaskDesc = ''
-        if (-not [string]::IsNullOrWhiteSpace($lsTaskId)) {
-          $lsTask = $null
-          try {
-            . (Join-Path $PSScriptRoot 'lib\backlog.ps1')
-            if (Get-Command Get-Backlog -ErrorAction SilentlyContinue) {
-              foreach ($lsItem in @(Get-Backlog)) {
-                if ([string](Get-RunbookPropertyValue $lsItem 'id') -eq $lsTaskId) {
-                  $lsTask = $lsItem
-                  break
-                }
-              }
-            }
-          } catch { $lsTask = $null }
-          if ($lsTask) {
-            $lsTaskTitle = [string](Get-RunbookPropertyValue $lsTask 'title')
-            if ([string]::IsNullOrWhiteSpace($lsTaskTitle)) { $lsTaskTitle = [string](Get-RunbookPropertyValue $lsTask 'slug') }
-            $lsTaskDesc = [string](Get-RunbookPropertyValue $lsTask 'task')
-            if ([string]::IsNullOrWhiteSpace($lsTaskDesc)) { $lsTaskDesc = [string](Get-RunbookPropertyValue $lsTask 'text') }
-          }
-        }
+        # 2026-06-29 repair: removed backlog lookup (27MB read on every SSE reconnect -> server blocked health checks)
         if ([string]::IsNullOrWhiteSpace($lsTaskDesc)) { $lsTaskDesc = $lsCurrentTask }
         if ([string]::IsNullOrWhiteSpace($lsTaskTitle)) { $lsTaskTitle = $lsTaskDesc }
         if ($lsTaskTitle.Length -gt 120) { $lsTaskTitle = $lsTaskTitle.Substring(0, 120) + '...' }
