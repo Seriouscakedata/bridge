@@ -1,8 +1,8 @@
 {
     "slug":  "selfie-styler",
     "name":  "Selfie Styler",
-    "description":  "Fullscreen selfie camera; one photo button restyles the selfie with a random AI art style each time; result screen shows the style name and a save-to-gallery button.",
+    "description":  "On-device Android selfie styler: capture a selfie, apply a style/filter, save to gallery.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler",
-    "created":  "2026-06-29T13:31:50.0360389+03:00",
+    "created":  "2026-06-29T17:03:06.9497489+03:00",
     "archived":  false
 }
