@@ -59,8 +59,18 @@ foreach ($line in [System.IO.File]::ReadLines($fullPath, [System.Text.Encoding]:
     $trimmed = $line.Trim()
     if ([string]::IsNullOrEmpty($trimmed)) { $emptyCount++; continue }
 
-    if ($trimmed -match '"id"\s*:\s*"([^"]+)"') {
-        $id = "id:$($Matches[1])"
+    $parsedId = $null
+    try {
+        $obj = $trimmed | ConvertFrom-Json -ErrorAction Stop
+        if ($null -ne $obj -and ($obj.PSObject.Properties.Name -contains 'id')) {
+            $parsedId = [string]$obj.id
+        }
+    } catch {
+        $parsedId = $null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($parsedId)) {
+        $id = "id:$parsedId"
     } else {
         $id = "noid:$lineCount"
         $noIdCount++
