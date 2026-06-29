@@ -18,6 +18,11 @@ New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'channels\side') -Force |
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'compact-backlog.ps1') -Destination (Join-Path $tmpRoot 'tools\compact-backlog.ps1') -Force
 
 try {
+  $supervisorPath = Join-Path $bridgeRoot 'supervisor.ps1'
+  $supervisorText = [System.IO.File]::ReadAllText($supervisorPath, [System.Text.Encoding]::UTF8)
+  Assert-True ($supervisorText -match "lib\\startup-maintenance\.ps1") 'supervisor should dot-source startup maintenance helpers'
+  Assert-True ($supervisorText -match 'Invoke-StartupBacklogCompaction\s+-BridgeRoot\s+\$root') 'supervisor should run backlog compaction on startup'
+
   $mainBacklog = Join-Path $tmpRoot 'channels\main\backlog.jsonl'
   $sideBacklog = Join-Path $tmpRoot 'channels\side\backlog.jsonl'
   $padding = 'x' * 11000000
