@@ -77,6 +77,7 @@ try {
   Assert-True (-not $otherText.Contains('"value":"old"')) 'older duplicate line should be removed in later oversized channel backlogs'
   Assert-True ($sideLines.Count -eq 2) 'small backlog should stay below threshold and remain unchanged'
   Assert-True (($messages -join "`n") -match 'startup backlog compaction: compact-backlog: backlog\.jsonl') 'startup compaction should be logged'
+  Assert-True (($messages -join "`n") -match '10MB threshold') 'startup compaction should use the default 10MB threshold'
   Assert-True (($messages -join "`n") -match 'threshold -- skip') 'startup compaction should scan every channel backlog and log threshold skips'
 
   $missingScriptRoot = Join-Path $tmpRoot 'missing-script-root'
