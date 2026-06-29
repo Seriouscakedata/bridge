@@ -16,12 +16,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Test-Path $Path)) {
+if (-not (Test-Path -LiteralPath $Path)) {
     Write-Host "compact-backlog: file not found: $Path"
     return
 }
 
-$info = Get-Item $Path
+$info = Get-Item -LiteralPath $Path
 $sizeMB = [math]::Round($info.Length / 1MB, 2)
 
 if ($info.Length -lt [long]($ThresholdMB * 1MB)) {
@@ -42,9 +42,9 @@ foreach ($line in [System.IO.File]::ReadLines($Path, [System.Text.Encoding]::UTF
     if ([string]::IsNullOrEmpty($trimmed)) { $emptyCount++; continue }
 
     if ($trimmed -match '"id"\s*:\s*"([^"]+)"') {
-        $id = $Matches[1]
+        $id = "id:$($Matches[1])"
     } else {
-        $id = "~noid~$lineCount"
+        $id = "noid:$lineCount"
         $noIdCount++
     }
 
@@ -70,14 +70,15 @@ if ($WhatIf) {
 
 $tmp = $Path + ".compact.tmp"
 try {
-    $sw = [System.IO.StreamWriter]::new($tmp, $false, [System.Text.Encoding]::new(65001, $false))
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    $sw = [System.IO.StreamWriter]::new($tmp, $false, $utf8NoBom)
     foreach ($id in $order) { $sw.WriteLine($seen[$id]) }
     $sw.Flush(); $sw.Close(); $sw.Dispose()
-    Move-Item -Path $tmp -Destination $Path -Force
-    $newInfo = Get-Item $Path
+    Move-Item -LiteralPath $tmp -Destination $Path -Force
+    $newInfo = Get-Item -LiteralPath $Path
     $newMB   = [math]::Round($newInfo.Length / 1MB, 2)
     Write-Host "compact-backlog: done. ${sizeMB}MB -> ${newMB}MB (saved $([math]::Round($sizeMB - $newMB, 2))MB)"
 } catch {
-    if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     throw
 }
