@@ -1,0 +1,8 @@
+{
+    "slug":  "stress-forge",
+    "name":  "Stress Forge",
+    "description":  "Deliberate bridge stress-test harness: a Python text-transform plugin framework with dozens of independent plugins (wide parallel), a shared registry (single-file contention), an integration engine (heavy stitching), and a stress test suite.",
+    "project_root":  "C:\\Users\\rafie\\bridge-projects\\stress-forge",
+    "created":  "2026-06-29T07:17:57.8475362+03:00",
+    "archived":  false
+}
