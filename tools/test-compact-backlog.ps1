@@ -1,50 +1,53 @@
-param()
-
 $ErrorActionPreference = 'Stop'
 
-function Assert-True {
-  param([bool]$Condition, [string]$Message)
-  if (-not $Condition) { throw $Message }
+$scriptPath = Join-Path $PSScriptRoot 'compact-backlog.ps1'
+if (-not (Test-Path -LiteralPath $scriptPath)) {
+  throw "compact-backlog test: missing script at $scriptPath"
 }
 
-$scriptPath = Join-Path $PSScriptRoot 'compact-backlog.ps1'
-Assert-True (Test-Path -LiteralPath $scriptPath) 'compact-backlog.ps1 not found'
+function Assert-True {
+  param(
+    [Parameter(Mandatory=$true)][bool]$Condition,
+    [Parameter(Mandatory=$true)][string]$Message
+  )
+  if (-not $Condition) { throw "compact-backlog test failed: $Message" }
+}
 
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('bridge-compact-backlog-tool-test-' + [guid]::NewGuid().ToString('N'))
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-compact-backlog-test-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
 
 try {
-  New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
-  $backlogPath = Join-Path $tempRoot 'backlog.jsonl'
+  $backlog = Join-Path $tmpRoot 'backlog.jsonl'
   $inputLines = @(
-    '{"id":"task-a","status":"old","value":1}',
-    '{"id":"task-b","status":"keep","value":2}',
-    '{"id":"task-a","status":"new","value":3}'
+    '{"id":"a","value":1}'
+    '{"id":"b","value":2}'
+    '{"id":"a","value":3}'
+    '{"value":"no id 1"}'
+    '{"value":"no id 2"}'
   )
-  [System.IO.File]::WriteAllLines($backlogPath, $inputLines, $utf8NoBom)
+  [System.IO.File]::WriteAllLines($backlog, $inputLines, [System.Text.UTF8Encoding]::new($false))
+  $originalText = [System.IO.File]::ReadAllText($backlog, [System.Text.Encoding]::UTF8)
 
-  $before = [System.IO.File]::ReadAllText($backlogPath, [System.Text.Encoding]::UTF8)
-  & $scriptPath -Path $backlogPath -ThresholdMB 10
-  $afterSkip = [System.IO.File]::ReadAllText($backlogPath, [System.Text.Encoding]::UTF8)
-  Assert-True ($before -eq $afterSkip) 'threshold skip should not rewrite backlog'
+  & $scriptPath -Path $backlog -ThresholdMB 999
+  Assert-True (([System.IO.File]::ReadAllText($backlog, [System.Text.Encoding]::UTF8)) -eq $originalText) 'threshold skip should not modify the file'
 
-  & $scriptPath -Path $backlogPath -ThresholdMB 0 -WhatIf
-  $afterWhatIf = [System.IO.File]::ReadAllText($backlogPath, [System.Text.Encoding]::UTF8)
-  Assert-True ($before -eq $afterWhatIf) 'WhatIf should not rewrite backlog'
+  & $scriptPath -Path $backlog -ThresholdMB 0 -WhatIf
+  Assert-True (([System.IO.File]::ReadAllText($backlog, [System.Text.Encoding]::UTF8)) -eq $originalText) 'WhatIf should not modify the file'
 
-  & $scriptPath -Path $backlogPath -ThresholdMB 0
-  $actualLines = @([System.IO.File]::ReadAllLines($backlogPath, [System.Text.Encoding]::UTF8))
-  Assert-True ($actualLines.Count -eq 2) ("expected 2 compacted lines, got {0}" -f $actualLines.Count)
-  Assert-True ($actualLines[0] -eq '{"id":"task-a","status":"new","value":3}') 'task-a should keep the last line'
-  Assert-True ($actualLines[1] -eq '{"id":"task-b","status":"keep","value":2}') 'task-b should be preserved'
+  & $scriptPath -Path $backlog -ThresholdMB 0
+  $resultLines = @([System.IO.File]::ReadAllLines($backlog, [System.Text.Encoding]::UTF8))
+  $resultText = $resultLines -join "`n"
 
-  Write-Host 'OK compact-backlog tool: threshold skip, WhatIf, and last-line-wins replacement verified'
+  Assert-True (([System.IO.File]::ReadAllText($backlog, [System.Text.Encoding]::UTF8)) -ne $originalText) 'forced compaction should rewrite the file'
+  Assert-True ($resultLines.Count -eq 4) 'compaction should keep one line per id and preserve no-id lines'
+  Assert-True ($resultText.Contains('"id":"a","value":3')) 'last line should win for duplicate id a'
+  Assert-True (-not $resultText.Contains('"id":"a","value":1')) 'older duplicate id a line should be removed'
+  Assert-True ($resultText.Contains('"id":"b","value":2')) 'unique id b should be preserved'
+  Assert-True ($resultText.Contains('"value":"no id 1"') -and $resultText.Contains('"value":"no id 2"')) 'no-id lines should be preserved independently'
+
+  Write-Output 'PASS compact-backlog test'
 } finally {
-  try {
-    $resolved = [System.IO.Path]::GetFullPath($tempRoot)
-    $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-    if ($resolved.StartsWith($tempBase, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolved)) {
-      Remove-Item -LiteralPath $resolved -Recurse -Force
-    }
-  } catch {}
+  if (Test-Path -LiteralPath $tmpRoot) {
+    Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
