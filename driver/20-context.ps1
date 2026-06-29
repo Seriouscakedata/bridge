@@ -23,6 +23,29 @@
     if (($st.PSObject.Properties.Name -contains 'autonomous_day') -and ([string]$st.autonomous_day -eq $today)) { $cnt = [int]$st.autonomous_count }
     if ($cnt -ge $cap) { return $false }
   }
+  # 2026-06-29 (load-storm fix): cap how many channels run AUTONOMOUS work AT ONCE. The single
+  # global bridge-lock + OneDrive file I/O cannot sustain many concurrent project drivers -- 4 at
+  # once produced an 8-13s lock-contention storm that starved the server and crashed the bridge.
+  # Only autonomous idle-claims are gated here; an operator's explicit user-task on any channel is
+  # unaffected (it does not pass through this readiness check).
+  try {
+    $maxConc = 2
+    try { if ($null -ne $a.maxConcurrentAutonomousChannels) { $maxConc = [int]$a.maxConcurrentAutonomousChannels } } catch {}
+    if ($maxConc -gt 0) {
+      $working = 0
+      $chRoot = Join-Path (Get-BridgeRoot) 'channels'
+      foreach ($d in @(Get-ChildItem -LiteralPath $chRoot -Directory -ErrorAction SilentlyContinue)) {
+        if ($d.Name -eq '_archive' -or $d.Name -eq $curCh) { continue }
+        $sf = Join-Path $d.FullName 'state.json'
+        if (-not (Test-Path -LiteralPath $sf)) { continue }
+        try {
+          $os = Get-Content -LiteralPath $sf -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+          if ([string]$os.status -eq 'working') { $working++ }
+        } catch {}
+      }
+      if ($working -ge $maxConc) { return $false }
+    }
+  } catch {}
   return $true
 }
 

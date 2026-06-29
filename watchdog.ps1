@@ -115,8 +115,35 @@ function Promote-Stable {
   } catch { try { Pop-Location } catch {}; WLog ("promote error: " + $_.Exception.Message) }
 }
 
+# 2026-06-29 (selfie load incident): a bridge-lock contention storm -- many channel drivers
+# grinding on the single global lock, OneDrive-aggravated -- starves the server (API down) AND
+# freezes drivers (heartbeat stale) with NO code regression. The watchdog then saw api-stuck /
+# smoke-RED (RED only because the HTTP endpoints were unreachable) and rolled GOOD code back to
+# stable, deepening the outage and reverting committed fixes. Detect that storm so Invoke-Rollback
+# refuses to destroy code under load (it just returns -> the caller's restart handles recovery).
+function Test-RecentLockStorm {
+  try {
+    $lockLog = Join-Path $ctl 'bridge-lock.log'
+    if (-not (Test-Path -LiteralPath $lockLog)) { return $false }
+    $tail = Get-Content -LiteralPath $lockLog -Tail 8 -ErrorAction SilentlyContinue
+    if (-not $tail) { return $false }
+    $now = Get-Date
+    foreach ($line in $tail) {
+      if ($line -match '^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})' -and ($line -match 'slow_lock|abandoned mutex')) {
+        $ts = $null
+        if ([datetime]::TryParse($Matches[1], [ref]$ts) -and (($now - $ts).TotalMinutes -le 3)) { return $true }
+      }
+    }
+  } catch {}
+  return $false
+}
+
 # Create a safety branch FIRST so committed work is NEVER destroyed, then reset to stable + re-BOM.
 function Invoke-Rollback {
+  if (Test-RecentLockStorm) {
+    WLog "ROLLBACK SUPPRESSED: recent bridge-lock contention storm active -> API/heartbeat failure is LOAD, not broken code; skipping git reset (would destroy good fixes). Caller restarts instead."
+    return
+  }
   try {
     Push-Location $b
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'

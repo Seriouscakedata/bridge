@@ -672,7 +672,32 @@ function Get-JobResult {
   $tail = ''
   try { $tail = Get-Content -LiteralPath ([string]$Job.log) -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
   if ($null -eq $tail) { $tail = '' }
-  if ($tail.Length -gt 3000) { $tail = '...(truncated)...' + "`n" + $tail.Substring($tail.Length - 3000) }
+  if ($tail.Length -gt 3000) {
+    # 2026-06-29: keeping ONLY the last 3000 chars hid the real cause of build failures.
+    # Build tools (gradle/maven/npm/python) print the actual error ("What went wrong" /
+    # "error:" / "Traceback") and THEN a long trailing dump (e.g. gradle's runtime-classpath
+    # tree), which pushed the cause out of the tail -- so agents debugged blind. Surface the
+    # first error section in addition to the tail. Falls back to tail-only when no marker is
+    # found, so non-build job output is unchanged in spirit.
+    $full = $tail
+    $tailPart = $full.Substring($full.Length - 3000)
+    $errIdx = -1
+    foreach ($marker in @('FAILURE:', 'What went wrong', 'FAILED]', 'npm ERR!', 'Traceback (most recent', 'error:', 'Error:', 'Exception')) {
+      $i = $full.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
+      if ($i -ge 0) { $errIdx = $i; break }
+    }
+    if ($errIdx -ge 0 -and $errIdx -lt ($full.Length - 3000)) {
+      $errLen = [Math]::Min(2000, ($full.Length - 3000) - $errIdx)
+      if ($errLen -gt 0) {
+        $errPart = $full.Substring($errIdx, $errLen)
+        $tail = '...(truncated; first error section below, then tail)...' + "`n" + $errPart + "`n...(truncated middle)...`n" + $tailPart
+      } else {
+        $tail = '...(truncated)...' + "`n" + $tailPart
+      }
+    } else {
+      $tail = '...(truncated)...' + "`n" + $tailPart
+    }
+  }
   return @{ exitCode = $code; tail = $tail }
 }
 
