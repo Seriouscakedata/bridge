@@ -785,7 +785,7 @@ function Read-State {
   if (Test-Path -LiteralPath $sha256Path) {
     try {
       $expected = ([System.IO.File]::ReadAllText($sha256Path, [System.Text.Encoding]::UTF8)).Trim()
-      $rawBytes = [System.IO.File]::ReadAllBytes($p)
+      $rawBytes = Read-FileBytesSharedDelete $p   # FileShare.Delete: do not block the writer's File.Replace
       $actual = Get-StateContentHash -Content ([System.Text.Encoding]::UTF8.GetString($rawBytes))
       if ($expected -ne $actual -and $expected -ne '') {
         try {
@@ -807,7 +807,7 @@ function Read-State {
   $maxRetry = 3; $retryMs = 50
   for ($attempt = 1; $attempt -le $maxRetry; $attempt++) {
     try {
-      $state = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+      $state = (Read-FileTextSharedDelete $p) | ConvertFrom-Json   # FileShare.Delete: do not block writer's Replace
       break
     } catch {
       if ($attempt -lt $maxRetry) {
@@ -882,7 +882,15 @@ function Write-State {
   $State = Normalize-StateTaskStartedAt -State $State
   $json = $State | ConvertTo-Json -Depth 10
   $sp = Get-StatePath
-  Write-AtomicFile -Path $sp -Content $json
+  # 2026-06-30 lock-storm cure: write state.json IN PLACE (FileShare.ReadWrite) instead of atomic
+  # File.Replace. Replace cannot rename over the read handles the server/supervisor/driver hold on
+  # state.json, so it threw sharing violations and span a ~1.9s retry loop UNDER the global lock --
+  # the dominant cause of the 5-7s slow_lock storm. In-place write is ~4ms and never collides; a
+  # reader catching a torn write recovers via the sha256 + retry + .bak path below. Fall back to the
+  # atomic replace only if some reader holds the file without ReadWrite sharing.
+  if (-not (Write-FileInPlaceShared -Path $sp -Content $json)) {
+    Write-AtomicFile -Path $sp -Content $json
+  }
   # Write SHA256 sidecar for fast torn-file detection on next Read-State.
   try {
     $sha256Path = $sp + '.sha256'

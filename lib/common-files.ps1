@@ -75,6 +75,52 @@ function Remove-FileWithRetry {
   return $false
 }
 
+function Read-FileBytesSharedDelete {
+  # 2026-06-30 lock-storm cure: read a hot file (state.json) granting FileShare.ReadWrite|Delete so a
+  # concurrent atomic Write-AtomicFile (File.Replace) is NOT blocked by our read handle. Without
+  # FileShare.Delete, every reader (server + supervisor + driver all read state.json constantly) makes
+  # the writer's Replace throw a sharing violation -> retry+exception storm under the GLOBAL lock,
+  # which produced consistent ~1.8s holds. Returns a byte[].
+  param([string]$Path)
+  $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+  try {
+    $ms = New-Object System.IO.MemoryStream
+    try { $fs.CopyTo($ms); return ,($ms.ToArray()) } finally { $ms.Dispose() }
+  } finally { $fs.Dispose() }
+}
+
+function Read-FileTextSharedDelete {
+  # UTF-8 text read with FileShare.Delete (see Read-FileBytesSharedDelete). Strips a leading BOM to
+  # match `Get-Content -Raw -Encoding UTF8` behavior.
+  param([string]$Path)
+  $bytes = Read-FileBytesSharedDelete -Path $Path
+  $s = (New-Object System.Text.UTF8Encoding($false)).GetString($bytes)
+  if ($s.Length -gt 0 -and $s[0] -eq [char]0xFEFF) { $s = $s.Substring(1) }
+  return $s
+}
+
+function Write-FileInPlaceShared {
+  # 2026-06-30 lock-storm cure: write a hot file (state.json) IN PLACE with FileShare.ReadWrite so the
+  # write neither blocks nor is blocked by concurrent readers (which open with FileShare.ReadWrite).
+  # This replaces atomic File.Replace for state.json: Replace cannot rename over a handle that readers
+  # hold (even with FileShare.Delete), causing a ~1.9s retry+exception storm under the GLOBAL lock with
+  # ~8 drivers. In-place write is ~4ms. A reader catching a torn write is handled by Read-State's
+  # sha256 check + 3x retry + .bak restore, and the next loop's write (ms later) self-heals the file.
+  # Returns $true on success; $false if a non-sharing reader blocks it (caller falls back to Replace).
+  param([string]$Path, [string]$Content)
+  try {
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    try {
+      $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Content)
+      $fs.Write($bytes, 0, $bytes.Length)
+      $fs.Flush($true)
+    } finally { $fs.Dispose() }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Write-AtomicFile {
   # Atomic file replacement that survives OneDrive sync locks.
   # 2026-05-27v6: tmp-leak fix. Removal failures now log to control/tmp-leak.log
@@ -83,7 +129,13 @@ function Write-AtomicFile {
   param([string]$Path, [string]$Content, [switch]$NoCopyFallback, [switch]$DirectWriteFallback)
   $tmp = "$Path.tmp.$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
   [System.IO.File]::WriteAllText($tmp, $Content, (New-Object System.Text.UTF8Encoding($false)))
-  $tries = 0; $maxTries = 6
+  # 2026-06-30 lock-storm fix: File.Replace of a hot file (state.json) throws a sharing violation
+  # whenever the server/supervisor hold a brief read handle. The old 60ms*tries backoff (~900ms over
+  # 6 tries) ran while the GLOBAL bridge lock was held -> consistent ~1.9s holds and a 5-7s slow_lock
+  # storm across ~8 drivers. Reader handles close in ms, so probe MANY times with a tiny backoff:
+  # the replace succeeds in the first free window. With readers now granting FileShare.Delete
+  # (Read-FileTextSharedDelete) violations are rare, so keep retries modest to bound exception cost.
+  $tries = 0; $maxTries = 10
   while ($true) {
     try {
       if (Test-Path -LiteralPath $Path) {
@@ -123,7 +175,7 @@ function Write-AtomicFile {
           throw
         }
       }
-      Start-Sleep -Milliseconds (60 * $tries)
+      Start-Sleep -Milliseconds ([Math]::Min(30, 4 * $tries))
     }
   }
 }

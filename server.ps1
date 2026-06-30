@@ -374,7 +374,8 @@ function Get-RunbookStateObject {
   if ([string]::IsNullOrWhiteSpace([string]$statePath)) { return $null }
   if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return $null }
   try {
-    $raw = [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8)
+    # FileShare.ReadWrite|Delete so this read does not block the driver's in-place state write (lock-storm cure).
+    $raw = if (Get-Command Read-FileTextSharedDelete -ErrorAction SilentlyContinue) { Read-FileTextSharedDelete $statePath } else { [System.IO.File]::ReadAllText($statePath, [System.Text.Encoding]::UTF8) }
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
     return ($raw | ConvertFrom-Json)
   } catch {

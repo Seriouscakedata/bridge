@@ -639,7 +639,11 @@ function Get-SupervisorStaleHeartbeatSlugs {
       $statePath = Get-SupervisorChannelStatePath -Slug $slug
       if (-not $statePath -or -not (Test-Path -LiteralPath $statePath)) { continue }
       $state = $null
-      try { $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $state = $null }
+      # FileShare.ReadWrite|Delete so this monitoring read does not block the driver's in-place state write (lock-storm cure).
+      try {
+        $stRaw = if (Get-Command Read-FileTextSharedDelete -ErrorAction SilentlyContinue) { Read-FileTextSharedDelete $statePath } else { Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 }
+        $state = $stRaw | ConvertFrom-Json
+      } catch { $state = $null }
       $rawHeartbeat = $null
       try {
         if ($state -and ($state.PSObject.Properties.Name -contains 'lastSuccessfulHeartbeat')) {
