@@ -188,3 +188,205 @@ function Invoke-ProjectAutopilotShadowPlanner {
     }
   } catch { return $null }
 }
+
+function New-ProjectAutopilotContractStub {
+  # Ch2 of the diffusion engine: DETERMINISTIC interface-stub generator.
+  # Renders an interface-contract object into a compiling-shaped source stub that a CONSUMER atom can
+  # build against BEFORE the real provider exists. Pure rendering -- NO behavior change to the engine,
+  # NO I/O, NO timestamps, NO randomness. The same contract always renders byte-identical source.
+  # Returns @{ language; name; owned_file; ext; source; hash }. NEVER throws (falls back to a generic
+  # stub with whatever name is available, or 'Unknown').
+  param($Contract)
+
+  # ---- defensive field reader: present-but-null treated as missing, never assumes a field exists ----
+  $get = {
+    param($Obj, [string[]]$Names, $Def = $null)
+    if ($null -eq $Obj) { return $Def }
+    if (Get-Command Get-BacklogPackObjectValue -ErrorAction SilentlyContinue) {
+      foreach ($n in @($Names)) {
+        $v = Get-BacklogPackObjectValue -Obj $Obj -Name $n -Default $null
+        if ($null -ne $v) { return $v }
+      }
+      return $Def
+    }
+    # Fallback if the bridge helper is not loaded.
+    foreach ($n in @($Names)) {
+      try {
+        if ($Obj -is [System.Collections.IDictionary]) {
+          foreach ($k in @($Obj.Keys)) { if ([string]::Equals([string]$k, [string]$n, 'OrdinalIgnoreCase')) { if ($null -ne $Obj[$k]) { return $Obj[$k] } } }
+        } else {
+          $p = @($Obj.PSObject.Properties | Where-Object { [string]::Equals([string]$_.Name, [string]$n, 'OrdinalIgnoreCase') } | Select-Object -First 1)
+          if ($p.Count -gt 0 -and $null -ne $p[0].Value) { return $p[0].Value }
+        }
+      } catch {}
+    }
+    return $Def
+  }
+
+  $asArray = {
+    param($V)
+    if ($null -eq $V) { return @() }
+    if ($V -is [string]) { return @($V) }
+    if ($V -is [System.Collections.IEnumerable]) { return @($V) }
+    return @($V)
+  }
+
+  $name = 'Unknown'; $ext = ''; $ownedFile = ''; $language = 'generic'; $version = ''; $id = ''
+  $source = ''
+
+  try {
+    # ---- name / id / version ----
+    $rawName = (& $get $Contract @('name') $null)
+    $rawId   = (& $get $Contract @('id') $null)
+    if (-not [string]::IsNullOrWhiteSpace([string]$rawName)) {
+      $name = [string]$rawName
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$rawId)) {
+      if (Get-Command ConvertTo-ProjectAutopilotSlug -ErrorAction SilentlyContinue) { $name = ConvertTo-ProjectAutopilotSlug -Text ([string]$rawId) } else { $name = [string]$rawId }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$name)) { $name = 'Unknown' }
+    $id = if (-not [string]::IsNullOrWhiteSpace([string]$rawId)) { [string]$rawId } else { [string]$name }
+    $version = [string](& $get $Contract @('version','contract_version') '')
+
+    # ---- owned_file -> language ----
+    $ownedFiles = (& $asArray (& $get $Contract @('owned_files') $null))
+    if (@($ownedFiles).Count -gt 0) { $ownedFile = [string]@($ownedFiles)[0] }
+    if ([string]::IsNullOrWhiteSpace($ownedFile)) { $ownedFile = [string](& $get $Contract @('owned_file') '') }
+
+    if (-not [string]::IsNullOrWhiteSpace($ownedFile)) {
+      $ext = [string][System.IO.Path]::GetExtension($ownedFile).ToLowerInvariant()
+      switch ($ext) {
+        '.py'  { $language = 'python' }
+        '.kt'  { $language = 'kotlin' }
+        '.kts' { $language = 'kotlin' }
+        '.ts'  { $language = 'typescript' }
+        '.tsx' { $language = 'typescript' }
+        default { $language = 'generic' }
+      }
+    }
+
+    # ---- structured signature ----
+    $signature = (& $get $Contract @('signature') $null)
+    $sigType   = [string](& $get $signature @('type') '')
+    $sigModule = [string](& $get $signature @('module') '')
+
+    # language hint from signature when no decisive file extension
+    if ($language -eq 'generic') {
+      $hint = ($sigType + ' ' + $sigModule)
+      if ($sigType -match '(?i)abstract_base_class|module' -or (-not [string]::IsNullOrWhiteSpace($sigModule))) { $language = 'python' }
+    }
+
+    $imports = (& $asArray (& $get $signature @('imports') $null))
+    $classAttrs = (& $asArray (& $get $signature @('class_attributes') $null))
+    # abstract_methods is canonical; some contracts expose 'methods'
+    $methods = (& $asArray (& $get $signature @('abstract_methods') $null))
+    if (@($methods).Count -eq 0) { $methods = (& $asArray (& $get $signature @('methods') $null)) }
+
+    $isAbc = ($sigType -match '(?i)abstract_base_class') -or (@($imports) | Where-Object { [string]$_ -match '(?i)\bABC\b' }).Count -gt 0
+
+    $nl = "`n"
+    $sb = New-Object System.Text.StringBuilder
+
+    if ($language -eq 'python') {
+      [void]$sb.Append("# AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
+      foreach ($imp in @($imports)) { if (-not [string]::IsNullOrWhiteSpace([string]$imp)) { [void]$sb.Append([string]$imp + $nl) } }
+      if (@($imports).Count -gt 0) { [void]$sb.Append($nl) }
+      if ($isAbc) { [void]$sb.Append("class $name(ABC):" + $nl) } else { [void]$sb.Append("class ${name}:" + $nl) }
+      $emittedBody = $false
+      foreach ($a in @($classAttrs)) {
+        $an = [string](& $get $a @('name') '')
+        $at = [string](& $get $a @('type') '')
+        if ([string]::IsNullOrWhiteSpace($an)) { continue }
+        $line = if (-not [string]::IsNullOrWhiteSpace($at)) { "    ${an}: $at" } else { "    $an" }
+        [void]$sb.Append($line + $nl)
+        $emittedBody = $true
+      }
+      foreach ($m in @($methods)) {
+        $msig = [string](& $get $m @('signature') '')
+        $mname = [string](& $get $m @('name') '')
+        if ([string]::IsNullOrWhiteSpace($msig)) {
+          if ([string]::IsNullOrWhiteSpace($mname)) { continue }
+          $msig = "$mname(self)"
+        }
+        if ($isAbc) { [void]$sb.Append("    @abstractmethod" + $nl) }
+        [void]$sb.Append("    def ${msig}:" + $nl)
+        [void]$sb.Append("        raise NotImplementedError(`"contract stub: $id`")" + $nl)
+        $emittedBody = $true
+      }
+      if (-not $emittedBody) { [void]$sb.Append("    pass" + $nl) }
+      $source = $sb.ToString()
+    }
+    elseif ($language -eq 'kotlin') {
+      [void]$sb.Append("// AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
+      [void]$sb.Append("interface $name {" + $nl)
+      foreach ($m in @($methods)) {
+        $msig = [string](& $get $m @('signature') '')
+        $mname = [string](& $get $m @('name') '')
+        if ([string]::IsNullOrWhiteSpace($msig)) {
+          if ([string]::IsNullOrWhiteSpace($mname)) { continue }
+          $msig = "fun $mname()"
+        }
+        [void]$sb.Append("    $msig" + $nl)
+      }
+      [void]$sb.Append("}" + $nl)
+      $source = $sb.ToString()
+    }
+    elseif ($language -eq 'typescript') {
+      [void]$sb.Append("// AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
+      [void]$sb.Append("export interface $name {" + $nl)
+      foreach ($m in @($methods)) {
+        $msig = [string](& $get $m @('signature') '')
+        $mname = [string](& $get $m @('name') '')
+        if ([string]::IsNullOrWhiteSpace($msig)) {
+          if ([string]::IsNullOrWhiteSpace($mname)) { continue }
+          $msig = "$mname(): void"
+        }
+        [void]$sb.Append("    $msig;" + $nl)
+      }
+      [void]$sb.Append("}" + $nl)
+      $source = $sb.ToString()
+    }
+    else {
+      # generic: commented block + a single placeholder declaration
+      [void]$sb.Append("# AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
+      [void]$sb.Append("# interface contract: $name" + $nl)
+      foreach ($a in @($classAttrs)) {
+        $an = [string](& $get $a @('name') '')
+        $at = [string](& $get $a @('type') '')
+        if ([string]::IsNullOrWhiteSpace($an)) { continue }
+        $desc = if (-not [string]::IsNullOrWhiteSpace($at)) { "$an : $at" } else { $an }
+        [void]$sb.Append("#   attribute: $desc" + $nl)
+      }
+      foreach ($m in @($methods)) {
+        $msig = [string](& $get $m @('signature') '')
+        $mname = [string](& $get $m @('name') '')
+        if ([string]::IsNullOrWhiteSpace($msig)) { $msig = $mname }
+        if ([string]::IsNullOrWhiteSpace($msig)) { continue }
+        [void]$sb.Append("#   method: $msig" + $nl)
+      }
+      [void]$sb.Append("# contract stub not implemented -- placeholder for contract $id" + $nl)
+      [void]$sb.Append("CONTRACT_STUB_${name} = `"contract stub: $id`"" + $nl)
+      $source = $sb.ToString()
+    }
+  } catch {
+    # Hard fallback: never throw on a malformed/empty contract.
+    $language = 'generic'
+    if ([string]::IsNullOrWhiteSpace([string]$name)) { $name = 'Unknown' }
+    if ([string]::IsNullOrWhiteSpace([string]$id)) { $id = [string]$name }
+    $source = "# AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version`n" +
+              "# contract stub not implemented -- malformed or empty contract`n" +
+              "CONTRACT_STUB_${name} = `"contract stub: $id`"`n"
+    $ext = ''
+  }
+
+  $hash = ''
+  try { if (Get-Command Get-ProjectAutopilotSha256 -ErrorAction SilentlyContinue) { $hash = Get-ProjectAutopilotSha256 -Text $source } } catch { $hash = '' }
+
+  return [pscustomobject]@{
+    language   = $language
+    name       = $name
+    owned_file = [string]$ownedFile
+    ext        = [string]$ext
+    source     = [string]$source
+    hash       = [string]$hash
+  }
+}
