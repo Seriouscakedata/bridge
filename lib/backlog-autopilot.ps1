@@ -65,7 +65,7 @@ function Get-ProjectAutopilotConfig {
   $cfg.maxTasksPerBatch = ConvertTo-BacklogPackInt -Value $cfg.maxTasksPerBatch -Default 12 -Min 1 -Max 50
   $cfg.emptyCoordinatorLimit = ConvertTo-BacklogPackInt -Value $cfg.emptyCoordinatorLimit -Default 3 -Min 1 -Max 20
   $cfg.diffusionMode = ([string]$cfg.diffusionMode).Trim().ToLowerInvariant()
-  if ($cfg.diffusionMode -notin @('off','shadow','diffusion')) { $cfg.diffusionMode = 'off' }
+  if ($cfg.diffusionMode -notin @('off','shadow','diffusion','wide')) { $cfg.diffusionMode = 'off' }
   $cfg.diffusionMinIndependentAtoms = ConvertTo-BacklogPackInt -Value $cfg.diffusionMinIndependentAtoms -Default 2 -Min 1 -Max 50
   $cfg.diffusionMaxWaveSize = ConvertTo-BacklogPackInt -Value $cfg.diffusionMaxWaveSize -Default 6 -Min 1 -Max 50
   $cfg.decomposeAheadLimit = ConvertTo-BacklogPackInt -Value $cfg.decomposeAheadLimit -Default 1 -Min 1 -Max 8
@@ -957,6 +957,50 @@ function Test-ProjectAutopilotDiffusionGate {
   }
 }
 
+function Get-ProjectAutopilotEarliestChapterTaskSet {
+  # Collapse a multi-chapter atom batch to just the EARLIEST chapter (the proven serial one-chapter
+  # default). The safe fallback when a cross-chapter batch cannot be dispatched (diffusion executor
+  # absent, or a wide/diffusion gate is red): no giant batch -> no bridge-lock storm -> no hang, and the
+  # atoms are not stranded. Pure / no I/O. Returns @{ collapsed; chapter; tasks }.
+  param([object[]]$Tasks = @())
+  $result = [ordered]@{ collapsed = $false; chapter = ''; tasks = @($Tasks) }
+  $chapterOf = { param($task) Get-ProjectAutopilotTaskStringField -Task $task -Names @('chapter','phase','area') }
+  $present = @($Tasks | ForEach-Object { & $chapterOf $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  if ($present.Count -le 1) { return [pscustomobject]$result }
+  $rank = { param($c) $m=[regex]::Match([string]$c,'\d+'); if ($m.Success) { [int]$m.Value } else { 999999 } }
+  $earliest = @($present | Sort-Object @{Expression={ & $rank $_ }}, @{Expression={ [string]$_ }} | Select-Object -First 1)[0]
+  $result.tasks = @($Tasks | Where-Object { $cf=(& $chapterOf $_); [string]::IsNullOrWhiteSpace($cf) -or ($cf -eq $earliest) })
+  $result.collapsed = $true
+  $result.chapter = [string]$earliest
+  return [pscustomobject]$result
+}
+
+function Test-ProjectAutopilotWideGate {
+  # 2026-06-30 "cross-chapter wide" gate -- the first, simplest diffusion step. Wide parallelizes ONLY
+  # INDEPENDENT atoms across chapters; DEPENDENT atoms serialize naturally via depends_on in the executor
+  # frontier (Resolve-BacklogWorkpackFrontier selects waves by depends_on + touch-set, NOT by chapter).
+  # So wide needs ONLY: an acyclic depends_on graph, disjoint file ownership among atoms, and at least K
+  # independent atoms. It does NOT need frozen interface contracts / stubs / stitching tests (those exist
+  # solely to parallelize DEPENDENT atoms, which wide never does), and it does NOT cap the total emit (the
+  # frontier caps the runnable WAVE via workpackExec.maxItems; the emit may span all chapters).
+  param([object[]]$Tasks = @(), [int]$MinIndependentAtoms = 2)
+  $reasons = New-Object 'System.Collections.Generic.List[string]'
+  $graph = New-ProjectAutopilotUnifiedGraph -Tasks @($Tasks) -Contracts @() -AllowContractSoftEdges:$false
+  if (-not [bool]$graph.acyclic) { [void]$reasons.Add('graph-cyclic') }
+  if (@($graph.file_conflicts).Count -gt 0) { [void]$reasons.Add('file-conflict-unresolved') }
+  $hardTargets = @($graph.edges | Where-Object { [string]$_.edge_type -eq 'hard' } | ForEach-Object { [string]$_.to } | Sort-Object -Unique)
+  $independent = @($graph.nodes | Where-Object { $hardTargets -notcontains [string]$_.slug })
+  if ($independent.Count -lt [int]$MinIndependentAtoms) { [void]$reasons.Add('independent-atom-count-below-floor') }
+  return [pscustomobject]@{
+    enabled = ($reasons.Count -eq 0)
+    fallback = ($reasons.Count -gt 0)
+    reasons = @($reasons.ToArray())
+    graph = $graph
+    independent_atom_count = [int]$independent.Count
+    wave_size = [int]$Tasks.Count
+  }
+}
+
 function Get-ProjectAutopilotPlanningStageDefinitions {
   return @(
     [pscustomobject]@{ id='brief';       path='PROJECT_BRIEF.md';       min_chars=800;  label='project brief' },
@@ -1607,7 +1651,7 @@ function New-ProjectAutopilotCoordinatorTaskText {
   )
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
   $diffMode = ([string]$DiffusionMode).Trim().ToLowerInvariant()
-  if ($diffMode -notin @('off','shadow','diffusion')) { $diffMode = 'off' }
+  if ($diffMode -notin @('off','shadow','diffusion','wide')) { $diffMode = 'off' }
   $diffK = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMinIndependentAtoms))
   $diffN = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMaxWaveSize))
   # 2026-06-27 root-fix: deterministic plan-chapter progress injected into the coordinator prompt.
@@ -1643,8 +1687,17 @@ function New-ProjectAutopilotCoordinatorTaskText {
         if ($nextNCP -ge 1 -and $nextNCP -le $totalChCP) { $nextTitleCP = ([string]$chapMatchesCP[$nextNCP-1].Groups[2].Value).Trim() }
         $doneSlugsCP = (@($doneChaptersCP) -join ', '); if ([string]::IsNullOrWhiteSpace($doneSlugsCP)) { $doneSlugsCP = '(none yet)' }
         $remainCP = $totalChCP - $decCountCP
+        # 2026-06-30 cross-chapter WIDE: in wide mode the deterministic block tells the coordinator to
+        # decompose ALL remaining chapters in one PROJECT_BACKLOG (the executor frontier then runs the
+        # independent atoms across chapters in parallel; dependents serialize via depends_on). Any other
+        # mode keeps the proven one-chapter-at-a-time default.
+        $decomposeScopeLine = if ($diffMode -eq 'wide') {
+          "Decompose ALL remaining approved chapters (Chapter $nextNCP through Chapter $totalChCP) into atoms in ONE PROJECT_BACKLOG this run (cross-chapter WIDE mode). Give INDEPENDENT atoms (different files, no real prerequisite) an EMPTY depends_on so they run in parallel across chapters; give DEPENDENT atoms an explicit depends_on on the prerequisite atom's slug (those serialize). Keep each atom's files to exactly ONE path so independent atoms never collide. No interface-contract/stub/stitching ceremony is required in wide mode."
+        } else {
+          "Decompose ONLY Chapter $nextNCP into atoms this run."
+        }
         if ($nextNCP -le $totalChCP) {
-          $chapterProgressBlock = "DETERMINISTIC PLAN PROGRESS (authoritative -- computed from PROJECT_PLAN.md + the live backlog; trust this over your own judgment about whether the release is finished):`n- The approved release IS the full plan: $totalChCP chapters total, ALL approved and in scope. Chapters you have not reached yet are NOT future/optional/out-of-scope work.`n- Full approved plan chapters:`n$($planLinesCP -join "`n")`n- Chapter areas already decomposed into the backlog ($decCountCP of $totalChCP done): $doneSlugsCP`n- NEXT chapter to decompose NOW: Chapter $nextNCP - $nextTitleCP`n- Decompose ONLY Chapter $nextNCP into atoms this run. Do NOT conclude the release is complete -- $remainCP chapter(s) still remain. Do NOT emit a release-scope open-question for Chapter $nextNCP; it is already authorized by the approved plan.`n- Efficiency: the plan progress above is authoritative for scope/status, so you do NOT need to re-read PROJECT_MAP.md or re-scan the whole codebase to decide what is done. Read only the specific source files your Chapter $nextNCP atoms will create, touch, or depend on (check earlier CHAPTER_*_ATOMS.md only for file-ownership of prior chapters to avoid conflicts).`n`n"
+          $chapterProgressBlock = "DETERMINISTIC PLAN PROGRESS (authoritative -- computed from PROJECT_PLAN.md + the live backlog; trust this over your own judgment about whether the release is finished):`n- The approved release IS the full plan: $totalChCP chapters total, ALL approved and in scope. Chapters you have not reached yet are NOT future/optional/out-of-scope work.`n- Full approved plan chapters:`n$($planLinesCP -join "`n")`n- Chapter areas already decomposed into the backlog ($decCountCP of $totalChCP done): $doneSlugsCP`n- NEXT chapter to decompose NOW: Chapter $nextNCP - $nextTitleCP`n- $decomposeScopeLine Do NOT conclude the release is complete -- $remainCP chapter(s) still remain. Do NOT emit a release-scope open-question for Chapter $nextNCP; it is already authorized by the approved plan.`n- Efficiency: the plan progress above is authoritative for scope/status, so you do NOT need to re-read PROJECT_MAP.md or re-scan the whole codebase to decide what is done. Read only the specific source files your Chapter $nextNCP atoms will create, touch, or depend on (check earlier CHAPTER_*_ATOMS.md only for file-ownership of prior chapters to avoid conflicts).`n`n"
         } else {
           $chapterProgressBlock = "DETERMINISTIC PLAN PROGRESS: all $totalChCP approved plan chapters are already decomposed into the backlog. Only if every chapter's atoms are done AND acceptance passes may you finish without PROJECT_BACKLOG; otherwise emit the remaining atoms.`n`n"
         }
@@ -1686,6 +1739,7 @@ $(Get-ProjectContractSchemaInstruction)
 - If the contract does not explicitly authorize the next chapter/wave, do not create atoms for it; emit [[PROJECT_OPEN_QUESTION: release scope needs approval before new chapter]] and finish without PROJECT_BACKLOG.
 - For full/large projects and high-risk changes, create or update .bridge/changes/<change-id>/proposal.md, design.md, tasks.md, and acceptance.md before implementation atoms, and archive completed change packages under .bridge/archive/<change-id>. Do not force change-package ceremony on lite/small work.
 - Default decomposition is still ONE next chapter/wave into small atomic implementation tasks. Prefer 3-$max tasks; fewer is OK if the chapter is small.
+- If diffusion_mode is wide: the DETERMINISTIC PLAN PROGRESS above authorizes decomposing ALL remaining chapters in ONE PROJECT_BACKLOG. Emit every remaining chapter's atoms with correct cross-chapter depends_on -- INDEPENDENT atoms get an EMPTY depends_on (they run in parallel across chapters), DEPENDENT atoms list their prerequisite atom's slug (they serialize). No interface contracts / freeze / stitching are needed in wide mode (it parallelizes only independent atoms; dependents serialize via depends_on). Each atom's "files" must be exactly ONE path so independent atoms never collide.
 - Diffusion/cross-chapter decomposition is opt-in only. If diffusion_mode is off, always use the one-chapter default. If diffusion_mode is shadow, compute and report the would-be cross-chapter graph/gate result as durable markers but still emit only the one-chapter default. If diffusion_mode is diffusion, do not emit a cross-chapter PROJECT_BACKLOG unless every deterministic gate is satisfied: complete and stable .bridge/specs/contracts/<contract-id>.json coverage for every cross-atom interface, no [[PROJECT_OPEN_QUESTION]] blocking scope/architecture, a validated acyclic depends_on graph, known non-overlapping file ownership or explicit serial_reason, stitching/integration tests, clean git worktree, independent atom count >= $diffK, and wave size <= $diffN. If any condition is missing, fall back to the one-chapter default and emit [[PROJECT_OPEN_QUESTION: diffusion gate blocked: ...]] or a concise [[PROJECT_RISK: ...]] marker instead of guessing.
 - Interface contracts live in .bridge/specs/contracts/<contract-id>.json. A contract must cover signature, behavior/preconditions/postconditions/side-effects/idempotency, invariants, error taxonomy, golden input/output examples, owned files/regions, and version. A contract is stable only after the deterministic freeze step writes a channel-local freeze lock with stable:true plus canonical_hash matching the canonical payload; a bare stable:true in the contract file is not sufficient. Atoms may reference contracts through provides and consumes arrays; a lock-verified frozen contract may justify a soft edge, while missing/unstable contracts require hard depends_on serialization.
 - Each atom must be a small verifiable change, with clear dependencies, files/touch-set, acceptance checks, and commit requirement.
@@ -2803,35 +2857,56 @@ function Add-ProjectBacklogFromMarker {
       })
     }
   } catch {}
-  # 2026-06-30 (diffusion hang fix): the diffusion EXECUTOR (P2-P5 in DIFFUSION_DESIGN.md: contract-stub
-  # generation, wave schedule, stitching) is NOT built yet, so a cross-chapter batch cannot actually run
-  # in parallel. Letting it through did two bad things: (1) the old 'diffusion + red gate' branch returned
-  # created=0 and STRANDED the atoms (re-emitted forever); (2) 'shadow' let the full ~24-atom cross-chapter
-  # batch through, and writing it (one slow lock+full-file-verify Add-Idea per atom on a large backlog,
-  # OneDrive-aggravated) held the global bridge mutex long enough that the driver heartbeat timed out and
-  # the channel froze ~90s after start. Until the executor exists, ANY non-off diffusion mode whose gate is
-  # not GREEN collapses to the single EARLIEST chapter (the proven serial one-chapter default): no giant
-  # batch -> no lock storm -> no hang -> no stranded atoms, and the project still moves one chapter at a
-  # time. When P2+ lands, a GREEN gate skips this collapse and the shaped cross-chapter atoms go through.
+  # 2026-06-30: a non-off mode that emits a CROSS-CHAPTER batch must only let it through when it can
+  # actually be DISPATCHED; otherwise collapse to the EARLIEST chapter (proven serial one-chapter default)
+  # so it never strands atoms or starves the bridge lock. Two cases:
+  #  - shadow/diffusion: the FULL diffusion executor (P2-P5: contract stubs + stitching) is NOT built, so a
+  #    cross-chapter batch always collapses (the heavy gate is effectively never green here yet). This also
+  #    closes the original hang: shadow used to let the full ~24-atom batch through, and writing it (one
+  #    slow lock + full-file-verify Add-Idea per atom on a large/OneDrive backlog) held the global mutex
+  #    long enough that the driver heartbeat timed out and the channel froze ~90s after start.
+  #  - wide: the executor ALREADY EXISTS -- Resolve-BacklogWorkpackFrontier runs INDEPENDENT atoms across
+  #    chapters in parallel and serializes DEPENDENT ones via depends_on, no chapter gating. So wide
+  #    collapses ONLY when its LIGHT gate is red (cyclic depends_on, a same-wave file conflict, or too few
+  #    independent atoms); a GREEN wide gate lets the whole cross-chapter batch through to the write loop.
+  $collapseReason = ''
   if ($diffusionMode -in @('shadow','diffusion') -and -not ($diffusionGate -and [bool]$diffusionGate.enabled)) {
-    $chapterOf = { param($task) Get-ProjectAutopilotTaskStringField -Task $task -Names @('chapter','phase','area') }
-    $chaptersPresent = @($tasks | ForEach-Object { & $chapterOf $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-    if ($chaptersPresent.Count -gt 1) {
-      $chapterRank = { param($c) $m=[regex]::Match([string]$c,'\d+'); if ($m.Success) { [int]$m.Value } else { 999999 } }
-      $earliestChapter = @($chaptersPresent | Sort-Object @{Expression={ & $chapterRank $_ }}, @{Expression={ [string]$_ }} | Select-Object -First 1)[0]
+    $collapseReason = 'diffusion-executor-not-built-or-gate-red'
+  } elseif ($diffusionMode -eq 'wide') {
+    $wideGate = $null
+    $wideK = 2; try { $wideK = [int]$cfg.diffusionMinIndependentAtoms } catch {}
+    try { $wideGate = Test-ProjectAutopilotWideGate -Tasks $tasks -MinIndependentAtoms $wideK } catch {}
+    $wideReasons = if ($wideGate) { @($wideGate.reasons) } else { @('wide-gate-error') }
+    $wideIndep = if ($wideGate) { [int]$wideGate.independent_atom_count } else { 0 }
+    try {
+      Write-BacklogJsonLine ([ordered]@{
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+        action = 'project-autopilot-wide-gate'
+        channel = [string]$Channel
+        enabled = [bool]($wideGate -and $wideGate.enabled)
+        reasons = @($wideReasons)
+        atoms = [int]$tasks.Count
+        independent_atoms = $wideIndep
+      })
+    } catch {}
+    if (-not ($wideGate -and [bool]$wideGate.enabled)) { $collapseReason = 'wide-gate-red' }
+    # GREEN wide gate -> no collapse: the full cross-chapter batch goes through to the write loop.
+  }
+  if (-not [string]::IsNullOrWhiteSpace($collapseReason)) {
+    $collapse = Get-ProjectAutopilotEarliestChapterTaskSet -Tasks $tasks
+    if ([bool]$collapse.collapsed) {
       $beforeCount = $tasks.Count
-      $tasks = @($tasks | Where-Object { $cf = (& $chapterOf $_); [string]::IsNullOrWhiteSpace($cf) -or ($cf -eq $earliestChapter) })
+      $tasks = @($collapse.tasks)
       try {
         Write-BacklogJsonLine ([ordered]@{
           ts = (Get-Date).ToUniversalTime().ToString('o')
           action = 'project-autopilot-diffusion-collapse-to-chapter'
           channel = [string]$Channel
           mode = $diffusionMode
-          gate_enabled = [bool]($diffusionGate -and $diffusionGate.enabled)
-          chapter = [string]$earliestChapter
+          chapter = [string]$collapse.chapter
           kept = $tasks.Count
           dropped = ($beforeCount - $tasks.Count)
-          reason = 'diffusion-executor-not-built-or-gate-red'
+          reason = $collapseReason
         })
       } catch {}
     }
