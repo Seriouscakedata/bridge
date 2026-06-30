@@ -1,5 +1,13 @@
 ﻿# backlog-autopilot.ps1 -- Project Autopilot planning and expansion helpers.
 #region Project Autopilot planning and expansion
+# 2026-06-30 (diffusion-trigger-schema-mismatch): load the discuss->autopilot adapter, which
+# materializes PROJECT_PLAN.md/PROJECT_MAP.md/contract from the discuss plan board so the
+# wide-diffusion contract gate can pass. Provides Convert-DiscussToAutopilotInputs +
+# Initialize-ProjectAutopilotInputsFromDiscuss.
+if (-not (Get-Command Convert-DiscussToAutopilotInputs -ErrorAction SilentlyContinue)) {
+  $script:ProjectAutopilotAdapterPath = Join-Path $PSScriptRoot 'project-autopilot-adapter.ps1'
+  if (Test-Path -LiteralPath $script:ProjectAutopilotAdapterPath) { . $script:ProjectAutopilotAdapterPath }
+}
 function Get-ProjectAutopilotConfig {
   $cfg = [ordered]@{
     enabled = $true
@@ -1966,6 +1974,15 @@ function Start-ProjectAutopilotIfNeeded {
   if (-not $binding) { return [pscustomobject]@{ queued=$false; reason='not-project-channel' } }
   $slug = [string]$binding.slug
   $root = [string]$binding.project_root
+  # 2026-06-30 (diffusion-trigger-schema-mismatch): bridge the DISCUSS->autopilot handoff. If this
+  # channel has a discuss plan board + contract but no durable PROJECT_PLAN.md yet, materialize the
+  # autopilot's required spec artifacts from it (so the contract gate can pass) and surface a
+  # "ready -- approve" message. This NEVER approves the plan: plan_approved stays the manual Ф4 gate below.
+  try {
+    if (Get-Command Initialize-ProjectAutopilotInputsFromDiscuss -ErrorAction SilentlyContinue) {
+      Initialize-ProjectAutopilotInputsFromDiscuss -Channel $slug -ProjectRoot $root | Out-Null
+    }
+  } catch {}
   # 2026-06-02 DISCUSS-FIRST GATE: autopilot only executes an operator-APPROVED PROJECT_PLAN (Ф4).
   # Until the operator runs Set-ProjectPlanApproved for this channel, the bridge stays in discuss/
   # planning and autopilot does NOT auto-queue coordinator/atoms. This is the fix for autopilot
