@@ -8,6 +8,14 @@ if (-not (Get-Command Convert-DiscussToAutopilotInputs -ErrorAction SilentlyCont
   $script:ProjectAutopilotAdapterPath = Join-Path $PSScriptRoot 'project-autopilot-adapter.ps1'
   if (Test-Path -LiteralPath $script:ProjectAutopilotAdapterPath) { . $script:ProjectAutopilotAdapterPath }
 }
+# 2026-06-30 (Ch1 diffusion): load the SHADOW wave planner. It projects all atoms into execution waves two
+# ways (hard-only vs contract-soft) and emits PROJECT_WAVE_SCHEDULE.json + telemetry -- measurement only,
+# NO execution change. Provides Invoke-ProjectAutopilotShadowPlanner; its functions resolve the unified
+# graph builder defined below at call-time, so sourcing it here (before that definition) is fine.
+if (-not (Get-Command Invoke-ProjectAutopilotShadowPlanner -ErrorAction SilentlyContinue)) {
+  $script:ProjectAutopilotPlannerPath = Join-Path $PSScriptRoot 'diffusion-planner.ps1'
+  if (Test-Path -LiteralPath $script:ProjectAutopilotPlannerPath) { . $script:ProjectAutopilotPlannerPath }
+}
 function Get-ProjectAutopilotConfig {
   $cfg = [ordered]@{
     enabled = $true
@@ -2854,6 +2862,25 @@ function Add-ProjectBacklogFromMarker {
         try { $projectRoot = Get-BridgeRoot } catch {}
       }
       $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+      # Ch1 shadow planner (measurement only): project ALL atoms into execution waves -- hard-only (today's
+      # behaviour) vs contract-soft (the diffusion projection) -- and emit PROJECT_WAVE_SCHEDULE.json (into
+      # the channel runtime dir, NOT the project worktree) + a telemetry marker. Pure in-memory graph work
+      # on $tasks; never throws; changes NO execution (the collapse/dispatch logic below is untouched).
+      try {
+        if (Get-Command Invoke-ProjectAutopilotShadowPlanner -ErrorAction SilentlyContinue) {
+          $planOutDir = Join-Path (Join-Path (Get-BridgeRoot) 'channels') ([string]$Channel)
+          $planSummary = Invoke-ProjectAutopilotShadowPlanner -Tasks $tasks -Contracts $contracts -OutputDir $planOutDir -Channel $Channel
+          if ($planSummary) {
+            Write-BacklogJsonLine ([ordered]@{
+              ts = (Get-Date).ToUniversalTime().ToString('o')
+              action = 'project-autopilot-wave-schedule'
+              channel = [string]$Channel
+              mode = $diffusionMode
+              summary = $planSummary
+            })
+          }
+        }
+      } catch {}
       # Ch0 hang fix: the freeze manifest + diffusion gate only do meaningful work when interface contracts
       # exist. With zero contracts the gate can never be green (no contract coverage), so running the heavy
       # freeze/gate machinery on the foreground driver tick just burns I/O for nothing -- this was the
