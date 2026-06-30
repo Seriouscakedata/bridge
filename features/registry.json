@@ -688,13 +688,13 @@
 
                          ],
         "layer":  "L2",
-        "status":  "active",
         "scenario_recommended":  false,
         "created_at":  "2026-05-28",
         "last_activated_at":  "2026-06-04T10:04:42.4028624+03:00",
         "embedding":  null,
         "name":  "Телеметрия агента",
-        "description":  "Каждые 60с активного агента: tick → state.agent_telemetry (elapsed_sec, cpu_sec, files_touched). Видно прогресс долгих задач."
+        "description":  "Каждые 60с активного агента: tick → state.agent_telemetry (elapsed_sec, cpu_sec, files_touched). Видно прогресс долгих задач.",
+        "status":  "dormant"
     },
     {
         "id":  "feature-dedup-gate",
@@ -1108,7 +1108,7 @@
     {
         "id":  "script-integrity",
         "name":  "Tripwire целостности скриптов",
-        "description":  "Перед запуском supervisor SHA256-сверяет server.ps1 и driver.ps1 на диске с манифестом security/script-integrity.json. При расхождении хэша guard возвращает Ok=false, пишет 'integrity check failed ... reason=hash_mismatch' в control/supervisor.log и НЕ запускает процесс (симптом: HTTP 503 на всех эндпоинтах если не стартует server; lastSeq замирает если не стартует driver). Гейтится config.json supervisor.scriptIntegrityEnabled (true) + supervisor.scriptIntegrityManifest. Guard'ятся ТОЛЬКО server.ps1+driver.ps1; driver/*.ps1 и lib/*.ps1 — нет. Любая правка guarded-файла (оператор или авто-коммит) без обновления манифеста триггерит tripwire; recovery — пересчитать (Get-FileHash -Algorithm SHA256), вписать в манифест, рестарт ClaudeCodexBridge. Self-test: tools/supervisor_script_integrity_test.ps1.",
+        "description":  "Перед запуском supervisor SHA256-сверяет server.ps1 и driver.ps1 на диске с манифестом security/script-integrity.json. При расхождении хэша guard возвращает Ok=false, пишет \u0027integrity check failed ... reason=hash_mismatch\u0027 в control/supervisor.log и НЕ запускает процесс (симптом: HTTP 503 на всех эндпоинтах если не стартует server; lastSeq замирает если не стартует driver). Гейтится config.json supervisor.scriptIntegrityEnabled (true) + supervisor.scriptIntegrityManifest. Guard\u0027ятся ТОЛЬКО server.ps1+driver.ps1; driver/*.ps1 и lib/*.ps1 — нет. Любая правка guarded-файла (оператор или авто-коммит) без обновления манифеста триггерит tripwire; recovery — пересчитать (Get-FileHash -Algorithm SHA256), вписать в манифест, рестарт ClaudeCodexBridge. Self-test: tools/supervisor_script_integrity_test.ps1.",
         "owner_files":  [
                             "lib/script-integrity.ps1",
                             "supervisor.ps1"
