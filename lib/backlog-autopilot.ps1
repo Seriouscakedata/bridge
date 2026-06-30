@@ -630,8 +630,14 @@ function Get-ProjectAutopilotInterfaceContracts {
   $dir = Get-ProjectAutopilotInterfaceContractDir -ProjectRoot $ProjectRoot
   if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
   $out = New-Object 'System.Collections.Generic.List[object]'
+  # Ch0 hang fix: enumerate the REAL contract files first (excluding schema/lock/freeze/manifest). If there
+  # are none, return early WITHOUT calling Get-ProjectAutopilotOpenQuestionText -- that recursive .bridge
+  # file-walk (up to 200 .md/.json per dir, ReadAllText+regex each) was the operation that froze the driver
+  # heartbeat on diffusion/shadow channels with a populated .bridge tree, even when zero contracts existed.
+  $contractFiles = @(Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.schema\.json$' -and $_.Name -ne 'contract.schema.json' -and $_.Name -notmatch '\.(lock|freeze|manifest)\.json$' } | Sort-Object Name)
+  if ($contractFiles.Count -eq 0) { return @() }
   $openQuestionText = Get-ProjectAutopilotOpenQuestionText -ProjectRoot $ProjectRoot
-  foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+  foreach ($file in $contractFiles) {
     if ($file.Name -match '\.schema\.json$' -or $file.Name -eq 'contract.schema.json') { continue }
     if ($file.Name -match '\.(lock|freeze|manifest)\.json$') { continue }
     try {
@@ -2848,30 +2854,45 @@ function Add-ProjectBacklogFromMarker {
         try { $projectRoot = Get-BridgeRoot } catch {}
       }
       $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
-      $freezeManifest = New-ProjectAutopilotContractFreezeManifest -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -Channel $Channel -Mode $diffusionMode -WriteLocks:($true)
-      if ($freezeManifest) {
+      # Ch0 hang fix: the freeze manifest + diffusion gate only do meaningful work when interface contracts
+      # exist. With zero contracts the gate can never be green (no contract coverage), so running the heavy
+      # freeze/gate machinery on the foreground driver tick just burns I/O for nothing -- this was the
+      # ~1.5-min heartbeat freeze. Skip straight to the collapse path (shadow/diffusion already falls back
+      # to the serial one-chapter default when the gate is not green).
+      if ($contracts.Count -eq 0) {
         Write-BacklogJsonLine ([ordered]@{
           ts = (Get-Date).ToUniversalTime().ToString('o')
-          action = 'project-autopilot-diffusion-freeze-manifest'
+          action = 'project-autopilot-diffusion-skip'
           channel = [string]$Channel
           mode = $diffusionMode
-          manifest = $freezeManifest
+          reason = 'no-interface-contracts'
         })
-        $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+      } else {
+        $freezeManifest = New-ProjectAutopilotContractFreezeManifest -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -Channel $Channel -Mode $diffusionMode -WriteLocks:($true)
+        if ($freezeManifest) {
+          Write-BacklogJsonLine ([ordered]@{
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            action = 'project-autopilot-diffusion-freeze-manifest'
+            channel = [string]$Channel
+            mode = $diffusionMode
+            manifest = $freezeManifest
+          })
+          $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+        }
+        $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
+        Write-BacklogJsonLine ([ordered]@{
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          action = 'project-autopilot-diffusion-gate'
+          channel = [string]$Channel
+          mode = $diffusionMode
+          enabled = [bool]$diffusionGate.enabled
+          fallback = ($diffusionMode -eq 'diffusion' -and -not [bool]$diffusionGate.enabled)
+          reasons = @($diffusionGate.reasons)
+          atoms = [int]$diffusionGate.wave_size
+          independent_atoms = [int]$diffusionGate.independent_atom_count
+          freeze_manifest_id = if ($freezeManifest) { [string]$freezeManifest.manifest_id } else { '' }
+        })
       }
-      $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
-      Write-BacklogJsonLine ([ordered]@{
-        ts = (Get-Date).ToUniversalTime().ToString('o')
-        action = 'project-autopilot-diffusion-gate'
-        channel = [string]$Channel
-        mode = $diffusionMode
-        enabled = [bool]$diffusionGate.enabled
-        fallback = ($diffusionMode -eq 'diffusion' -and -not [bool]$diffusionGate.enabled)
-        reasons = @($diffusionGate.reasons)
-        atoms = [int]$diffusionGate.wave_size
-        independent_atoms = [int]$diffusionGate.independent_atom_count
-        freeze_manifest_id = if ($freezeManifest) { [string]$freezeManifest.manifest_id } else { '' }
-      })
     }
   } catch {}
   # 2026-06-30: a non-off mode that emits a CROSS-CHAPTER batch must only let it through when it can
