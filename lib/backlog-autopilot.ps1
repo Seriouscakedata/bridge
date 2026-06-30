@@ -2855,6 +2855,7 @@ function Add-ProjectBacklogFromMarker {
 
   $diffusionMode = 'off'
   $diffusionGate = $null
+  $freezeManifest = $null
   try {
     $cfg = Get-ProjectAutopilotConfig
     $diffusionMode = ([string]$cfg.diffusionMode).Trim().ToLowerInvariant()
@@ -2945,8 +2946,41 @@ function Add-ProjectBacklogFromMarker {
   #    collapses ONLY when its LIGHT gate is red (cyclic depends_on, a same-wave file conflict, or too few
   #    independent atoms); a GREEN wide gate lets the whole cross-chapter batch through to the write loop.
   $collapseReason = ''
-  if ($diffusionMode -in @('shadow','diffusion') -and -not ($diffusionGate -and [bool]$diffusionGate.enabled)) {
-    $collapseReason = 'diffusion-executor-not-built-or-gate-red'
+  if ($diffusionMode -eq 'shadow') {
+    # shadow is measure-only and NEVER changes execution: always collapse to the proven serial one-chapter
+    # default (the wave-schedule telemetry above already recorded the projected diffusion gain).
+    $collapseReason = 'diffusion-shadow-measure-only'
+  } elseif ($diffusionMode -eq 'diffusion') {
+    if ($diffusionGate -and [bool]$diffusionGate.enabled) {
+      # Ch3: GREEN diffusion gate -> RESHAPE the batch (additive emit-shaping) so contract-CONSUMERS run in
+      # PARALLEL against frozen stubs: a freeze-marker atom per stable contract (writes the stub, independent
+      # -> wave 1) + each consumer's depends_on rewritten from the real provider to the marker + a stitch
+      # consolidation atom. The existing hard-depends_on frontier dispatches these without any scheduler
+      # change; the fast marker unblocks the consumer while the slow provider is still building. If shaping is
+      # unavailable or produces nothing, fall back to the serial one-chapter default (never strand the batch).
+      $shaped = $null
+      try { if (Get-Command New-ProjectAutopilotShapedBatch -ErrorAction SilentlyContinue) { $shaped = New-ProjectAutopilotShapedBatch -Tasks $tasks -Contracts $contracts -FreezeManifest $freezeManifest -ProjectRoot $projectRoot -Channel $Channel } } catch { $shaped = $null }
+      if ($shaped -and [bool]$shaped.applied -and ([int]$shaped.markers_added -gt 0) -and (@($shaped.tasks).Count -ge $tasks.Count)) {
+        $tasks = @($shaped.tasks)
+        try {
+          Write-BacklogJsonLine ([ordered]@{
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            action = 'project-autopilot-diffusion-shaped'
+            channel = [string]$Channel
+            mode = $diffusionMode
+            markers_added = [int]$shaped.markers_added
+            consumers_rewritten = [int]$shaped.consumers_rewritten
+            stitch_added = [int]$shaped.stitch_added
+            stub_paths = @($shaped.stub_paths)
+            atoms = [int]@($shaped.tasks).Count
+          })
+        } catch {}
+      } else {
+        $collapseReason = 'diffusion-shaping-unavailable'
+      }
+    } else {
+      $collapseReason = 'diffusion-gate-red'
+    }
   } elseif ($diffusionMode -eq 'wide') {
     $wideGate = $null
     $wideK = 2; try { $wideK = [int]$cfg.diffusionMinIndependentAtoms } catch {}

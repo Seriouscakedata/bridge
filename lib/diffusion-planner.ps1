@@ -416,3 +416,287 @@ function New-ProjectAutopilotContractStub {
     hash       = [string]$hash
   }
 }
+
+function New-ProjectAutopilotShapedBatch {
+  # Ch3 of the diffusion engine: ADDITIVE EMIT-SHAPING.
+  # Given a just-emitted atom batch and a freeze manifest, RESHAPE the batch so contract-CONSUMER atoms
+  # run in PARALLEL with their PROVIDER (built against a frozen stub) using ONLY the existing hard
+  # `depends_on` scheduler -- no scheduler change. For each STABLE frozen contract we:
+  #   * append a FREEZE-MARKER atom (independent -> wave 1) that writes the deterministic stub file;
+  #   * rewrite each consumer's depends_on to drop the real provider slug and depend on the marker instead;
+  #   * append ONE STITCH/consolidation atom that depends on every provider + consumer to wire the reals.
+  # Pure planning transform -- NO I/O, NO timestamps, NO randomness; same inputs -> byte-identical tasks.
+  # Does NOT mutate the caller's task objects (rebuilds each as a fresh pscustomobject preserving all
+  # original NoteProperties). NEVER throws: on ANY error returns the no-op shape (applied=$false) so the
+  # caller falls back to a serial slice.
+  param([object[]]$Tasks = @(), [object[]]$Contracts = @(), $FreezeManifest = $null, [string]$ProjectRoot = '', [string]$Channel = '')
+
+  $noop = {
+    return [pscustomobject]@{
+      tasks = @($Tasks)
+      markers_added = 0
+      consumers_rewritten = 0
+      stitch_added = 0
+      stub_paths = @()
+      applied = $false
+    }
+  }
+
+  try {
+    # ---- defensive field reader (present-but-null treated as missing) ----
+    $get = {
+      param($Obj, [string[]]$Names, $Def = $null)
+      if ($null -eq $Obj) { return $Def }
+      if (Get-Command Get-BacklogPackObjectValue -ErrorAction SilentlyContinue) {
+        foreach ($n in @($Names)) {
+          $v = Get-BacklogPackObjectValue -Obj $Obj -Name $n -Default $null
+          if ($null -ne $v) { return $v }
+        }
+        return $Def
+      }
+      foreach ($n in @($Names)) {
+        try {
+          if ($Obj -is [System.Collections.IDictionary]) {
+            foreach ($k in @($Obj.Keys)) { if ([string]::Equals([string]$k, [string]$n, 'OrdinalIgnoreCase')) { if ($null -ne $Obj[$k]) { return $Obj[$k] } } }
+          } else {
+            $p = @($Obj.PSObject.Properties | Where-Object { [string]::Equals([string]$_.Name, [string]$n, 'OrdinalIgnoreCase') } | Select-Object -First 1)
+            if ($p.Count -gt 0 -and $null -ne $p[0].Value) { return $p[0].Value }
+          }
+        } catch {}
+      }
+      return $Def
+    }
+
+    $asArray = {
+      param($V)
+      if ($null -eq $V) { return @() }
+      if ($V -is [string]) { return @($V) }
+      if ($V -is [System.Collections.IEnumerable]) { return @($V) }
+      return @($V)
+    }
+
+    $slugify = {
+      param([string]$Text)
+      if (Get-Command ConvertTo-ProjectAutopilotSlug -ErrorAction SilentlyContinue) { return [string](ConvertTo-ProjectAutopilotSlug -Text ([string]$Text)) }
+      return ([string]$Text).Trim().ToLowerInvariant()
+    }
+
+    # ---- 1. collect STABLE frozen contracts (freeze_ready AND lock_written) ----
+    if ($null -eq $FreezeManifest) { return (& $noop) }
+    $manifestContracts = @(& $asArray (& $get $FreezeManifest @('contracts') @()))
+    $stable = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($c in $manifestContracts) {
+      $fr = [bool](& $get $c @('freeze_ready') $false)
+      $lw = [bool](& $get $c @('lock_written') $false)
+      if ($fr -and $lw) { $stable.Add($c) | Out-Null }
+    }
+    if ($stable.Count -eq 0) { return (& $noop) }
+
+    # ---- 2. working COPY of the tasks (rebuild each preserving ALL original NoteProperties) ----
+    $work = New-Object 'System.Collections.Generic.List[object]'
+    $slugIndex = @{}          # slug -> working pscustomobject (first wins)
+    $slugOrder = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($t in @($Tasks)) {
+      $od = [ordered]@{}
+      if ($null -ne $t) {
+        if ($t -is [System.Collections.IDictionary]) {
+          foreach ($k in @($t.Keys)) { $od[[string]$k] = $t[$k] }
+        } else {
+          foreach ($p in @($t.PSObject.Properties)) { $od[[string]$p.Name] = $p.Value }
+        }
+      }
+      $obj = [pscustomobject]$od
+      $work.Add($obj) | Out-Null
+      $slug = & $slugify ([string](& $get $obj @('slug','id','title') ''))
+      if (-not [string]::IsNullOrWhiteSpace($slug)) {
+        if (-not $slugIndex.ContainsKey($slug)) { $slugIndex[$slug] = $obj; $slugOrder.Add($slug) | Out-Null }
+      }
+    }
+
+    # helper: read a working task's chapter
+    $chapterOf = {
+      param($Obj)
+      [string](& $get $Obj @('chapter','phase','area') '')
+    }
+
+    # helper: set/replace a NoteProperty on a working pscustomobject
+    $setProp = {
+      param($Obj, [string]$Name, $Value)
+      if ($Obj.PSObject.Properties[$Name]) { $Obj.PSObject.Properties.Remove($Name) }
+      $Obj | Add-Member -MemberType NoteProperty -Name $Name -Value $Value -Force
+    }
+
+    $markersAdded = 0
+    $consumersRewritten = 0
+    $stubPaths = New-Object 'System.Collections.Generic.List[string]'
+    $allProviderSlugs = New-Object 'System.Collections.Generic.List[string]'
+    $allConsumerSlugs = New-Object 'System.Collections.Generic.List[string]'
+    $existingFiles = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($t in @($work.ToArray())) {
+      foreach ($f in @(& $asArray (& $get $t @('files') @()))) {
+        $fn = ([string]$f).Replace('\','/').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($fn)) { [void]$existingFiles.Add($fn.ToLowerInvariant()) }
+      }
+    }
+
+    # ---- 3. per stable contract: freeze-marker + consumer rewrite ----
+    foreach ($C in @($stable.ToArray())) {
+      $id = [string](& $get $C @('id') '')
+      if ([string]::IsNullOrWhiteSpace($id)) { continue }
+      $idSlug = & $slugify $id
+      $providers = @(& $asArray (& $get $C @('provider_atoms') @()) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      $consumers = @(& $asArray (& $get $C @('consumer_atoms') @()) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      $stubLang = [string](& $get $C @('generated_stub_language') '')
+      $stubSource = [string](& $get $C @('generated_stub_source') '')
+
+      # a. ext + stub path (forward slashes, relative, ephemeral consumer-side file)
+      $ext = switch (([string]$stubLang).Trim().ToLowerInvariant()) {
+        'python'     { '.py' }
+        'kotlin'     { '.kt' }
+        'typescript' { '.ts' }
+        default      { '.txt' }
+      }
+      $stubBase = ".bridge/stubs/$idSlug"
+      $stubPath = $stubBase + $ext
+      if ($existingFiles.Contains($stubPath.ToLowerInvariant())) { $stubPath = $stubBase + '-stub' + $ext }
+      [void]$existingFiles.Add($stubPath.ToLowerInvariant())
+
+      # chapter for the marker: first provider's chapter in tasks, else first consumer's, else 'Chapter 1'
+      $markerChapter = ''
+      foreach ($ps in $providers) { if ($slugIndex.ContainsKey($ps)) { $markerChapter = & $chapterOf $slugIndex[$ps]; if (-not [string]::IsNullOrWhiteSpace($markerChapter)) { break } } }
+      if ([string]::IsNullOrWhiteSpace($markerChapter)) {
+        foreach ($ks in $consumers) { if ($slugIndex.ContainsKey($ks)) { $markerChapter = & $chapterOf $slugIndex[$ks]; if (-not [string]::IsNullOrWhiteSpace($markerChapter)) { break } } }
+      }
+      if ([string]::IsNullOrWhiteSpace($markerChapter)) { $markerChapter = 'Chapter 1' }
+
+      $firstProvider = if (@($providers).Count -gt 0) { [string]@($providers)[0] } else { '' }
+
+      # b. FREEZE-MARKER atom (independent -> dispatches in wave 1)
+      $markerSlug = & $slugify ("freeze-$id")
+      $markerTask = "Write the deterministic frozen contract stub for contract '$id' to $stubPath, with EXACTLY this content (do not alter the interface):`n`n$stubSource`n`nThis is a temporary stub that the integration/stitch atom will replace with the real implementation. Create the file and commit."
+      $marker = [pscustomobject]([ordered]@{
+        slug = $markerSlug
+        title = "Freeze contract stub: $id"
+        chapter = $markerChapter
+        kind = 'infra'
+        wave = 'wave-1'
+        parallel_group = 'contracts'
+        files = @($stubPath)
+        depends_on = @()
+        provides = @()
+        consumes = @()
+        task = $markerTask
+        acceptance = @("$stubPath exists and contains the frozen contract interface")
+        checks = @("verify $stubPath exists and is non-empty")
+        severity = 'normal'
+        risk = 'normal'
+        serial_reason = ''
+      })
+      $work.Add($marker) | Out-Null
+      if (-not $slugIndex.ContainsKey($markerSlug)) { $slugIndex[$markerSlug] = $marker; $slugOrder.Add($markerSlug) | Out-Null }
+      [void]$stubPaths.Add($stubPath)
+      $markersAdded++
+
+      # c. rewrite each consumer: drop provider slugs from depends_on, append marker; build against stub.
+      $providerSet = New-Object 'System.Collections.Generic.HashSet[string]'
+      foreach ($ps in $providers) { [void]$providerSet.Add($ps); if (-not ($allProviderSlugs -contains $ps)) { $allProviderSlugs.Add($ps) | Out-Null } }
+      foreach ($ks in $consumers) {
+        if (-not $slugIndex.ContainsKey($ks)) { continue }
+        $cons = $slugIndex[$ks]
+        # existing non-provider deps first, then the marker; dedupe, preserve order
+        $newDeps = New-Object 'System.Collections.Generic.List[string]'
+        $depSeen = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($d in @(& $asArray (& $get $cons @('depends_on') @()))) {
+          $ds = [string]$d
+          if ([string]::IsNullOrWhiteSpace($ds)) { continue }
+          if ($providerSet.Contains($ds)) { continue }
+          if ($depSeen.Add($ds)) { $newDeps.Add($ds) | Out-Null }
+        }
+        if ($depSeen.Add($markerSlug)) { $newDeps.Add($markerSlug) | Out-Null }
+        & $setProp $cons 'depends_on' @($newDeps.ToArray())
+
+        # drop the direct live-contract consume so the soft/hard graph no longer draws a provider->consumer
+        # hard edge: the consumer now depends ONLY on the fast freeze marker (the stub it builds against).
+        $newConsumes = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($cm in @(& $asArray (& $get $cons @('consumes') @()))) {
+          $cmS = [string]$cm
+          if ([string]::IsNullOrWhiteSpace($cmS)) { continue }
+          if ((& $slugify $cmS) -eq $idSlug) { continue }
+          $newConsumes.Add($cmS) | Out-Null
+        }
+        & $setProp $cons 'consumes' @($newConsumes.ToArray())
+
+        # append guidance to the task text + mark acceptance scope
+        $existingTask = [string](& $get $cons @('task') '')
+        $augmented = $existingTask + "`n`n[diffusion] Build against the frozen stub at $stubPath (provider '$firstProvider' is built in parallel and wired at integration). acceptance_scope=contract."
+        & $setProp $cons 'task' $augmented
+        & $setProp $cons 'acceptance_scope' 'contract'
+
+        if (-not ($allConsumerSlugs -contains $ks)) { $allConsumerSlugs.Add($ks) | Out-Null }
+        $consumersRewritten++
+      }
+    }
+
+    # ---- 4. STITCH atom (only if at least one marker was added) ----
+    $stitchAdded = 0
+    if ($markersAdded -gt 0) {
+      # last chapter ordinal present among tasks (highest leading number), else 'Chapter 9'
+      $maxOrd = -1; $maxChapter = ''
+      foreach ($t in @($work.ToArray())) {
+        $ch = & $chapterOf $t
+        if ([string]::IsNullOrWhiteSpace($ch)) { continue }
+        $m = [regex]::Match($ch, '(\d+)')
+        if ($m.Success) {
+          $ord = [int]$m.Groups[1].Value
+          if ($ord -gt $maxOrd) { $maxOrd = $ord; $maxChapter = $ch }
+        }
+      }
+      $stitchChapter = if (-not [string]::IsNullOrWhiteSpace($maxChapter)) { $maxChapter } else { 'Chapter 9' }
+
+      # depends_on = ALL provider + consumer slugs that ACTUALLY exist as tasks (deduped, ordered)
+      $stitchDeps = New-Object 'System.Collections.Generic.List[string]'
+      $stitchSeen = New-Object 'System.Collections.Generic.HashSet[string]'
+      foreach ($ps in @($allProviderSlugs.ToArray())) { if ($slugIndex.ContainsKey($ps) -and $stitchSeen.Add($ps)) { $stitchDeps.Add($ps) | Out-Null } }
+      foreach ($ks in @($allConsumerSlugs.ToArray())) { if ($slugIndex.ContainsKey($ks) -and $stitchSeen.Add($ks)) { $stitchDeps.Add($ks) | Out-Null } }
+
+      $stubList = [string]::Join(', ', @($stubPaths.ToArray()))
+      $stitchTask = "Integration/stitch: replace each contract stub ($stubList) with the real provider implementation, verify each contract's frozen interface matches its real implementation, and RE-RUN every consumer's acceptance against the REAL provider (NOT the stub). Then run full integration acceptance. If any contract drifted from its frozen interface, FAIL -- do not ship the consumers against the stub. Remove the temporary stub files."
+      # Deterministic, collision-resistant slug from the stub set so a second shaped batch's stitch is not
+      # silently de-duped against a prior (possibly done/failed) 'stitch-integration'.
+      $stitchSlug = 'stitch-integration'
+      try { if (Get-Command Get-ProjectAutopilotSha256 -ErrorAction SilentlyContinue) { $stitchSlug = 'stitch-integration-' + (Get-ProjectAutopilotSha256 -Text ([string]::Join('|', @($stubPaths.ToArray() | Sort-Object)))).Substring(0,8) } } catch {}
+      $stitch = [pscustomobject]([ordered]@{
+        slug = $stitchSlug
+        title = 'Integration stitch: wire real providers + remove contract stubs'
+        chapter = $stitchChapter
+        kind = 'consolidation'
+        wave = 'wave-final'
+        parallel_group = 'integration'
+        files = @($stubPaths.ToArray())
+        depends_on = @($stitchDeps.ToArray())
+        provides = @()
+        consumes = @()
+        task = $stitchTask
+        acceptance = @("the application builds and runs against the REAL providers with no remaining contract stubs")
+        checks = @("integration build", "integration acceptance")
+        severity = 'normal'
+        risk = 'normal'
+        serial_reason = 'contract integration'
+      })
+      $work.Add($stitch) | Out-Null
+      $stitchAdded = 1
+    }
+
+    # ---- 5. return reshaped batch ----
+    return [pscustomobject]@{
+      tasks = @($work.ToArray())
+      markers_added = [int]$markersAdded
+      consumers_rewritten = [int]$consumersRewritten
+      stitch_added = [int]$stitchAdded
+      stub_paths = @($stubPaths.ToArray())
+      applied = $true
+    }
+  } catch {
+    return (& $noop)
+  }
+}
