@@ -2803,15 +2803,37 @@ function Add-ProjectBacklogFromMarker {
       })
     }
   } catch {}
-  if ($diffusionMode -eq 'diffusion' -and $diffusionGate -and -not [bool]$diffusionGate.enabled) {
-    $chaptersForGate = @($tasks | ForEach-Object { Get-ProjectAutopilotTaskStringField -Task $_ -Names @('chapter','phase','area') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-    if ($chaptersForGate.Count -gt 1) {
-      return [pscustomobject]@{
-        created = 0
-        skipped = $tasks.Count
-        errors = @('diffusion gate blocked cross-chapter PROJECT_BACKLOG: ' + ((@($diffusionGate.reasons) | Sort-Object -Unique) -join ', '))
-        ids = @()
-      }
+  # 2026-06-30 (diffusion hang fix): the diffusion EXECUTOR (P2-P5 in DIFFUSION_DESIGN.md: contract-stub
+  # generation, wave schedule, stitching) is NOT built yet, so a cross-chapter batch cannot actually run
+  # in parallel. Letting it through did two bad things: (1) the old 'diffusion + red gate' branch returned
+  # created=0 and STRANDED the atoms (re-emitted forever); (2) 'shadow' let the full ~24-atom cross-chapter
+  # batch through, and writing it (one slow lock+full-file-verify Add-Idea per atom on a large backlog,
+  # OneDrive-aggravated) held the global bridge mutex long enough that the driver heartbeat timed out and
+  # the channel froze ~90s after start. Until the executor exists, ANY non-off diffusion mode whose gate is
+  # not GREEN collapses to the single EARLIEST chapter (the proven serial one-chapter default): no giant
+  # batch -> no lock storm -> no hang -> no stranded atoms, and the project still moves one chapter at a
+  # time. When P2+ lands, a GREEN gate skips this collapse and the shaped cross-chapter atoms go through.
+  if ($diffusionMode -in @('shadow','diffusion') -and -not ($diffusionGate -and [bool]$diffusionGate.enabled)) {
+    $chapterOf = { param($task) Get-ProjectAutopilotTaskStringField -Task $task -Names @('chapter','phase','area') }
+    $chaptersPresent = @($tasks | ForEach-Object { & $chapterOf $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    if ($chaptersPresent.Count -gt 1) {
+      $chapterRank = { param($c) $m=[regex]::Match([string]$c,'\d+'); if ($m.Success) { [int]$m.Value } else { 999999 } }
+      $earliestChapter = @($chaptersPresent | Sort-Object @{Expression={ & $chapterRank $_ }}, @{Expression={ [string]$_ }} | Select-Object -First 1)[0]
+      $beforeCount = $tasks.Count
+      $tasks = @($tasks | Where-Object { $cf = (& $chapterOf $_); [string]::IsNullOrWhiteSpace($cf) -or ($cf -eq $earliestChapter) })
+      try {
+        Write-BacklogJsonLine ([ordered]@{
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          action = 'project-autopilot-diffusion-collapse-to-chapter'
+          channel = [string]$Channel
+          mode = $diffusionMode
+          gate_enabled = [bool]($diffusionGate -and $diffusionGate.enabled)
+          chapter = [string]$earliestChapter
+          kept = $tasks.Count
+          dropped = ($beforeCount - $tasks.Count)
+          reason = 'diffusion-executor-not-built-or-gate-red'
+        })
+      } catch {}
     }
   }
 
