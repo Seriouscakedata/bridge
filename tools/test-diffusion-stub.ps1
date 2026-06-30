@@ -80,6 +80,39 @@ $emptySrcOk = ($null -ne $emptyStub) -and (-not [string]::IsNullOrWhiteSpace([st
 Assert-That "empty contract returns non-null source" $emptySrcOk
 
 # ---------------------------------------------------------------------------
+# 5. Ch2-fix regressions: identifier sanitization + ABC import auto-injection
+# ---------------------------------------------------------------------------
+Write-Host "[fixes: sanitize + abc-import]"
+# (a) hyphenated id (no name) -> legal PascalCase identifier; ABC import auto-injected when omitted
+$abcContract = [pscustomobject]@{
+  id = 'thermostat-controller'; version = '2.0.0'; owned_files = @('app/thermostat.py')
+  signature = @{ type = 'abstract_base_class'; abstract_methods = @( @{ name = 'run'; signature = 'run(self) -> None' } ) }
+}
+$abcStub = New-ProjectAutopilotContractStub -Contract $abcContract
+Assert-That "python language for .py" ($abcStub.language -eq 'python')
+Assert-That "hyphen id -> 'class ThermostatController(ABC)'" ($abcStub.source -like '*class ThermostatController(ABC)*')
+Assert-That "no raw hyphen in class identifier" (-not ($abcStub.source -like '*class thermostat-controller*'))
+Assert-That "ABC import auto-injected when omitted" ($abcStub.source -like '*from abc import ABC, abstractmethod*')
+Assert-That "still emits @abstractmethod" ($abcStub.source -like '*@abstractmethod*')
+$abcStub2 = New-ProjectAutopilotContractStub -Contract $abcContract
+Assert-That "fixed path still deterministic" ($abcStub.hash -eq $abcStub2.hash)
+
+# (b) multi-word human name -> PascalCase identifier (kotlin)
+$mwStub = New-ProjectAutopilotContractStub -Contract ([pscustomobject]@{
+  name = 'Payment Gateway'; version = '1.0.0'; owned_files = @('Gateway.kt')
+  signature = @{ type = 'interface'; abstract_methods = @( @{ name = 'charge'; signature = 'fun charge(amount: Int): Boolean' } ) }
+})
+Assert-That "multi-word name -> 'interface PaymentGateway'" ($mwStub.source -like '*interface PaymentGateway*')
+Assert-That "no space in interface identifier" (-not ($mwStub.source -like '*interface Payment Gateway*'))
+
+# (c) ABC import NOT duplicated when the contract already provides it
+$awiStub = New-ProjectAutopilotContractStub -Contract ([pscustomobject]@{
+  id = 'x'; owned_files = @('x.py')
+  signature = @{ type = 'abstract_base_class'; imports = @('from abc import ABC, abstractmethod'); abstract_methods = @( @{ name='f'; signature='f(self)' } ) }
+})
+Assert-That "abc import not duplicated when provided" (([regex]::Matches($awiStub.source, 'from abc import')).Count -eq 1)
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 $res = if ($fail -eq 0) { "RESULT: ALL PASS" } else { "RESULT: $fail FAILED" }

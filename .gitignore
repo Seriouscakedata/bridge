@@ -72,6 +72,7 @@ channels/*/delivery-gate-shadow.jsonl
 channels/*/task-management-shadow.jsonl
 channels/*/depth-shadow.jsonl
 channels/*/cost.json
+channels/*/PROJECT_WAVE_SCHEDULE.json
 tools/tmp-*.ps1
 /backlog.jsonl
 conversation-auto-archive.last

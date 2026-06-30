@@ -92,21 +92,28 @@ function Get-ProjectAutopilotAtomClassification {
 
 function Get-ProjectAutopilotWaveStats {
   param($Levels, [int]$AtomCount)
+  if ($null -eq $Levels) {
+    return [pscustomobject]@{ wave_count = 0; wave_sizes = @(); first_wave_size = 0; max_wave_size = 0; parallelism_pct = 0; scheduled = 0; cyclic_leftover = @() }
+  }
   $waves = @($Levels.waves)
   $sizes = @($waves | ForEach-Object { @($_).Count })
   $waveCount = $waves.Count
   $maxWave = if ($sizes.Count -gt 0) { ($sizes | Measure-Object -Maximum).Maximum } else { 0 }
   $firstWave = if ($sizes.Count -gt 0) { [int]$sizes[0] } else { 0 }
-  # parallelism %: 100 = all atoms in one wave (fully parallel); 0 = one atom per wave (fully serial)
+  # parallelism % is computed over the SCHEDULED atoms (those actually placed in waves), NOT the raw atom
+  # count: a cyclic/unschedulable atom lands in cyclic_leftover and must not inflate the parallelism score.
+  # 100 = every scheduled atom in one wave (fully parallel); 0 = one atom per wave (fully serial).
+  $scheduled = 0; foreach ($s in @($sizes)) { $scheduled += [int]$s }
   $pct = 0
-  if ($AtomCount -gt 1) { $pct = [int][math]::Round(100.0 * ($AtomCount - $waveCount) / ($AtomCount - 1)) }
-  elseif ($AtomCount -eq 1) { $pct = 100 }
+  if ($scheduled -gt 1) { $pct = [int][math]::Round(100.0 * ($scheduled - $waveCount) / ($scheduled - 1)) }
+  elseif ($scheduled -eq 1) { $pct = 100 }
   return [pscustomobject]@{
     wave_count = [int]$waveCount
     wave_sizes = @($sizes)
     first_wave_size = [int]$firstWave
     max_wave_size = [int]$maxWave
     parallelism_pct = [int]$pct
+    scheduled = [int]$scheduled
     cyclic_leftover = @($Levels.cyclic_leftover)
   }
 }
@@ -231,7 +238,20 @@ function New-ProjectAutopilotContractStub {
     return @($V)
   }
 
-  $name = 'Unknown'; $ext = ''; $ownedFile = ''; $language = 'generic'; $version = ''; $id = ''
+  # sanitize an arbitrary contract name into a legal PascalCase identifier (deterministic). Used wherever the
+  # name goes into a class/interface/variable position; the raw human name stays only in comments.
+  $toIdent = {
+    param([string]$Raw)
+    if ([string]::IsNullOrWhiteSpace($Raw)) { return 'ContractStub' }
+    $parts = @([regex]::Split($Raw, '[^A-Za-z0-9]+') | Where-Object { -not [string]::IsNullOrEmpty($_) })
+    if ($parts.Count -eq 0) { return 'ContractStub' }
+    $acc = ''
+    foreach ($p in $parts) { $first = $p.Substring(0,1).ToUpperInvariant(); $rest = ''; if ($p.Length -gt 1) { $rest = $p.Substring(1) }; $acc = $acc + $first + $rest }
+    if ($acc -match '^[0-9]') { $acc = '_' + $acc }
+    if ([string]::IsNullOrWhiteSpace($acc)) { return 'ContractStub' }
+    return $acc
+  }
+  $name = 'Unknown'; $ext = ''; $ownedFile = ''; $language = 'generic'; $version = ''; $id = ''; $ident = 'ContractStub'
   $source = ''
 
   try {
@@ -282,15 +302,20 @@ function New-ProjectAutopilotContractStub {
     if (@($methods).Count -eq 0) { $methods = (& $asArray (& $get $signature @('methods') $null)) }
 
     $isAbc = ($sigType -match '(?i)abstract_base_class') -or (@($imports) | Where-Object { [string]$_ -match '(?i)\bABC\b' }).Count -gt 0
+    $ident = & $toIdent $name
 
     $nl = "`n"
     $sb = New-Object System.Text.StringBuilder
 
     if ($language -eq 'python') {
       [void]$sb.Append("# AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
-      foreach ($imp in @($imports)) { if (-not [string]::IsNullOrWhiteSpace([string]$imp)) { [void]$sb.Append([string]$imp + $nl) } }
-      if (@($imports).Count -gt 0) { [void]$sb.Append($nl) }
-      if ($isAbc) { [void]$sb.Append("class $name(ABC):" + $nl) } else { [void]$sb.Append("class ${name}:" + $nl) }
+      $effImports = @(@($imports) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+      # an ABC stub references ABC/@abstractmethod -- auto-inject the import when the contract omits it, else
+      # the stub raises NameError at import time. De-dupe against any contract-provided abc import.
+      if ($isAbc -and (@($effImports | Where-Object { $_ -match '(?i)from\s+abc\s+import' }).Count -eq 0)) { $effImports = @('from abc import ABC, abstractmethod') + $effImports }
+      foreach ($imp in @($effImports)) { [void]$sb.Append([string]$imp + $nl) }
+      if (@($effImports).Count -gt 0) { [void]$sb.Append($nl) }
+      if ($isAbc) { [void]$sb.Append("class $ident(ABC):" + $nl) } else { [void]$sb.Append("class ${ident}:" + $nl) }
       $emittedBody = $false
       foreach ($a in @($classAttrs)) {
         $an = [string](& $get $a @('name') '')
@@ -317,7 +342,7 @@ function New-ProjectAutopilotContractStub {
     }
     elseif ($language -eq 'kotlin') {
       [void]$sb.Append("// AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
-      [void]$sb.Append("interface $name {" + $nl)
+      [void]$sb.Append("interface $ident {" + $nl)
       foreach ($m in @($methods)) {
         $msig = [string](& $get $m @('signature') '')
         $mname = [string](& $get $m @('name') '')
@@ -332,7 +357,7 @@ function New-ProjectAutopilotContractStub {
     }
     elseif ($language -eq 'typescript') {
       [void]$sb.Append("// AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version" + $nl)
-      [void]$sb.Append("export interface $name {" + $nl)
+      [void]$sb.Append("export interface $ident {" + $nl)
       foreach ($m in @($methods)) {
         $msig = [string](& $get $m @('signature') '')
         $mname = [string](& $get $m @('name') '')
@@ -364,7 +389,7 @@ function New-ProjectAutopilotContractStub {
         [void]$sb.Append("#   method: $msig" + $nl)
       }
       [void]$sb.Append("# contract stub not implemented -- placeholder for contract $id" + $nl)
-      [void]$sb.Append("CONTRACT_STUB_${name} = `"contract stub: $id`"" + $nl)
+      [void]$sb.Append("CONTRACT_STUB_${ident} = `"contract stub: $id`"" + $nl)
       $source = $sb.ToString()
     }
   } catch {
@@ -372,9 +397,10 @@ function New-ProjectAutopilotContractStub {
     $language = 'generic'
     if ([string]::IsNullOrWhiteSpace([string]$name)) { $name = 'Unknown' }
     if ([string]::IsNullOrWhiteSpace([string]$id)) { $id = [string]$name }
+    $ident = & $toIdent $name
     $source = "# AUTO-GENERATED CONTRACT STUB (deterministic) -- contract $id v$version`n" +
               "# contract stub not implemented -- malformed or empty contract`n" +
-              "CONTRACT_STUB_${name} = `"contract stub: $id`"`n"
+              "CONTRACT_STUB_${ident} = `"contract stub: $id`"`n"
     $ext = ''
   }
 

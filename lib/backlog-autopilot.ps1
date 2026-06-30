@@ -727,7 +727,15 @@ function New-ProjectAutopilotContractFreezeManifest {
     $consumerAtoms = @($Tasks | Where-Object { @(ConvertTo-ProjectAutopilotSlugArray (Get-BacklogPackObjectValue -Obj $_ -Name 'consumes' -Default @())) -contains $id } | ForEach-Object { ConvertTo-ProjectAutopilotSlug (Get-ProjectAutopilotTaskStringField -Task $_ -Names @('slug','id','title')) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
     $version = [string](Get-BacklogPackObjectValue -Obj $contract -Name 'version' -Default '')
     $hash = [string](Get-BacklogPackObjectValue -Obj $contract -Name 'canonical_hash' -Default (Get-BacklogPackObjectValue -Obj $contract -Name 'hash' -Default ''))
-    $stubHash = Get-ProjectAutopilotSha256 -Text ("contract-stub-v1`n$id`n$version`n$hash")
+    # Ch2: generate the REAL deterministic interface stub a consumer builds against; the lock records the
+    # hash of the ACTUAL stub source (not a placeholder constant), so post-freeze stub drift is detectable
+    # and Ch3 can write the stub into a consumer-owned file. Falls back to the old placeholder hash if the
+    # stub generator is unavailable.
+    $stub = $null
+    try { if (Get-Command New-ProjectAutopilotContractStub -ErrorAction SilentlyContinue) { $stub = New-ProjectAutopilotContractStub -Contract $contract } } catch { $stub = $null }
+    $stubSource = if ($stub) { [string]$stub.source } else { '' }
+    $stubLanguage = if ($stub) { [string]$stub.language } else { '' }
+    $stubHash = if ($stub -and -not [string]::IsNullOrWhiteSpace([string]$stub.hash)) { [string]$stub.hash } else { Get-ProjectAutopilotSha256 -Text ("contract-stub-v1`n$id`n$version`n$hash") }
     $reasons = @($contract.maturity_reasons)
     $freezeBlockers = @($reasons | Where-Object { $_ -notin @('freeze-lock-missing-or-not-stable','freeze-lock-version-mismatch','freeze-lock-hash-mismatch') })
     $freezeReady = ([bool](Get-BacklogPackObjectValue -Obj $contract -Name 'raw_mature' -Default $false) -and $providerAtoms.Count -gt 0 -and $consumerAtoms.Count -gt 0 -and $freezeBlockers.Count -eq 0)
@@ -768,6 +776,8 @@ function New-ProjectAutopilotContractFreezeManifest {
       owned_files = @(Get-BacklogPackObjectValue -Obj $contract -Name 'owned_files' -Default @())
       owned_regions = @(Get-BacklogPackObjectValue -Obj $contract -Name 'owned_regions' -Default @())
       generated_stub_hash = $stubHash
+      generated_stub_language = $stubLanguage
+      generated_stub_source = $stubSource
       lock_path = $lockPath
       lock_written = [bool]$lockWritten
       freeze_ready = [bool]$freezeReady
