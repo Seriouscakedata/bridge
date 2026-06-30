@@ -953,7 +953,20 @@ function Use-BridgeLock {
       } catch {}
     }
     if (-not $got) { throw ("bridge-lock-timeout-uncertain: could not acquire within {0}s (elapsed_ms={1}); caller must re-read state before retry" -f ([math]::Round($TimeoutMs / 1000, 3)), $elapsedMs) }
-    & $Body
+    # 2026-06-30 lock-contention diagnostic: log who HOLDS the lock too long (the real contention
+    # root) + the caller chain. slow_lock above is only the WAIT; this is the HOLD.
+    $heldSw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { & $Body } finally {
+      $heldSw.Stop()
+      if ([int64]$heldSw.ElapsedMilliseconds -ge 1000) {
+        try {
+          $caller = ''
+          try { $cs = @(Get-PSCallStack); if ($cs.Count -ge 2) { $caller = (($cs[1..([Math]::Min(5,$cs.Count-1))]) | ForEach-Object { [string]$_.Command }) -join '<-' } } catch {}
+          $hlog = Join-Path (Get-BridgeRoot) 'control\bridge-lock.log'
+          Add-Content -LiteralPath $hlog -Value ("{0}  lock_HELD elapsed_ms={1} pid={2} caller={3}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), [int64]$heldSw.ElapsedMilliseconds, $PID, $caller) -Encoding utf8 -ErrorAction SilentlyContinue
+        } catch {}
+      }
+    }
   } finally {
     if ($got) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()

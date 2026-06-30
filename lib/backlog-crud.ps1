@@ -368,7 +368,19 @@ function Save-Backlog {
   # so 6 is safe and gives margin.
   param($Items)
   Ensure-BacklogPathFunction
-  $lines = @($Items | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 })
+  # 2026-06-30: embeddings live in the backlog-embeddings.jsonl sidecar, NOT inline. The inline
+  # vectors were ~88% of a 26MB backlog and made every locked RMW parse+serialize ~2s, storming the
+  # global lock. Strip any lingering inline embedding on save (on a copy, so callers' items are
+  # untouched) to keep this transactional file slim.
+  $lines = @($Items | ForEach-Object {
+    $it = $_
+    try {
+      if ($it -and ($it.PSObject.Properties.Name -contains 'embedding')) {
+        $it = $it | Select-Object -Property * -ExcludeProperty embedding
+      }
+    } catch {}
+    $it | ConvertTo-Json -Compress -Depth 6
+  })
   $content = if ($lines.Count) { ($lines -join "`n") + "`n" } else { '' }
   # 2026-05-28: resolve path before closure (see Add-Idea note about scope).
   $backlogPathForSave = Resolve-BacklogPathValue

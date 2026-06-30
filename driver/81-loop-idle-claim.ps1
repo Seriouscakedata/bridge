@@ -1865,7 +1865,20 @@ $script:DriverLoopIdleClaimBlock = {
         elseif ($backlogSynthesisRouteClosure) { Add-Message -From system -Text ("🧠 Decision Synthesis для backlog: depth=$backlogSynthesisDepthClosure; reason=$backlogSynthesisReasonClosure.") -Kind event | Out-Null }
         $state = Read-State
       } else {
-        Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+        # 2026-06-30 lock-storm fix: this idle-state write ran EVERY idle loop on EVERY driver, taking
+        # the global lock for a state.json atomic write (hundreds of ms, spiking to ~2s under OneDrive
+        # I/O contention). When the driver is already idle, only the heartbeat changes -- throttle it to
+        # ~once per 20s so idle drivers stop hammering the lock (staleness detection tolerates 600s).
+        $needIdleWrite = $true
+        try {
+          if ($script:LastIdleHeartbeatTick -and ($null -ne $state) -and ([string]$state.status -eq 'idle')) {
+            if (((Get-Date) - $script:LastIdleHeartbeatTick).TotalSeconds -lt 20) { $needIdleWrite = $false }
+          }
+        } catch { $needIdleWrite = $true }
+        if ($needIdleWrite) {
+          Update-State { param($s) $s.status='idle'; $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.heartbeat=(Get-Date).ToString('o') } | Out-Null
+          $script:LastIdleHeartbeatTick = Get-Date
+        }
         try { Start-BacklogReaperIfDue } catch {}
         try { Start-LibrarianIfDue } catch {}
         try {

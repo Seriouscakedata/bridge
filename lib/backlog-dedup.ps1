@@ -10,20 +10,112 @@ if (-not (Get-Command Get-BridgeObjectValue -ErrorAction SilentlyContinue)) {
   try { . (Join-Path $PSScriptRoot 'primitives.ps1') } catch {}
 }
 
+# --- Embedding sidecar store (2026-06-30) ------------------------------------------------------
+# Embeddings are a recomputable cache used ONLY by dedup. Storing them inline in backlog.jsonl
+# bloated that file to ~26MB (88% vectors); every Set-Idea/Save-Backlog read-modify-write then
+# parsed+serialized ~22MB of vectors UNDER the global bridge lock (~2s hold each). With ~10 driver/
+# curator/packer processes contending, that produced a 5-10s slow_lock storm that wedged the whole
+# bridge and blocked wide diffusion. Embeddings now live in a per-channel sidecar
+# (backlog-embeddings.jsonl) so the transactional backlog stays slim (~3MB, ~120ms parse) and the hot
+# lock path is fast; dedup loads the sidecar lazily off the hot path. Embeddings are deterministic
+# per text, so a stale/missing sidecar entry is recomputed -- correctness never depends on it.
+$script:BacklogEmbStore = $null   # @{ path; mtime; len; map = @{ id -> double[] } }
+
+function Get-BacklogEmbeddingStorePath {
+  try {
+    if (Get-Command Resolve-BacklogPathValue -ErrorAction SilentlyContinue) {
+      $bp = Resolve-BacklogPathValue
+      if ($bp) { return (Join-Path (Split-Path -Parent $bp) 'backlog-embeddings.jsonl') }
+    }
+  } catch {}
+  return $null
+}
+
+function Ensure-BacklogEmbStoreLoaded {
+  $path = Get-BacklogEmbeddingStorePath
+  if (-not $path) { return }
+  $mtime = $null; $len = -1
+  if (Test-Path -LiteralPath $path) {
+    try { $fi = Get-Item -LiteralPath $path; $mtime = $fi.LastWriteTimeUtc; $len = $fi.Length } catch {}
+  }
+  if ($script:BacklogEmbStore -and $script:BacklogEmbStore.path -eq $path -and $script:BacklogEmbStore.mtime -eq $mtime -and $script:BacklogEmbStore.len -eq $len) {
+    return
+  }
+  $map = @{}
+  if (Test-Path -LiteralPath $path) {
+    foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8)) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      $o = $null; try { $o = $line | ConvertFrom-Json } catch { continue }
+      $id = ''; try { $id = [string]$o.id } catch {}
+      if ([string]::IsNullOrWhiteSpace($id)) { continue }
+      if ($null -eq $o.embedding) { continue }
+      $map[$id] = @($o.embedding)   # last-wins
+    }
+  }
+  $script:BacklogEmbStore = @{ path = $path; mtime = $mtime; len = $len; map = $map }
+}
+
+function Get-BacklogEmbeddingFromStore {
+  param([string]$Id)
+  if ([string]::IsNullOrWhiteSpace($Id)) { return @() }
+  Ensure-BacklogEmbStoreLoaded
+  if (-not $script:BacklogEmbStore) { return @() }
+  $v = $script:BacklogEmbStore.map[$Id]
+  if ($null -eq $v) { return @() }
+  return @($v)
+}
+
+function Set-BacklogEmbeddingInStore {
+  param([string]$Id, $Embedding)
+  if ([string]::IsNullOrWhiteSpace($Id) -or -not $Embedding) { return $false }
+  $path = Get-BacklogEmbeddingStorePath
+  if (-not $path) { return $false }
+  $vec = New-Object 'System.Collections.Generic.List[double]'
+  foreach ($v in @($Embedding)) { if ($null -eq $v) { continue }; try { [void]$vec.Add([double]$v) } catch {} }
+  if ($vec.Count -eq 0) { return $false }
+  $line = ([pscustomobject]@{ id = $Id; embedding = @($vec.ToArray()) } | ConvertTo-Json -Compress -Depth 4)
+  $ok = $false
+  try {
+    # Dedicated lock (NOT the backlog lock) so a small ~ms append never contends with backlog RMW.
+    Use-BridgeLock -MutexName 'Global\ClaudeCodexBridgeEmbStoreLock' -TimeoutMs 8000 -Body ({
+      Add-Content -LiteralPath $path -Value $line -Encoding UTF8
+    }.GetNewClosure()) | Out-Null
+    $ok = $true
+  } catch { $ok = $false }
+  if ($ok) {
+    # Patch the in-memory map and adopt the new file stamp so we do NOT reload 22MB after our own write.
+    try {
+      $fi = Get-Item -LiteralPath $path
+      if ($script:BacklogEmbStore -and $script:BacklogEmbStore.path -eq $path) {
+        $script:BacklogEmbStore.map[$Id] = @($vec.ToArray())
+        $script:BacklogEmbStore.mtime = $fi.LastWriteTimeUtc
+        $script:BacklogEmbStore.len = $fi.Length
+      } else {
+        Ensure-BacklogEmbStoreLoaded
+        if ($script:BacklogEmbStore) { $script:BacklogEmbStore.map[$Id] = @($vec.ToArray()) }
+      }
+    } catch {}
+  }
+  return $ok
+}
+
 function Get-BacklogDedupCachedEmbedding {
   param($Item)
   try {
     if (-not $Item) { return @() }
+    # Inline embedding (legacy / pre-migration items) wins for backward-compat during rollout.
     $prop = $Item.PSObject.Properties['embedding']
-    if (-not $prop -or $null -eq $prop.Value) { return @() }
-
-    $vec = New-Object 'System.Collections.Generic.List[double]'
-    foreach ($v in @($prop.Value)) {
-      if ($null -eq $v) { continue }
-      try { [void]$vec.Add([double]$v) } catch {}
+    if ($prop -and $null -ne $prop.Value) {
+      $vec = New-Object 'System.Collections.Generic.List[double]'
+      foreach ($v in @($prop.Value)) {
+        if ($null -eq $v) { continue }
+        try { [void]$vec.Add([double]$v) } catch {}
+      }
+      if ($vec.Count -gt 0) { return @($vec.ToArray()) }
     }
-    if ($vec.Count -eq 0) { return @() }
-    return @($vec.ToArray())
+    # Otherwise read from the sidecar store, keyed by id.
+    $id = ''; try { $id = [string]$Item.id } catch {}
+    return (Get-BacklogEmbeddingFromStore -Id $id)
   } catch {
     return @()
   }
@@ -33,14 +125,11 @@ function Set-BacklogDedupCachedEmbedding {
   param($Item, $Embedding)
   try {
     if (-not $Item -or -not $Embedding) { return $false }
-    $vec = New-Object 'System.Collections.Generic.List[double]'
-    foreach ($v in @($Embedding)) {
-      if ($null -eq $v) { continue }
-      try { [void]$vec.Add([double]$v) } catch {}
-    }
-    if ($vec.Count -eq 0) { return $false }
-    $Item | Add-Member -NotePropertyName embedding -NotePropertyValue (@($vec.ToArray())) -Force
-    return $true
+    $id = ''; try { $id = [string]$Item.id } catch {}
+    if ([string]::IsNullOrWhiteSpace($id)) { return $false }
+    # Persist to the sidecar (NOT inline) so the transactional backlog stays slim. The sidecar write
+    # is self-contained, so callers no longer need a full Save-Backlog to persist an embedding.
+    return (Set-BacklogEmbeddingInStore -Id $id -Embedding $Embedding)
   } catch {
     return $false
   }
@@ -149,7 +238,11 @@ function Test-IdeaShouldKeep {
         if ($sim -ge 0.70 -and $sim -lt 0.88) { [void]$similarIds.Add([string]$item.id) }
       }
     }
-    if ($dirty) { Save-Backlog $items }
+    # 2026-06-30: recomputed embeddings now persist to the backlog-embeddings.jsonl sidecar inside
+    # Set-BacklogDedupCachedEmbedding, so we no longer rewrite the whole (formerly 26MB) backlog under
+    # the lock here -- that full RMW was the source of the slow_lock storm. $dirty is kept only as a
+    # local signal; the sidecar append is the durable write.
+    if ($dirty) { } # intentionally no Save-Backlog: embeddings persisted to sidecar already
 
     if ($bestId -and $bestSim -ge 0.88) {
       return [pscustomobject]@{ action = 'dedup'; matched_id = $bestId; similarity = $bestSim; similar_to = @() }

@@ -33,6 +33,7 @@ memory/
 jobs/
 radar/
 backlog.jsonl
+backlog-embeddings.jsonl
 plan.jsonl
 plan.archive.jsonl
 reflect.last

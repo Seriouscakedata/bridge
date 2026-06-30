@@ -1383,7 +1383,23 @@ function Update-BacklogWorkpackClassifications {
   $getObjectValueFn = ${function:Get-BacklogPackObjectValue}
   $getClassificationFn = ${function:Get-BacklogWorkpackClassification}
   $writeBacklogJsonLineFn = ${function:Write-BacklogJsonLine}
-  return (Invoke-BacklogLocked {
+  # 2026-06-30 lock-storm fix: this reclassified the WHOLE backlog under the global lock on EVERY
+  # driver loop (~2.5-4s hold) even when nothing changed. ~10 drivers doing that every loop was a
+  # primary lock-storm source. Skip entirely when the backlog file is unchanged since this process
+  # last classified it for the same status set -- the idle common case then does zero lock work.
+  $guardKey = ''
+  try {
+    $bp = Resolve-BacklogPathValue
+    if ($bp -and (Test-Path -LiteralPath $bp)) {
+      $fi = Get-Item -LiteralPath $bp
+      $guardKey = ($bp + '|' + (@($Statuses) -join ','))
+      $curStamp = ($fi.LastWriteTimeUtc.ToString('o') + '|' + $fi.Length)
+      if ($script:WorkpackClassifyStamp -and $script:WorkpackClassifyStamp.ContainsKey($guardKey) -and $script:WorkpackClassifyStamp[$guardKey] -eq $curStamp) {
+        return 0
+      }
+    }
+  } catch { $guardKey = '' }
+  $result = (Invoke-BacklogLocked {
     $items = @(& $getBacklogFn)
     $updated = 0
     foreach ($item in $items) {
@@ -1413,6 +1429,18 @@ function Update-BacklogWorkpackClassifications {
     }
     return $updated
   }.GetNewClosure())
+  # Record the post-operation stamp so the next call skips until the backlog actually changes again.
+  try {
+    if ($guardKey) {
+      $bp2 = Resolve-BacklogPathValue
+      if ($bp2 -and (Test-Path -LiteralPath $bp2)) {
+        $fi2 = Get-Item -LiteralPath $bp2
+        if (-not $script:WorkpackClassifyStamp) { $script:WorkpackClassifyStamp = @{} }
+        $script:WorkpackClassifyStamp[$guardKey] = ($fi2.LastWriteTimeUtc.ToString('o') + '|' + $fi2.Length)
+      }
+    }
+  } catch {}
+  return $result
 }
 
 function Get-BacklogWorkpackExecConfig {
