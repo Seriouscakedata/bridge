@@ -319,7 +319,14 @@ function Select-WorkerForStream {
   $complexity = Get-StreamComplexity $Stream
   $floor = Get-ParallelComplexityFloor -Complexity $complexity
   $domain = Get-StreamDomain $Stream
-  $premiumClaudeOk = ($complexity -eq 'architectural') -or ([bool]$Stream.opus) -or ([bool]$Stream.premium)
+  # 2026-07-01 worker diversity: premium Claude (Opus/Fable) was reserved for 'architectural' only, so
+  # 'complex' streams (the bulk of project atoms) routed 100% to codex -- overloading one CLI while Claude
+  # sat idle. Allow premium Claude on 'complex' too (config-gated, default ON) so strong Claude codes
+  # alongside codex and the round-robin spreads load across both CLIs (and a free CLI picks up when the
+  # other's buckets are exhausted / rate-limited).
+  $allowPremiumComplex = $true
+  try { $pcDiv = (Get-BridgeConfig).parallel; if ($pcDiv -and ($pcDiv.PSObject.Properties.Name -contains 'allowPremiumClaudeForComplex')) { $allowPremiumComplex = [bool]$pcDiv.allowPremiumClaudeForComplex } } catch {}
+  $premiumClaudeOk = ($complexity -eq 'architectural') -or ($allowPremiumComplex -and $complexity -eq 'complex') -or ([bool]$Stream.opus) -or ([bool]$Stream.premium)
 
   # 2. Strength floor
   $candidates = @($pool | Where-Object { [int]$_.strength -ge $floor })
@@ -361,8 +368,14 @@ function Select-WorkerForStream {
   $preferLowEffort = $false
   try { $pc = (Get-BridgeConfig).parallel; if ($pc -and ($pc.PSObject.Properties.Name -contains 'preferLowEffortForSimple')) { $preferLowEffort = [bool]$pc.preferLowEffortForSimple } } catch {}
   $effortRank = { param($w) switch (([string]$w.reasoning).ToLowerInvariant()) { 'xhigh' { 2 } 'high' { 1 } default { 0 } } }
+  # 2026-07-01 worker diversity: for heavy complexity, prefer the LEAST-used CLI so far in this wave (was:
+  # strict codex-cli-first, which starved Claude even when eligible). Weak models are already excluded by
+  # the strength floor for complex/architectural, so balancing across STRONG CLIs carries no weak-routing
+  # risk -- it spreads load off a single overloaded CLI and lets a free CLI absorb the rest.
+  $usedCliCounts = @{}
+  foreach ($uid in @($AlreadyUsedIds)) { $uw = $pool | Where-Object { [string]$_.id -eq $uid } | Select-Object -First 1; if ($uw) { $uc=[string]$uw.cli; if (-not $usedCliCounts.ContainsKey($uc)) { $usedCliCounts[$uc]=0 }; $usedCliCounts[$uc]++ } }
   $sorted = if ($isHeavyComplexity) {
-    @($candidates | Sort-Object @{Expression={ if ([string]$_.cli -eq 'codex') { 0 } else { 1 } }; Descending=$false}, @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
+    @($candidates | Sort-Object @{Expression={ $c=[string]$_.cli; if ($usedCliCounts.ContainsKey($c)) { [int]$usedCliCounts[$c] } else { 0 } }; Descending=$false}, @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
   } elseif ($preferLowEffort) {
     @($candidates | Sort-Object @{Expression={ & $effortRank $_ }; Descending=$false}, @{Expression={[int]$_.cost}; Descending=$false}, @{Expression={[int]$_.speed}; Descending=$true}, @{Expression={[string]$_.id}; Descending=$false})
   } else {
