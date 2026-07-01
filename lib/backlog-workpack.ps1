@@ -2176,14 +2176,32 @@ function Test-BacklogTaskDependenciesReady {
   param($Item, $StatusBySlug, $TerminalFailedSlugs = $null)
   $deps = @(Get-BacklogTaskDependencySlugs -Item $Item)
   if ($deps.Count -eq 0) {
-    return [pscustomobject]@{ ready=$true; deps=@(); unmet=@(); terminal_failed=@() }
+    return [pscustomobject]@{ ready=$true; deps=@(); unmet=@(); terminal_failed=@(); dropped_dangling=@() }
   }
+  # Dangling-dep guard (2026-07-01): a project-autopilot atom can carry a depends_on slug that was NEVER
+  # emitted -- the planner referenced a sibling it forgot to create (observed live on selfie-styler:
+  # ch1-viewmodel depends_on ch1-domain-filter, which no atom provides). Such a slug is ABSENT from the
+  # backlog, so it can never transition to done: the dependent blocks FOREVER (ready=false) and the
+  # strand-safety net only catches terminal-FAILED slugs, not absent ones -> the whole project deadlocks at
+  # that chapter. For autopilot atoms (deps are emitted in ONE batch, so a truly-absent slug is a dangling
+  # reference or an already-done-and-pruned atom, never a not-yet-emitted future dep) treat an absent dep as
+  # satisfied (drop the edge) and record it in dropped_dangling. Present-but-not-done deps still block
+  # normally; non-autopilot items keep the strict '(missing)' behaviour (their deps may be externally managed).
+  $isAutopilot = $false
+  try { $isAutopilot = ([string](Get-BacklogPackObjectValue -Obj $Item -Name 'from' -Default '') -eq 'project-autopilot') } catch {}
   $doneStatuses = @{ done=$true; 'auto-resolved'=$true }
   $unmet = New-Object 'System.Collections.Generic.List[string]'
   $terminalFailed = New-Object 'System.Collections.Generic.List[string]'
+  $droppedDangling = New-Object 'System.Collections.Generic.List[string]'
   foreach ($dep in @($deps)) {
+    $present = $false
+    try { $present = [bool]$StatusBySlug.ContainsKey($dep) } catch { $present = $false }
+    if (-not $present) {
+      if ($isAutopilot) { [void]$droppedDangling.Add($dep); continue }   # dangling reference -> satisfied
+      [void]$unmet.Add($dep + '(missing)'); continue                     # non-autopilot: strict, unchanged
+    }
     $st = ''
-    try { if ($StatusBySlug.ContainsKey($dep)) { $st = [string]$StatusBySlug[$dep] } } catch {}
+    try { $st = [string]$StatusBySlug[$dep] } catch {}
     if ([string]::IsNullOrWhiteSpace($st) -or -not $doneStatuses.ContainsKey($st)) {
       $label = if ([string]::IsNullOrWhiteSpace($st)) { $dep + '(missing)' } else { $dep + '(' + $st + ')' }
       [void]$unmet.Add($label)
@@ -2196,7 +2214,7 @@ function Test-BacklogTaskDependenciesReady {
       }
     }
   }
-  return [pscustomobject]@{ ready=($unmet.Count -eq 0); deps=@($deps); unmet=@($unmet.ToArray()); terminal_failed=@($terminalFailed.ToArray()) }
+  return [pscustomobject]@{ ready=($unmet.Count -eq 0); deps=@($deps); unmet=@($unmet.ToArray()); terminal_failed=@($terminalFailed.ToArray()); dropped_dangling=@($droppedDangling.ToArray()) }
 }
 
 function Resolve-BacklogWorkpackFrontier {
