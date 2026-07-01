@@ -2166,6 +2166,53 @@ $script:DriverLoopCompletionRuntimeChecksBlock = {
             }
           }
         }
+        # A2 (diffusion contract-drift gate): when THIS atom is the diffusion STITCH (kind=consolidation,
+        # slug ^stitch-integration) and its manifest exists, deterministically re-verify every frozen
+        # contract's interface against the REAL provider file. Drift means a consumer was shipped against a
+        # stale stub whose provider quietly dropped/renamed a method (false-green) -> return the stitch to the
+        # coder (CONTINUE) with the same 2-strike cap + operator escalation as the gates above. Fail-open (any
+        # fault -> no block) and INERT unless diffusion actually shaped a stitch (no manifest otherwise).
+        try {
+          if ($plannerStatus -eq 'DONE' -and (Get-Command Test-ProjectAutopilotStitchManifestDrift -ErrorAction SilentlyContinue)) {
+            $driftItem = $null
+            try {
+              $driftBacklogId = [string](Read-State).current_backlog_id
+              if (-not [string]::IsNullOrWhiteSpace($driftBacklogId)) {
+                $driftItem = @(Get-Backlog) | Where-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'id' -Default '') -eq $driftBacklogId } | Select-Object -First 1
+              }
+            } catch { $driftItem = $null }
+            $driftKind = if ($driftItem) { [string](Get-BacklogPackObjectValue -Obj $driftItem -Name 'kind' -Default '') } else { '' }
+            $driftSlug = if ($driftItem) { [string](Get-BacklogPackObjectValue -Obj $driftItem -Name 'slug' -Default '') } else { '' }
+            if ($driftKind -eq 'consolidation' -and $driftSlug -match '^stitch-integration') {
+              $driftChannel = ''
+              try { $driftChannel = [string](Get-EffectiveChannel) } catch {}
+              $manifestPath = Get-ProjectAutopilotStitchManifestPath -StitchSlug $driftSlug -Channel $driftChannel
+              if (-not [string]::IsNullOrWhiteSpace($manifestPath)) {
+                $driftVerdict = Test-ProjectAutopilotStitchManifestDrift -ManifestPath $manifestPath -ProjectRoot ''
+                if ($driftVerdict -and -not [bool]$driftVerdict.ok) {
+                  $driftDetail = (@($driftVerdict.drifts | ForEach-Object { [string]$_.id + ': ' + [string]$_.reason }) | Select-Object -First 4) -join '; '
+                  try { Set-TaskLastFailure -Kind contract_drift -Text $driftDetail } catch {}
+                  $driftFails = 0
+                  try { $driftFails = [int](Read-State).contract_drift_fail_count } catch {}
+                  if ($driftFails -lt 2) {
+                    Update-State { param($s) if ($null -eq $s.PSObject.Properties['contract_drift_fail_count']) { $s | Add-Member -NotePropertyName contract_drift_fail_count -NotePropertyValue 0 -Force }; $s.contract_drift_fail_count = [int]$s.contract_drift_fail_count + 1 } | Out-Null
+                    Add-Message -From system -Text ("🚨 Contract drift на сшивке (попытка $($driftFails+1)/2): {0}. Реальный провайдер разошёлся с замороженным контрактом — возвращаю на CONTINUE." -f $driftDetail) -Kind event | Out-Null
+                    $plannerStatus = 'CONTINUE'
+                  } else {
+                    try { Clear-TaskLastFailureKind -Kind contract_drift } catch {}
+                    Add-Message -From system -Text ("⚠️ Contract drift не устранён 2× ({0}) — закрываю как есть; нужно внимание оператора." -f $driftDetail) -Kind event | Out-Null
+                    try { Send-PushEvent -Kind need_you -Text "Contract drift 2x: $(Get-PushSnippet -Text $task)" } catch {}
+                  }
+                } else {
+                  try { Update-State { param($s) if ($null -ne $s.PSObject.Properties['contract_drift_fail_count']) { $s.contract_drift_fail_count = 0 } } | Out-Null } catch {}
+                  if ($driftVerdict -and [int]$driftVerdict.checked_contracts -gt 0) {
+                    Add-Message -From system -Text ("✅ Contract drift gate: {0} контракт(ов) сверены с реальными провайдерами, дрейфа нет." -f [int]$driftVerdict.checked_contracts) -Kind event | Out-Null
+                  }
+                }
+              }
+            }
+          }
+        } catch {}
         $integrityResult = $gateChecks.Integrity
         if ($integrityResult -and -not [bool]$integrityResult.Skipped) {
           if (-not [bool]$integrityResult.Ok) {

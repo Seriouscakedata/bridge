@@ -1291,6 +1291,7 @@ function Set-TaskLastFailure {
     [ValidateSet(
       'action_evidence_error',
       'bridge_guard',
+      'contract_drift',
       'critic_rejected',
       'doctor_timeout',
       'gate_regression_failed',

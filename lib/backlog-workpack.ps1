@@ -2140,23 +2140,63 @@ function Get-BacklogSlugStatusMap {
   return $map
 }
 
+function Get-BacklogTerminalFailedSlugs {
+  # Slugs whose atom is in a TERMINAL-FAILED state -- a hard dependency on one of these can NEVER become
+  # ready, so a dependent still waiting on it is STRANDED (not merely dependency-wait; it would spin
+  # forever). Terminal-failed = status in {failed, rejected, dropped} OR a giveup/quarantine HELD (the
+  # batch gave up on it after max attempts). Plain 'held' (a transient Doctor pause) is DELIBERATELY
+  # excluded -- it can still recover, so its dependents must keep waiting, not strand. Pure read; the
+  # conservative bias is toward NOT stranding (a false transient-hold just keeps a dependent waiting, the
+  # existing safe behaviour), while the giveup/failed cases -- the real forever-strand bug -- are caught.
+  param([object[]]$Items)
+  $set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($item in @($Items)) {
+    $slug = Get-BacklogTaskSlug -Item $item
+    if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+    $st = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'status' -Default '')).Trim().ToLowerInvariant()
+    $terminal = $false
+    # Terminal-FAIL statuses the bridge actually writes: 'failed'/'rejected' (parallel/curator), and the drop
+    # family 'auto-dropped' (governor drop, curator reject-verdict, dedup supersede, intake drop) + 'deduped'
+    # /'superseded'/'cancelled'. Bare 'dropped' kept for safety though rarely written. NONE of these ever
+    # transitions back to done, so a hard dependent on one can never become ready -> genuinely stranded.
+    if ($st -in @('failed','rejected','dropped','auto-dropped','deduped','superseded','cancelled')) {
+      $terminal = $true
+    } elseif ($st -eq 'held') {
+      # Only a DEFINITIVE giveup hold is terminal; a plain/doctor/commit_famine hold is a transient pause
+      # that can recover, so it must NOT strand its dependents.
+      $hr = ([string](Get-BacklogPackObjectValue -Obj $item -Name 'held_reason' -Default '')).ToLowerInvariant()
+      if ($hr -match 'giveup|quarantine|abandon|stranded') { $terminal = $true }
+    }
+    if ($terminal) { [void]$set.Add($slug) }
+  }
+  return $set
+}
+
 function Test-BacklogTaskDependenciesReady {
-  param($Item, $StatusBySlug)
+  param($Item, $StatusBySlug, $TerminalFailedSlugs = $null)
   $deps = @(Get-BacklogTaskDependencySlugs -Item $Item)
   if ($deps.Count -eq 0) {
-    return [pscustomobject]@{ ready=$true; deps=@(); unmet=@() }
+    return [pscustomobject]@{ ready=$true; deps=@(); unmet=@(); terminal_failed=@() }
   }
   $doneStatuses = @{ done=$true; 'auto-resolved'=$true }
   $unmet = New-Object 'System.Collections.Generic.List[string]'
+  $terminalFailed = New-Object 'System.Collections.Generic.List[string]'
   foreach ($dep in @($deps)) {
     $st = ''
     try { if ($StatusBySlug.ContainsKey($dep)) { $st = [string]$StatusBySlug[$dep] } } catch {}
     if ([string]::IsNullOrWhiteSpace($st) -or -not $doneStatuses.ContainsKey($st)) {
       $label = if ([string]::IsNullOrWhiteSpace($st)) { $dep + '(missing)' } else { $dep + '(' + $st + ')' }
       [void]$unmet.Add($label)
+      # A dep that will NEVER become ready (terminal-failed) strands the dependent -> report it separately so
+      # the frontier can hold+surface instead of spinning dependency-wait forever. Absent set = old behaviour.
+      if ($null -ne $TerminalFailedSlugs) {
+        $isTerminal = $false
+        try { $isTerminal = [bool]$TerminalFailedSlugs.Contains($dep) } catch { $isTerminal = $false }
+        if ($isTerminal) { [void]$terminalFailed.Add($label) }
+      }
     }
   }
-  return [pscustomobject]@{ ready=($unmet.Count -eq 0); deps=@($deps); unmet=@($unmet.ToArray()) }
+  return [pscustomobject]@{ ready=($unmet.Count -eq 0); deps=@($deps); unmet=@($unmet.ToArray()); terminal_failed=@($terminalFailed.ToArray()) }
 }
 
 function Resolve-BacklogWorkpackFrontier {
@@ -2261,6 +2301,10 @@ function Resolve-BacklogWorkpackFrontier {
   if ($governorDirty) { Save-Backlog $allItems }
 
   $statusBySlug = Get-BacklogSlugStatusMap -Items $allItems
+  # Diffusion strand-safety: pre-compute which dep slugs are TERMINALLY failed so a dependent still waiting
+  # on one can be held+surfaced (not spun 'dependency-wait' forever). Collector drains after the loop.
+  $terminalFailedSlugs = Get-BacklogTerminalFailedSlugs -Items $allItems
+  $strandedToHold = New-Object 'System.Collections.Generic.List[object]'
   $selected = New-Object 'System.Collections.Generic.List[object]'
   $usedGroups = @{}
   $usedTouches = New-Object 'System.Collections.Generic.List[string]'
@@ -2276,11 +2320,22 @@ function Resolve-BacklogWorkpackFrontier {
       $itemId = [string](Get-BacklogPackObjectValue -Obj $item -Name 'id' -Default '')
       $candidate = if ($candidateById.ContainsKey($itemId)) { $candidateById[$itemId] } else { $null }
       $txt = [string](Get-BacklogPackObjectValue -Obj $item -Name 'text' -Default '')
-      $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug
+      $depCheck = Test-BacklogTaskDependenciesReady -Item $item -StatusBySlug $statusBySlug -TerminalFailedSlugs $terminalFailedSlugs
       $explicitDeps = @($depCheck.deps)
       if (-not [bool]$depCheck.ready) {
-        $dependencyWait++
         $unmet = @($depCheck.unmet | ForEach-Object { [string]$_ })
+        # STRAND: a hard dep has TERMINALLY failed -> this dependent can never become ready. Do not spin
+        # 'dependency-wait' forever; block it under a distinct reason and queue it to be held+surfaced after
+        # the loop (the confirmed diffusion stitch-strand fix). The fallback selectors below only re-pick
+        # 'structural-barrier'/'conflicts-or-touch-overlap', so this reason is never silently re-selected.
+        # Counted separately from dependency-wait (a stranded item is resolved-to-held this pass, not waiting).
+        $termFailed = @($depCheck.terminal_failed | ForEach-Object { [string]$_ })
+        if ($termFailed.Count -gt 0) {
+          Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'dependency-terminal-failed' -Detail ('stranded: hard dependency terminally failed: ' + (($termFailed | Select-Object -First 6) -join ', ')) -UnmetDeps $unmet
+          [void]$strandedToHold.Add([pscustomobject]@{ item = $item; deps = (($termFailed | Select-Object -First 6) -join ', ') })
+          continue
+        }
+        $dependencyWait++
         Set-BacklogWorkpackCandidateBlocked -Candidate $candidate -Reason 'dependency-wait' -Detail ('waiting for dependency: ' + (($unmet | Select-Object -First 6) -join ', ')) -UnmetDeps $unmet
         continue
       }
@@ -2361,6 +2416,36 @@ function Resolve-BacklogWorkpackFrontier {
         [void]$usedTouches.Add($tv)
         if (-not $usedTouchOwners.ContainsKey($tv)) { $usedTouchOwners[$tv] = $itemId }
       }
+    }
+  }
+
+  # Diffusion strand-safety (drain): hold + surface any dependent whose HARD dependency terminally failed.
+  # Fail-safe (removes it from the approved pool so it stops spinning) and REVERSIBLE (operator un-holds).
+  # NEVER auto-rollback the provider's commits -- destructive git ops are not taken autonomously. One
+  # hold+save per newly-stranded item; next frontier pass it is 'held' (not 'approved') so it is not seen.
+  if ($strandedToHold.Count -gt 0) {
+    $nowStrandIso = (Get-Date).ToUniversalTime().ToString('o')
+    $heldStranded = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($pair in @($strandedToHold.ToArray())) {
+      $sIt = $pair.item
+      $sId = [string](Get-BacklogPackObjectValue -Obj $sIt -Name 'id' -Default '')
+      if ([string]::IsNullOrWhiteSpace($sId)) { continue }
+      Set-BacklogObjectProperty -Item $sIt -Name 'status' -Value 'held'
+      Set-BacklogObjectProperty -Item $sIt -Name 'held_by' -Value 'stranded-dependency'
+      Set-BacklogObjectProperty -Item $sIt -Name 'held_reason' -Value ('stranded: hard dependency terminally failed: ' + ([string]$pair.deps))
+      Set-BacklogObjectProperty -Item $sIt -Name 'held_at' -Value $nowStrandIso
+      [void]$heldStranded.Add($sId)
+    }
+    if ($heldStranded.Count -gt 0) {
+      Save-Backlog $allItems
+      try {
+        Write-BacklogJsonLine ([ordered]@{
+          ts = $nowStrandIso
+          action = 'backlog-stranded-dependent-held'
+          held_ids = @($heldStranded.ToArray())
+          count = [int]$heldStranded.Count
+        })
+      } catch {}
     }
   }
 

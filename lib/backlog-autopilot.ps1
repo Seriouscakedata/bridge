@@ -2007,6 +2007,19 @@ function Start-ProjectAutopilotIfNeeded {
       Initialize-ProjectAutopilotInputsFromDiscuss -Channel $slug -ProjectRoot $root | Out-Null
     }
   } catch {}
+  # B2 (diffusion orphan-stub sweep, detect-only): surface any .bridge/stubs/* left committed in the project
+  # by a stitch that finished/vanished (a leaked frozen stub). Telemetry only -- reversible cleanup is not
+  # auto-run here (it would dirty/commit the project worktree); B1 strand-hold already surfaces the root
+  # cause to the operator. Cheap (returns before touching the backlog when the stub dir is absent -- the
+  # common no-diffusion case); guarded so it never throws on the idle hot path.
+  try {
+    if (Get-Command Get-ProjectAutopilotOrphanStubs -ErrorAction SilentlyContinue) {
+      $orphanScan = Get-ProjectAutopilotOrphanStubs -ProjectRoot $root -Action 'detect'
+      if ($orphanScan -and @($orphanScan.orphans).Count -gt 0) {
+        Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='project-autopilot-diffusion-orphan-stubs'; channel=$slug; orphan_count=[int]@($orphanScan.orphans).Count; orphans=@($orphanScan.orphans | Select-Object -First 12); scanned=[int]$orphanScan.scanned })
+      }
+    }
+  } catch {}
   # 2026-06-02 DISCUSS-FIRST GATE: autopilot only executes an operator-APPROVED PROJECT_PLAN (Ф4).
   # Until the operator runs Set-ProjectPlanApproved for this channel, the bridge stays in discuss/
   # planning and autopilot does NOT auto-queue coordinator/atoms. This is the fix for autopilot
@@ -3051,6 +3064,21 @@ function Add-ProjectBacklogFromMarker {
       try { if (Get-Command New-ProjectAutopilotShapedBatch -ErrorAction SilentlyContinue) { $shaped = New-ProjectAutopilotShapedBatch -Tasks $tasks -Contracts $contracts -FreezeManifest $freezeManifest -ProjectRoot $projectRoot -Channel $Channel } } catch { $shaped = $null }
       if ($shaped -and [bool]$shaped.applied -and ([int]$shaped.markers_added -gt 0) -and (@($shaped.tasks).Count -ge $tasks.Count)) {
         $tasks = @($shaped.tasks)
+        # A1 (drift-gate manifest): persist the frozen interface + provider file per stitched contract, keyed
+        # on the stitch atom's slug, so the driver DONE-gate can deterministically re-verify the real provider
+        # when the stitch completes (the false-green guard). Channel-local, additive, guarded; never blocks ingest.
+        try {
+          if (Get-Command Write-ProjectAutopilotStitchManifest -ErrorAction SilentlyContinue) {
+            $stitchSlugForManifest = ''
+            foreach ($stTask in @($shaped.tasks)) {
+              if ([string](Get-BacklogPackObjectValue -Obj $stTask -Name 'kind' -Default '') -eq 'consolidation') { $stitchSlugForManifest = [string](Get-BacklogPackObjectValue -Obj $stTask -Name 'slug' -Default ''); break }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stitchSlugForManifest)) {
+              $stitchManifestPath = Write-ProjectAutopilotStitchManifest -StitchSlug $stitchSlugForManifest -Contracts $contracts -FreezeManifest $freezeManifest -ProjectRoot $projectRoot -Channel $Channel
+              Write-BacklogJsonLine ([ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); action = 'project-autopilot-diffusion-stitch-manifest'; channel = [string]$Channel; stitch_slug = $stitchSlugForManifest; manifest_path = [string]$stitchManifestPath })
+            }
+          }
+        } catch {}
         try {
           Write-BacklogJsonLine ([ordered]@{
             ts = (Get-Date).ToUniversalTime().ToString('o')

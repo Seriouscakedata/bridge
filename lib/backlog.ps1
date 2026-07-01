@@ -14,6 +14,7 @@ foreach ($script:BacklogModuleName in @(
   'backlog-crud.ps1',
   'backlog-dedup.ps1',
   'backlog-core.ps1',
+  'contract-drift.ps1',
   'backlog-autopilot.ps1',
   'backlog-workpack.ps1',
   'backlog-state-reaper.ps1'
