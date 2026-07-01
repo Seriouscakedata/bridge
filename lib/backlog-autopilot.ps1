@@ -1697,6 +1697,27 @@ function Test-ProjectAutopilotColdStart {
   return ($decomposed.Count -eq 0)
 }
 
+function Test-ProjectAutopilotHasFrozenContracts {
+  # True iff this channel has >=1 STABLE frozen interface-contract lock (the deterministic freeze step writes a
+  # channel-local lock with stable:true). Strict 'diffusion' only adds value over 'wide' when a DEPENDENT atom
+  # can build against a FROZEN contract stub in parallel with its provider; with no stable lock, strict mode
+  # just falls back to one-chapter-serial (no cross-atom gate can go green), which is the OPPOSITE of the
+  # all-chapters parallelism we want. So the self-heal prefers 'wide' whenever no stable lock exists. Any read
+  # fault returns $false (prefer the always-parallel wide path).
+  param([string]$Channel)
+  try {
+    $fzDir = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) 'diffusion-contract-freezes'
+    if (-not (Test-Path -LiteralPath $fzDir)) { return $false }
+    foreach ($f in @(Get-ChildItem -LiteralPath $fzDir -Recurse -File -Filter '*.json' -EA SilentlyContinue)) {
+      try {
+        $o = Get-Content -LiteralPath $f.FullName -Raw -EA SilentlyContinue | ConvertFrom-Json
+        if ($o -and [bool]$o.stable) { return $true }
+      } catch {}
+    }
+  } catch {}
+  return $false
+}
+
 function New-ProjectAutopilotCoordinatorTaskText {
   param(
     [string]$Slug,
@@ -1709,16 +1730,20 @@ function New-ProjectAutopilotCoordinatorTaskText {
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
   $diffMode = ([string]$DiffusionMode).Trim().ToLowerInvariant()
   if ($diffMode -notin @('off','shadow','diffusion','wide')) { $diffMode = 'off' }
-  # Diffusion cold-start self-heal (2026-07-01): strict 'diffusion' (freeze/stub/stitch) needs stable frozen
-  # interface contracts, which a plan-only cold-start project CANNOT have yet -- so the cross-atom gate can
-  # never go green on the first wave and the coordinator either falls back to one-chapter or (observed live
-  # on selfie-styler) refuses and emits ZERO atoms, stalling the whole project. When diffusion is requested
-  # but THIS channel has decomposed no chapter yet, decompose the FIRST wave in 'wide' (all-chapters,
-  # independent-parallel, no contracts needed) so it ALWAYS produces an all-chapters wave. Strict diffusion
-  # resumes automatically on the next coordinator once chapters/contracts exist. Fail-safe to 'wide' if the
-  # cold-start read faults -- wide only ever parallelizes INDEPENDENT atoms, so it is never unsafe output.
+  # Diffusion self-heal (2026-07-01): strict 'diffusion' (freeze/stub/stitch) only adds value over 'wide' when a
+  # DEPENDENT atom can build against a stable FROZEN contract stub in parallel with its provider. With NO stable
+  # freeze lock -- which is the case at cold start AND for any project whose chapters never froze a contract --
+  # the cross-atom gate can never go green, so strict mode falls back to ONE-CHAPTER-SERIAL (or, observed live,
+  # the planner refuses and emits ZERO atoms). That is the opposite of the all-chapters parallelism we want.
+  # So whenever diffusion is requested but there is no frozen contract yet (cold start OR contract-less project),
+  # decompose in 'wide' (ALL remaining chapters, independent atoms parallel, no contract ceremony). Strict
+  # diffusion engages automatically once a chapter actually freezes a stable contract. Fail-safe to 'wide' on
+  # any read fault -- wide only parallelizes INDEPENDENT atoms, so it is never unsafe output.
   if ($diffMode -eq 'diffusion' -and -not [string]::IsNullOrWhiteSpace($Slug)) {
-    try { if (Test-ProjectAutopilotColdStart -Channel $Slug) { $diffMode = 'wide' } } catch { $diffMode = 'wide' }
+    try {
+      $healToWide = (Test-ProjectAutopilotColdStart -Channel $Slug) -or (-not (Test-ProjectAutopilotHasFrozenContracts -Channel $Slug))
+      if ($healToWide) { $diffMode = 'wide' }
+    } catch { $diffMode = 'wide' }
   }
   $diffK = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMinIndependentAtoms))
   $diffN = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMaxWaveSize))
