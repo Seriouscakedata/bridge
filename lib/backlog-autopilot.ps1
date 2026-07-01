@@ -2791,11 +2791,19 @@ function Test-ShouldBackgroundDecompose {
     # channel (atoms exist, none runnable) still returns silently as before, so idle channels don't spin up
     # workers. The chapter-count / in-flight-limit / all-decomposed / singleton gates below still apply, so a
     # no-plan or already-running channel still returns safely without spawning.
-    if ($runnable -le 0 -and $decomposedSet.Count -gt 0) { $result.reason = 'no-runnable-atoms'; return $result }
-
-    # Total approved chapters from the durable plan (centralized tolerant parser, defect #5).
+    # Total approved chapters from the durable plan (centralized tolerant parser, defect #5). Computed BEFORE
+    # the dormant check so a channel BETWEEN chapters (0 runnable but more chapters still to decompose) is not
+    # mistaken for a finished/dormant one.
     $totalCh = Get-ProjectAutopilotPlanChapterCount -ProjectRoot $projectRoot
     $result.total_chapters = $totalCh
+    # 2026-07-01 (all-chapters decompose-ahead stall fix): a genuinely FINISHED/dormant channel (0 runnable AND
+    # every chapter already decomposed) returns silently. But a channel BETWEEN chapters (0 runnable, more
+    # chapters still to decompose) MUST proceed -- else a fast/tiny chapter that builds before the next chapter
+    # is decomposed stalls forever (foreground retired at decomposeAheadLimit>1 + background idle = deadlock,
+    # observed live on selfie-styler with a 1-atom chapter 1). Only skip when ALL chapters are decomposed.
+    if ($runnable -le 0 -and $decomposedSet.Count -gt 0 -and $totalCh -gt 0 -and $decomposedSet.Count -ge $totalCh) {
+      $result.reason = 'no-runnable-atoms'; return $result
+    }
     if ($totalCh -le 0) {
       # Reached only by an actively-executing channel whose PROJECT_PLAN.md exists but parsed to 0 chapters
       # (a real header-format problem). Throttled to once per 6h per channel via a marker FILE (a script-
