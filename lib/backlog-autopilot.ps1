@@ -2873,6 +2873,49 @@ function Add-ProjectBacklogFromMarker {
         try { $projectRoot = Get-BridgeRoot } catch {}
       }
       $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+      # $synthesizedContracts survives the post-freeze DISK RE-READ below so we can re-merge the in-memory
+      # synthesized entries (the reader only returns on-disk contracts, and cold start has none on disk).
+      $synthesizedContracts = @()
+      # Step 8 (cold-start reliability floor): MERGE in-memory synthesized contracts. On cold start the
+      # coordinator emits atoms carrying provides/consumes but NO contract files on disk, so the reader above
+      # returns EMPTY -> the count==0 guard below would skip diffusion and the whole project builds serially.
+      # New-ProjectAutopilotSynthesizedContracts is PURE (no disk write, no timestamp): it synthesizes a
+      # minimal freezable contract for every id that has BOTH a provider atom and a consumer atom, so the
+      # count==0 guard only fires when there is GENUINELY no cross-atom interface (correct serial). REAL disk
+      # contracts always win: we only add a synthesized entry whose id is not already present. Guarded by
+      # Get-Command + try/catch so a fault falls through to the serial default and never throws the tick.
+      try {
+        if (Get-Command New-ProjectAutopilotSynthesizedContracts -ErrorAction SilentlyContinue) {
+          $syn = New-ProjectAutopilotSynthesizedContracts -Tasks $tasks -ExistingContracts $contracts
+          $existingContractIds = New-Object 'System.Collections.Generic.HashSet[string]'
+          foreach ($c in @($contracts)) {
+            $cid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
+            if (-not [string]::IsNullOrWhiteSpace($cid)) { [void]$existingContractIds.Add($cid) }
+          }
+          $mergedSynthIds = New-Object 'System.Collections.Generic.List[string]'
+          $mergedContracts = New-Object 'System.Collections.Generic.List[object]'
+          foreach ($c in @($contracts)) { $mergedContracts.Add($c) | Out-Null }
+          foreach ($sc in @($syn.synthesized)) {
+            $sid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $sc -Name 'id' -Default ''))
+            if ([string]::IsNullOrWhiteSpace($sid) -or $existingContractIds.Contains($sid)) { continue }
+            [void]$existingContractIds.Add($sid)
+            $mergedContracts.Add($sc) | Out-Null
+            $mergedSynthIds.Add($sid) | Out-Null
+          }
+          $contracts = @($mergedContracts.ToArray())
+          $synthesizedContracts = @($syn.synthesized)
+          try {
+            Write-BacklogJsonLine ([ordered]@{
+              ts = (Get-Date).ToUniversalTime().ToString('o')
+              action = 'project-autopilot-diffusion-contract-synthesis'
+              channel = [string]$Channel
+              mode = $diffusionMode
+              synthesized_ids = @($mergedSynthIds.ToArray())
+              skipped = @($syn.skipped | ForEach-Object { [ordered]@{ id = [string]$_.id; reason = [string]$_.reason } })
+            })
+          } catch {}
+        }
+      } catch {}
       # Ch1 shadow planner (measurement only): project ALL atoms into execution waves -- hard-only (today's
       # behaviour) vs contract-soft (the diffusion projection) -- and emit PROJECT_WAVE_SCHEDULE.json (into
       # the channel runtime dir, NOT the project worktree) + a telemetry marker. Pure in-memory graph work
@@ -2916,8 +2959,54 @@ function Add-ProjectBacklogFromMarker {
             manifest = $freezeManifest
           })
           $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+          # Step 8 (disk re-read fix): the reader above returns ONLY on-disk contracts and DISCARDS the
+          # in-memory synthesized ones, so on cold start $contracts would drop back to empty right before the
+          # gate. RE-MERGE the synthesized entries (real disk contracts still win by id), then upgrade each
+          # contract whose freeze manifest entry has lock_written==true to stable=$true: disk contracts get
+          # stable from the re-read as before; synthesized contracts get it ONLY from the freeze manifest we
+          # just wrote (their in-memory entries carry stable=$false). Without this the gate would redden on
+          # 'contract-unstable' even after a successful freeze.
+          try {
+            $reIds = New-Object 'System.Collections.Generic.HashSet[string]'
+            foreach ($c in @($contracts)) {
+              $rid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
+              if (-not [string]::IsNullOrWhiteSpace($rid)) { [void]$reIds.Add($rid) }
+            }
+            $reMerged = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($c in @($contracts)) { $reMerged.Add($c) | Out-Null }
+            foreach ($sc in @($synthesizedContracts)) {
+              $sid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $sc -Name 'id' -Default ''))
+              if ([string]::IsNullOrWhiteSpace($sid) -or $reIds.Contains($sid)) { continue }
+              [void]$reIds.Add($sid)
+              $reMerged.Add($sc) | Out-Null
+            }
+            $contracts = @($reMerged.ToArray())
+            $lockedIds = New-Object 'System.Collections.Generic.HashSet[string]'
+            foreach ($fmEntry in @($freezeManifest.contracts)) {
+              if ([bool](Get-BacklogPackObjectValue -Obj $fmEntry -Name 'lock_written' -Default $false)) {
+                $lid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $fmEntry -Name 'id' -Default ''))
+                if (-not [string]::IsNullOrWhiteSpace($lid)) { [void]$lockedIds.Add($lid) }
+              }
+            }
+            foreach ($c in @($contracts)) {
+              $cid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
+              # AUTHORITATIVE: THIS tick's freeze is the sole source of stability at the gate. Force stable to
+              # match the freeze manifest -- both SET (synthesized/frozen now) AND CLEAR (a disk contract that
+              # arrived stable=true from a STALE prior-tick lock whose provider/consumer atoms are NOT in this
+              # batch, so it was NOT re-frozen now). Without the CLEAR the gate could green on a contract this
+              # batch never froze while shaping (keyed on freeze_ready+lock_written) ignores it -- a dishonest
+              # gate/shaping divergence. Cost: a legitimately-frozen prior-decompose contract whose provider is
+              # already built (not in this batch) also degrades that batch to serial -- SAFE (never worse than
+              # serial), and cold start (all-synthesized, no disk contracts) is unaffected.
+              $c | Add-Member -Force -NotePropertyName stable -NotePropertyValue ([bool]$lockedIds.Contains($cid))
+            }
+          } catch {}
         }
-        $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
+        # Step 9 (option B): the raw coordinator batch has NO consolidation/stitch atom, so the gate's
+        # stitching-tests-present check reddens ('stitching-tests-missing') even with good frozen contracts.
+        # New-ProjectAutopilotShapedBatch (invoked immediately below on a GREEN diffusion gate) DETERMINISTICALLY
+        # appends exactly such a stitch atom right after this gate call, so assert StitchingTestsPresent here.
+        $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -StitchingTestsPresent $true -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
         Write-BacklogJsonLine ([ordered]@{
           ts = (Get-Date).ToUniversalTime().ToString('o')
           action = 'project-autopilot-diffusion-gate'

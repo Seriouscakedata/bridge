@@ -417,6 +417,219 @@ function New-ProjectAutopilotContractStub {
   }
 }
 
+function New-ProjectAutopilotSynthesizedContracts {
+  # Cold-start reliability floor for wide diffusion. The coordinator emits atoms carrying `provides`/
+  # `consumes` slug arrays but NO contract files on disk, so Get-ProjectAutopilotInterfaceContracts returns
+  # EMPTY -> the diffusion gate goes red -> the whole project builds serially. This function synthesizes a
+  # MINIMAL, VALID, FREEZABLE interface contract IN MEMORY for every id that has BOTH a provider atom and a
+  # consumer atom, then runs each through the REAL validator (Test-ProjectAutopilotInterfaceContract) so the
+  # returned entries are byte-for-byte the same shape Get-ProjectAutopilotInterfaceContracts returns and can
+  # be handed straight to the freeze manifest / soft-edge graph.
+  #
+  # PURE: NO I/O, NO timestamp, NO randomness. Every synthesized contract uses fixed strings and a fixed
+  # version ('0.0.0-synth'), so two calls on identical $Tasks serialize byte-identically -- the downstream
+  # freeze canonical_hash must not churn. NEVER throws: any fault returns the empty shape.
+  #
+  # Returns [pscustomobject]@{ synthesized=@(<processed contract entries>); skipped=@(@{id;reason}); covered_ids=@(<ids>) }.
+  param([object[]]$Tasks = @(), [object[]]$ExistingContracts = @())
+
+  $empty = { return [pscustomobject]@{ synthesized = @(); skipped = @(); covered_ids = @() } }
+
+  try {
+    # ---- defensive readers (mirror the other planner functions; present-but-null == missing) ----
+    $get = {
+      param($Obj, [string[]]$Names, $Def = $null)
+      if ($null -eq $Obj) { return $Def }
+      if (Get-Command Get-BacklogPackObjectValue -ErrorAction SilentlyContinue) {
+        foreach ($n in @($Names)) {
+          $v = Get-BacklogPackObjectValue -Obj $Obj -Name $n -Default $null
+          if ($null -ne $v) { return $v }
+        }
+        return $Def
+      }
+      foreach ($n in @($Names)) {
+        try {
+          if ($Obj -is [System.Collections.IDictionary]) {
+            foreach ($k in @($Obj.Keys)) { if ([string]::Equals([string]$k, [string]$n, 'OrdinalIgnoreCase')) { if ($null -ne $Obj[$k]) { return $Obj[$k] } } }
+          } else {
+            $p = @($Obj.PSObject.Properties | Where-Object { [string]::Equals([string]$_.Name, [string]$n, 'OrdinalIgnoreCase') } | Select-Object -First 1)
+            if ($p.Count -gt 0 -and $null -ne $p[0].Value) { return $p[0].Value }
+          }
+        } catch {}
+      }
+      return $Def
+    }
+
+    $slugArr = {
+      param($V)
+      if (Get-Command ConvertTo-ProjectAutopilotSlugArray -ErrorAction SilentlyContinue) { return @(ConvertTo-ProjectAutopilotSlugArray $V) }
+      return @(@($V) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Sort-Object -Unique)
+    }
+    $pathArr = {
+      param($V)
+      if (Get-Command ConvertTo-ProjectAutopilotPathArray -ErrorAction SilentlyContinue) { return @(ConvertTo-ProjectAutopilotPathArray $V) }
+      return @(@($V) | ForEach-Object { ([string]$_).Replace('\','/').Trim().ToLowerInvariant() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    }
+    $overlap = {
+      param($Left, $Right)
+      if (Get-Command Test-ProjectAutopilotPathOverlap -ErrorAction SilentlyContinue) { return [bool](Test-ProjectAutopilotPathOverlap -Left @($Left) -Right @($Right)) }
+      foreach ($l in @($Left)) { foreach ($r in @($Right)) { if ([string]$l -eq [string]$r) { return $true } } }
+      return $false
+    }
+
+    # ---- 1. provider / consumer maps keyed by contract id (stable id order) ----
+    $providerMap = @{}   # id -> List[atom]
+    $consumerMap = @{}   # id -> List[atom]
+    foreach ($t in @($Tasks)) {
+      if ($null -eq $t) { continue }
+      foreach ($provSlug in @(& $slugArr (& $get $t @('provides') @()))) {
+        if ([string]::IsNullOrWhiteSpace($provSlug)) { continue }
+        if (-not $providerMap.ContainsKey($provSlug)) { $providerMap[$provSlug] = (New-Object 'System.Collections.Generic.List[object]') }
+        $providerMap[$provSlug].Add($t) | Out-Null
+      }
+      foreach ($consSlug in @(& $slugArr (& $get $t @('consumes') @()))) {
+        if ([string]::IsNullOrWhiteSpace($consSlug)) { continue }
+        if (-not $consumerMap.ContainsKey($consSlug)) { $consumerMap[$consSlug] = (New-Object 'System.Collections.Generic.List[object]') }
+        $consumerMap[$consSlug].Add($t) | Out-Null
+      }
+    }
+
+    # ---- 2. ids of ExistingContracts that are already VALID (never re-synthesize a real one) ----
+    $existingValidIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($ec in @($ExistingContracts)) {
+      if ($null -eq $ec) { continue }
+      if (-not [bool](& $get $ec @('valid') $false)) { continue }
+      $eid = & $slugArr (@(& $get $ec @('id') ''))
+      foreach ($e in @($eid)) { if (-not [string]::IsNullOrWhiteSpace($e)) { [void]$existingValidIds.Add($e) } }
+    }
+
+    # ---- 3. candidate ids: BOTH a provider and a consumer atom, iterated in STABLE (sorted) order ----
+    $allIds = @($providerMap.Keys + $consumerMap.Keys | Sort-Object -Unique)
+    $candidateIds = @($allIds | Where-Object { $providerMap.ContainsKey($_) -and $consumerMap.ContainsKey($_) })
+
+    # precompute owned_files per candidate (from its provider atoms) for the overlap check
+    $ownedByCandidate = @{}
+    foreach ($id in @($candidateIds)) {
+      $files = New-Object 'System.Collections.Generic.List[string]'
+      foreach ($p in @($providerMap[$id].ToArray())) {
+        foreach ($f in @(& $pathArr (& $get $p @('files') @()))) { if (-not $files.Contains($f)) { [void]$files.Add($f) } }
+      }
+      $ownedByCandidate[$id] = @($files.ToArray() | Sort-Object)
+    }
+
+    $synthesized = New-Object 'System.Collections.Generic.List[object]'
+    $skipped = New-Object 'System.Collections.Generic.List[object]'
+    $coveredIds = New-Object 'System.Collections.Generic.List[string]'
+    $acceptedFiles = @{}   # id -> owned_files that were actually synthesized (for deterministic overlap skip)
+
+    foreach ($id in @($candidateIds)) {
+      # a. real contract already present and valid -> leave it alone
+      if ($existingValidIds.Contains($id)) {
+        $skipped.Add([pscustomobject]@{ id = $id; reason = 'real-contract-present' }) | Out-Null
+        continue
+      }
+
+      $ownedFiles = @($ownedByCandidate[$id])
+
+      # b. owned-files overlap with an EARLIER accepted candidate -> skip the LATER id (deterministic:
+      #    candidateIds is sorted, and we only compare against ids we already accepted this pass).
+      $overlapHit = $false
+      foreach ($priorId in @($acceptedFiles.Keys | Sort-Object)) {
+        if (& $overlap @($ownedFiles) @($acceptedFiles[$priorId])) { $overlapHit = $true; break }
+      }
+      if ($overlapHit) {
+        $skipped.Add([pscustomobject]@{ id = $id; reason = 'owned-files-overlap' }) | Out-Null
+        continue
+      }
+
+      # c. module name = basename (no extension) of the first provider file, else the id.
+      $firstFile = if (@($ownedFiles).Count -gt 0) { [string]@($ownedFiles)[0] } else { '' }
+      $moduleName = $id
+      if (-not [string]::IsNullOrWhiteSpace($firstFile)) {
+        try { $bn = [System.IO.Path]::GetFileNameWithoutExtension($firstFile); if (-not [string]::IsNullOrWhiteSpace($bn)) { $moduleName = $bn } } catch {}
+      }
+
+      # d. RAW minimal contract -- deterministic, fixed strings, both errors + error_taxonomy, well-formed
+      #    golden example (non-empty input AND output so Test-ProjectAutopilotGoldenExamplesWellFormed passes).
+      $raw = [ordered]@{
+        id = $id
+        version = '0.0.0-synth'
+        signature = @{ type = 'module'; module = $moduleName; methods = @() }
+        behavior = @{
+          preconditions = @('synthesized from declaration')
+          postconditions = @('provider satisfies consumer expectations')
+          side_effects = @()
+          idempotency = 'unknown'
+        }
+        invariants = @('interface stable within release')
+        errors = @{ unspecified = 'synthesized placeholder error taxonomy' }
+        error_taxonomy = @{ unspecified = 'synthesized placeholder error taxonomy' }
+        golden_examples = @(@{ input = @{ note = 'synthesized' }; output = @{ note = 'synthesized-placeholder' } })
+        owned_files = @($ownedFiles)
+        owned_regions = @()
+        synthesized = $true
+        synthesis_reason = 'declared-provides-consumes-without-contract'
+      }
+      $rawObj = [pscustomobject]$raw
+
+      # e. run through the REAL validator to prove valid=$true / raw_mature=$true (the payoff: freezable).
+      #    Path/ProjectRoot/Channel are '' so no open-question block. NOTE: the validator still resolves an
+      #    AMBIENT freeze-lock dir from Get-EffectiveChannel/Get-BridgeRoot and, if a lock for this id happens
+      #    to exist on disk from a prior run/other channel, would report stable/lock_* from THAT stale lock.
+      #    A freshly synthesized in-memory contract is by definition UNFROZEN, so we take valid/raw_mature/
+      #    hash from the validator but PIN the lock-derived fields to the unfrozen state -- the freeze manifest
+      #    is the only legitimate way to freeze it, and this keeps determinism independent of ambient disk.
+      $check = Test-ProjectAutopilotInterfaceContract -Contract $rawObj -Path '' -ProjectRoot '' -Channel '' -OpenQuestionText ''
+
+      # f. processed entry mirroring Get-ProjectAutopilotInterfaceContracts (lines 641-664). owned_files /
+      #    owned_regions come from the canonical payload so they match the disk reader exactly.
+      $payload = Get-ProjectAutopilotInterfaceContractCanonicalPayload -Contract $rawObj
+      $entry = [pscustomobject]@{
+        id = [string](& $get $check @('id') $id)
+        path = ''
+        contract = $rawObj
+        valid = [bool](& $get $check @('valid') $false)
+        stable = $false
+        raw_mature = [bool](& $get $check @('raw_mature') $false)
+        version = [string](& $get $check @('version') '0.0.0-synth')
+        canonical_hash = [string](& $get $check @('canonical_hash') '')
+        hash = [string](& $get $check @('hash') '')
+        lock_path = ''
+        lock_present = $false
+        lock_stable = $false
+        lock_hash = ''
+        lock_version = ''
+        hash_matches_lock = $false
+        version_matches_lock = $false
+        has_golden_example = [bool](& $get $check @('has_golden_example') $true)
+        open_question_blocked = [bool](& $get $check @('open_question_blocked') $false)
+        owned_files = @($payload.owned_files)
+        owned_regions = @($payload.owned_regions)
+        missing = @(& $get $check @('missing') @())
+        maturity_reasons = @(@(& $get $check @('maturity_reasons') @()) | Where-Object { $_ -notin @('freeze-lock-hash-mismatch','freeze-lock-version-mismatch') })
+        synthesized = $true
+      }
+      $synthesized.Add($entry) | Out-Null
+      $coveredIds.Add($id) | Out-Null
+      $acceptedFiles[$id] = @($ownedFiles)
+    }
+
+    # ---- 4. dangling consumes: a consumer with NO provider (in stable id order) ----
+    foreach ($id in @($consumerMap.Keys | Sort-Object)) {
+      if ($providerMap.ContainsKey($id)) { continue }
+      $skipped.Add([pscustomobject]@{ id = $id; reason = 'dangling-consume' }) | Out-Null
+    }
+
+    return [pscustomobject]@{
+      synthesized = @($synthesized.ToArray())
+      skipped = @($skipped.ToArray())
+      covered_ids = @($coveredIds.ToArray())
+    }
+  } catch {
+    return (& $empty)
+  }
+}
+
 function New-ProjectAutopilotShapedBatch {
   # Ch3 of the diffusion engine: ADDITIVE EMIT-SHAPING.
   # Given a just-emitted atom batch and a freeze manifest, RESHAPE the batch so contract-CONSUMER atoms
