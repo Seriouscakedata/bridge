@@ -1708,6 +1708,10 @@ function New-ProjectAutopilotCoordinatorTaskText {
         try {
           foreach ($biCP in @(Get-Backlog)) {
             if ([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+            # 2026-07-01 bug#2 Root-1: Get-Backlog is GLOBAL (all channels). Count decomposed chapters for THIS
+            # channel only -- else another project's chapters inflate this one's doneChapters, pushing nextN past
+            # totalCh so the coordinator emits no PROJECT_BACKLOG ("all chapters already decomposed" false-fire).
+            if ((([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'project' -Default '')).Trim().ToLowerInvariant()) -ne (([string]$Slug).Trim().ToLowerInvariant())) { continue }
             $chpCP = ([string](Get-BacklogPackObjectValue -Obj $biCP -Name 'chapter' -Default '')).Trim()
             $chkCP = Get-ProjectAutopilotChapterKey -Chapter $chpCP
             if (-not [string]::IsNullOrWhiteSpace($chkCP)) { [void]$doneChaptersCP.Add($chkCP) }
@@ -1723,8 +1727,9 @@ function New-ProjectAutopilotCoordinatorTaskText {
         # decompose ALL remaining chapters in one PROJECT_BACKLOG (the executor frontier then runs the
         # independent atoms across chapters in parallel; dependents serialize via depends_on). Any other
         # mode keeps the proven one-chapter-at-a-time default.
-        $decomposeScopeLine = if ($diffMode -eq 'wide') {
-          "Decompose ALL remaining approved chapters (Chapter $nextNCP through Chapter $totalChCP) into atoms in ONE PROJECT_BACKLOG this run (cross-chapter WIDE mode). Give INDEPENDENT atoms (different files, no real prerequisite) an EMPTY depends_on so they run in parallel across chapters; give DEPENDENT atoms an explicit depends_on on the prerequisite atom's slug (those serialize). Keep each atom's files to exactly ONE path so independent atoms never collide. No interface-contract/stub/stitching ceremony is required in wide mode. DECOMPOSE FINELY -- this is the single most important rule for wide mode: split EVERY chapter into its FULL set of small one-file atoms, the SAME fineness you would use if that chapter were the only one (do NOT emit a coarse 1-2 atoms per chapter -- that wastes the parallel team). MAXIMIZE THE FIRST WAVE of independent work: split each screen into separate screen / state / preview / formatting files, split the domain into one file per filter/model/mapper, give every leaf file (constants, theme, resources, helpers) its own atom. Aim for AT LEAST 12-20 atoms with EMPTY depends_on so 12-20 run concurrently in the first wave. Only put a depends_on when the file literally cannot be written before the prerequisite exists (a test needs the impl; an integration/nav-host needs the screens; the release/APK needs integration). More small independent atoms = wider parallelism; err on the side of MORE, smaller atoms."
+        $decomposeScopeLine = if ($diffMode -eq 'wide' -or $diffMode -eq 'diffusion') {
+          $contractClauseCP = if ($diffMode -eq 'diffusion') { "For any cross-atom interface (an atom's output that another atom needs), the PROVIDER atom lists it in provides and the CONSUMER lists it in consumes with the SAME interface id, so the diffusion engine freezes a contract and lets consumers build against a stub IN PARALLEL with the provider (see the diffusion contract rules below)." } else { "No interface-contract/stub/stitching ceremony is required in wide mode." }
+          "Decompose ALL remaining approved chapters (Chapter $nextNCP through Chapter $totalChCP) into atoms in ONE PROJECT_BACKLOG this run (cross-chapter, all-chapters decomposition). Give INDEPENDENT atoms (different files, no real prerequisite) an EMPTY depends_on so they run in parallel across chapters; give DEPENDENT atoms an explicit depends_on on the prerequisite atom's slug (those serialize unless a contract lets them parallelize). Keep each atom's files to exactly ONE path so independent atoms never collide. $contractClauseCP DECOMPOSE FINELY -- this is the single most important rule: split EVERY chapter into its FULL set of small one-file atoms, the SAME fineness you would use if that chapter were the only one (do NOT emit a coarse 1-2 atoms per chapter -- that wastes the parallel team). MAXIMIZE THE FIRST WAVE of independent work: split each screen into separate screen / state / preview / formatting files, split the domain into one file per filter/model/mapper, give every leaf file (constants, theme, resources, helpers) its own atom. Aim for AT LEAST 12-20 atoms with EMPTY depends_on so 12-20 run concurrently in the first wave. Only put a depends_on when the file literally cannot be written before the prerequisite exists (a test needs the impl; an integration/nav-host needs the screens; the release/APK needs integration). More small independent atoms = wider parallelism; err on the side of MORE, smaller atoms."
         } else {
           "Decompose ONLY Chapter $nextNCP into atoms this run."
         }
@@ -2765,6 +2770,9 @@ function Test-ShouldBackgroundDecompose {
     try {
       foreach ($bi in @(Get-Backlog)) {
         if ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+        # 2026-07-01 bug#2 Root-1: Get-Backlog is GLOBAL; count only THIS channel's atoms so another project's
+        # chapters do not inflate decomposed/in-flight/runnable and falsely trip 'all-chapters-decomposed'.
+        if ((([string](Get-BacklogPackObjectValue -Obj $bi -Name 'project' -Default '')).Trim().ToLowerInvariant()) -ne (([string]$Channel).Trim().ToLowerInvariant())) { continue }
         $chp = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'chapter' -Default '')).Trim()
         $chk = Get-ProjectAutopilotChapterKey -Chapter $chp
         $st  = ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'status' -Default '')).Trim().ToLowerInvariant()
