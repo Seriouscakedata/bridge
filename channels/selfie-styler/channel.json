@@ -1,13 +1,11 @@
 {
-    "slug":  "selfie-styler",
-    "name":  "Selfie Styler",
-    "description":  "On-device Android selfie styler: capture a selfie, apply a style/filter, save to gallery.",
     "project_root":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler",
-    "created":  "2026-06-30T12:21:38.9125719+03:00",
-    "archived":  false,
+    "ok":  true,
+    "project_type":  "android",
+    "bound_at":  "2026-07-01T06:46:22.1235599Z",
     "plan_approved":  true,
-    "plan_approved_at":  "2026-06-30T14:16:19.6112623Z",
-    "plan_approved_signature":  "75bc118cac3193004a9160d07af645e6fda72fa78897f9beb8327509f2d5f2ad",
+    "plan_approved_at":  "2026-07-01T06:46:22.8387767Z",
+    "plan_approved_signature":  "1dc12cd3a700f8235813b366656c174b0e24aa364c48a00502df1620a9269692",
     "plan_approved_signature_version":  "bridge-spec-v1",
     "plan_approved_files":  [
                                 "PROJECT_BRIEF.md",
@@ -18,7 +16,7 @@
                                 ".bridge\\project-contract.json"
                             ],
     "plan_spec_profile":  "lite",
-    "plan_approved_git_head":  "cd656f54f6950f0300a62c8c34de3ed8f6266493",
+    "plan_approved_git_head":  "b3d1526af88ebdb6b656802476a83fc0bb18863d",
     "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler\\.bridge\\project-contract.json",
     "plan_contract_score":  100,
     "plan_contract_required_sections":  [
@@ -31,5 +29,10 @@
                                             "checks",
                                             "risk",
                                             "parallel_policy"
-                                        ]
+                                        ],
+    "slug":  "selfie-styler",
+    "name":  "Selfie Styler",
+    "description":  "Android (Kotlin/Compose) selfie photo-filter app (diffusion test project)",
+    "created":  "2026-07-01T07:40:34.8400615Z",
+    "archived":  false
 }
