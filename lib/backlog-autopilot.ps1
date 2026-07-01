@@ -271,9 +271,18 @@ function Record-ProjectAutopilotCoordinatorOutcome {
   } else {
     $streak++
     if ($streak -ge $limit) {
-      $paused = $true
-      if ([string]::IsNullOrWhiteSpace($pausedAt)) { $pausedAt = (Get-Date).ToUniversalTime().ToString('o') }
-      $pauseReason = "empty coordinator streak reached $streak/$limit without PROJECT_BACKLOG"
+      # Pause-guard (2026-07-01): only pause when the project has ACTUALLY decomposed >=1 chapter -- then an
+      # empty coordinator streak genuinely means "scope exhausted / release complete". A project that has
+      # NEVER produced a chapter (cold start) emitting empty is a failure-to-START, not a finished release;
+      # pausing it would look like "done" and permanently stall a project that never began. Keep retrying
+      # (cooldown throttles) so the diffusion->wide cold-start self-heal, or a fixed plan, can still start it.
+      $coldStart = $false
+      try { $coldStart = Test-ProjectAutopilotColdStart -Channel $Channel } catch { $coldStart = $false }
+      if (-not $coldStart) {
+        $paused = $true
+        if ([string]::IsNullOrWhiteSpace($pausedAt)) { $pausedAt = (Get-Date).ToUniversalTime().ToString('o') }
+        $pauseReason = "empty coordinator streak reached $streak/$limit without PROJECT_BACKLOG"
+      }
     }
   }
 
@@ -1672,6 +1681,22 @@ function Test-ProjectPlanContractReady {
   }
 }
 
+function Test-ProjectAutopilotColdStart {
+  # Cold start = THIS channel's project has decomposed NO chapter yet (no project-autopilot atom carries a
+  # non-empty chapter for this channel). Reuses the exact decomposedSet walk from Test-ShouldBackgroundDecompose
+  # (channel-scoped, bug#2-safe) so both call sites agree on what "not started yet" means. On any fault the
+  # caller decides the fail-safe; this returns $true (treat-as-cold-start) only on a clean zero-chapter read.
+  param([string]$Channel)
+  $decomposed = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($bi in @(Get-Backlog)) {
+    if ([string](Get-BacklogPackObjectValue -Obj $bi -Name 'from' -Default '') -ne 'project-autopilot') { continue }
+    if ((([string](Get-BacklogPackObjectValue -Obj $bi -Name 'project' -Default '')).Trim().ToLowerInvariant()) -ne (([string]$Channel).Trim().ToLowerInvariant())) { continue }
+    $chk = Get-ProjectAutopilotChapterKey -Chapter (([string](Get-BacklogPackObjectValue -Obj $bi -Name 'chapter' -Default '')).Trim())
+    if (-not [string]::IsNullOrWhiteSpace($chk)) { [void]$decomposed.Add($chk) }
+  }
+  return ($decomposed.Count -eq 0)
+}
+
 function New-ProjectAutopilotCoordinatorTaskText {
   param(
     [string]$Slug,
@@ -1684,6 +1709,17 @@ function New-ProjectAutopilotCoordinatorTaskText {
   $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
   $diffMode = ([string]$DiffusionMode).Trim().ToLowerInvariant()
   if ($diffMode -notin @('off','shadow','diffusion','wide')) { $diffMode = 'off' }
+  # Diffusion cold-start self-heal (2026-07-01): strict 'diffusion' (freeze/stub/stitch) needs stable frozen
+  # interface contracts, which a plan-only cold-start project CANNOT have yet -- so the cross-atom gate can
+  # never go green on the first wave and the coordinator either falls back to one-chapter or (observed live
+  # on selfie-styler) refuses and emits ZERO atoms, stalling the whole project. When diffusion is requested
+  # but THIS channel has decomposed no chapter yet, decompose the FIRST wave in 'wide' (all-chapters,
+  # independent-parallel, no contracts needed) so it ALWAYS produces an all-chapters wave. Strict diffusion
+  # resumes automatically on the next coordinator once chapters/contracts exist. Fail-safe to 'wide' if the
+  # cold-start read faults -- wide only ever parallelizes INDEPENDENT atoms, so it is never unsafe output.
+  if ($diffMode -eq 'diffusion' -and -not [string]::IsNullOrWhiteSpace($Slug)) {
+    try { if (Test-ProjectAutopilotColdStart -Channel $Slug) { $diffMode = 'wide' } } catch { $diffMode = 'wide' }
+  }
   $diffK = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMinIndependentAtoms))
   $diffN = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMaxWaveSize))
   # 2026-06-27 root-fix: deterministic plan-chapter progress injected into the coordinator prompt.
@@ -2100,7 +2136,11 @@ function Start-ProjectAutopilotIfNeeded {
       $stateStreakExisting = Get-ProjectAutopilotStateInt -State $last -Name 'empty_coordinator_streak' -Default 0
       $inferredEmptyExisting = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak)
       if ($inferredEmptyExisting -gt $stateStreakExisting) {
-        if ($inferredEmptyExisting -ge [int]$cfg.emptyCoordinatorLimit) {
+        # Pause-guard (2026-07-01): never pause a project that has decomposed no chapter yet (cold-start
+        # failure-to-start != scope-exhausted); let it keep retrying so the diffusion->wide self-heal can start it.
+        $coldStartExisting = $false
+        try { $coldStartExisting = Test-ProjectAutopilotColdStart -Channel $slug } catch { $coldStartExisting = $false }
+        if ($inferredEmptyExisting -ge [int]$cfg.emptyCoordinatorLimit -and -not $coldStartExisting) {
           $nowPauseExisting = (Get-Date).ToUniversalTime().ToString('o')
           $last | Add-Member -NotePropertyName ts -NotePropertyValue $nowPauseExisting -Force
           $last | Add-Member -NotePropertyName channel -NotePropertyValue $slug -Force
@@ -2128,7 +2168,10 @@ function Start-ProjectAutopilotIfNeeded {
   } else {
     try {
       $inferredEmpty = [int](Get-ProjectAutopilotInferredEmptyCoordinatorStreak)
-      if ($inferredEmpty -ge [int]$cfg.emptyCoordinatorLimit) {
+      # Pause-guard (2026-07-01): cold-start (no chapter decomposed) never pauses -- see Record-...Outcome guard.
+      $coldStartNoState = $false
+      try { $coldStartNoState = Test-ProjectAutopilotColdStart -Channel $slug } catch { $coldStartNoState = $false }
+      if ($inferredEmpty -ge [int]$cfg.emptyCoordinatorLimit -and -not $coldStartNoState) {
         $nowPause = (Get-Date).ToUniversalTime().ToString('o')
         $pauseState = [pscustomobject]@{
           ts = $nowPause
