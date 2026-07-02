@@ -1,0 +1,124 @@
+{
+    "ts":  "2026-07-01T23:06:49.9121082Z",
+    "channel":  "selfie-styler",
+    "project_root":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler",
+    "head":  "0c8d30fb166402609578328d6094c715882178c8",
+    "trigger":  "autopilot-empty-scope",
+    "status":  "PASS",
+    "plan_signature":  "1dc12cd3a700f8235813b366656c174b0e24aa364c48a00502df1620a9269692",
+    "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler\\.bridge\\project-contract.json",
+    "steps":  [
+                  {
+                      "name":  "plan:PROJECT_MAP.md-depth",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "chars=1865 min=800",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan:PROJECT_PLAN.md-depth",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "chars=2013 min=1000",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-stage-doc:brief",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "PROJECT_BRIEF.md chars=822 min=500",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-spec:constitution",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  ".bridge\\constitution.md chars=1334 min=500",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-spec:acceptance",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  ".bridge\\specs\\acceptance.md chars=1103 min=500",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:present",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "C:\\Users\\rafie\\bridge-projects\\selfie-styler\\.bridge\\project-contract.json",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:spec-profile",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "lite",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:goal",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "chars=148",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:requirements",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=8 min=1",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:surfaces",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=5 min=1",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:journeys",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=1 min=1",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:acceptance",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=4 min=1",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:interface",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "count=0 min=0",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:production-entrypoints-no-stubs",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "required=False entry_count=0 symbol_count=0 reason=not configured",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "repo:generated-artifacts-not-tracked",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "none",
+                      "reason":  ""
+                  },
+                  {
+                      "name":  "plan-contract:journey-coverage",
+                      "ok":  true,
+                      "exit_code":  0,
+                      "details":  "required=True journey_count=1 journey_web_specs_count=0 browser_smoke_scripts= acceptance_trace_count=4 non_web_surface_count=0 non_web_command_check_count=1 non_web_surface_kinds= non_web_command_check_ids=Run offline Gradle assembleDebug, run JVM unit tests for filter math when implemented, verify merged manifest has CAMERA and does not include INTERNET, and confirm the debug APK path exists. reason=journey acceptance traces present",
+                      "reason":  ""
+                  }
+              ]
+}
