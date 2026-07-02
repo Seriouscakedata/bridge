@@ -264,6 +264,58 @@ function Test-DoctorHeldWorkReady {
   return $false
 }
 
+function Get-DoctorSignalAckPath {
+  return (Join-Path (Get-BridgeRoot) 'control\doctor-signal.ack.json')
+}
+
+function Get-DoctorSignalFingerprint {
+  param([string]$Reason)
+  $r = ([string]$Reason).Trim()
+  if ($r -notmatch '^(?i)watchdog_rollback') { return '' }
+  $root = Get-BridgeRoot
+  $wd = Join-Path $root 'control\watchdog.log'
+  $marker = ''
+  try {
+    if (Test-Path -LiteralPath $wd -PathType Leaf) {
+      $marker = @([System.IO.File]::ReadLines($wd) | Where-Object {
+        ([string]$_) -match 'API STILL down after restart|reset --hard stable|rollback applied'
+      } | Select-Object -Last 1)[0]
+    }
+  } catch { $marker = '' }
+  if ([string]::IsNullOrWhiteSpace($marker)) { return '' }
+  return ($r + '|' + ([string]$marker).Trim())
+}
+
+function Test-DoctorSignalAcknowledged {
+  param([string]$Reason)
+  $fp = Get-DoctorSignalFingerprint -Reason $Reason
+  if ([string]::IsNullOrWhiteSpace($fp)) { return $false }
+  $ackPath = Get-DoctorSignalAckPath
+  if (-not (Test-Path -LiteralPath $ackPath -PathType Leaf)) { return $false }
+  try {
+    $ack = [System.IO.File]::ReadAllText($ackPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    return ([string]$ack.reason -eq ([string]$Reason).Trim() -and [string]$ack.fingerprint -eq $fp)
+  } catch { return $false }
+}
+
+function Write-DoctorSignalAck {
+  param([string]$Reason)
+  $fp = Get-DoctorSignalFingerprint -Reason $Reason
+  if ([string]::IsNullOrWhiteSpace($fp)) { return $false }
+  try {
+    $path = Get-DoctorSignalAckPath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $record = [ordered]@{
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+      reason = ([string]$Reason).Trim()
+      fingerprint = $fp
+    }
+    [System.IO.File]::WriteAllText($path, ($record | ConvertTo-Json -Depth 4), [System.Text.Encoding]::UTF8)
+    return $true
+  } catch { return $false }
+}
+
 function Write-DoctorLog {
   param([string]$Message)
   try {
@@ -428,6 +480,7 @@ function Complete-Doctor {
   param([switch]$ResolveHeldDone)
   $st = Read-State
   $held = [string]$st.held_task
+  $completeReason = [string]$st.doctor_reason
   if ($ResolveHeldDone) {
     $bid = Get-DoctorHeldBacklogId -State $st
     if ([string]::IsNullOrWhiteSpace($bid)) {
@@ -484,6 +537,7 @@ function Complete-Doctor {
       $s.status='idle'
     }.GetNewClosure()) | Out-Null
     try { Add-Message -From system -Text ("🩺 Доктор: held-задача " + $bid + " уже готова при commit_famine — закрыта как done, повторная диагностика пропущена.") -Kind event | Out-Null } catch {}
+    try { Write-DoctorSignalAck -Reason $completeReason | Out-Null } catch {}
     try { Append-DoctorEvent -Event 'resolve-held-done' -Reason 'commit_famine_work_ready' } catch {}
     try { Write-DoctorLog ("Doctor resolve-held-done: " + $bid + " " + $head) } catch {}
     return $true
@@ -508,6 +562,7 @@ function Complete-Doctor {
       $s.active_agent=$null; $s.active_model=$null; $s.status_text=$null; $s.agent_pid=$null
       $s.status='idle'
     }.GetNewClosure()) | Out-Null
+    try { Write-DoctorSignalAck -Reason $completeReason | Out-Null } catch {}
     return
   }
   Update-State ({ param($s)
@@ -536,6 +591,7 @@ function Complete-Doctor {
   }.GetNewClosure()) | Out-Null
   $snippet = $held; if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0,80) + '...' }
   try { Add-Message -From system -Text ("🩺 Доктор закончил — фикс применён и проверен. Возобновляю приостановленную задачу: «" + $snippet + "».") -Kind event | Out-Null } catch {}
+  try { Write-DoctorSignalAck -Reason $completeReason | Out-Null } catch {}
   try { Append-DoctorEvent -Event 'complete' } catch {}
   try { Write-DoctorLog "Doctor complete: repaired" } catch {}
 }
@@ -632,6 +688,11 @@ function Test-DoctorSignal {
   if (-not (Test-Path $sig)) { return $null }
   $reason = 'watchdog_rollback'
   try { $txt = [System.IO.File]::ReadAllText($sig); if ($txt) { $reason = $txt.Trim() } } catch {}
+  if (Test-DoctorSignalAcknowledged -Reason $reason) {
+    try { Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue } catch {}
+    try { Write-DoctorLog ("Doctor signal ignored as already acknowledged: " + $reason) } catch {}
+    return $null
+  }
   try { Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue } catch {}
   return $reason
 }
