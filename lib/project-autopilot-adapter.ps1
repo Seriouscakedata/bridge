@@ -187,7 +187,7 @@ function Convert-DiscussToAutopilotInputs {
   if (-not ($contract.PSObject.Properties.Name -contains 'journeys') -or @($contract.journeys).Count -lt 1) {
     $contract | Add-Member -NotePropertyName 'journeys' -NotePropertyValue $journeys -Force
   }
-  _w $contractPath ($contract | ConvertTo-Json -Depth 12)
+  _w $contractPath ($contract | ConvertTo-Json -Depth 10)
   [void]$written.Add('.bridge/project-contract.json')
 
   return [pscustomobject]@{ ok = $true; reason = 'materialized'; files = @($written.ToArray()); chapters = $chapters.Count }
