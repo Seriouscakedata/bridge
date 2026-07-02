@@ -178,6 +178,9 @@ try {
   # wide/diffusion demand ALL remaining chapters in one PROJECT_BACKLOG. Assert both branches exist.
   Assert-True ($autopilotText.IndexOf('Default decomposition is ONE next chapter/wave', [System.StringComparison]::Ordinal) -ge 0) 'prompt must preserve one-chapter default for off/shadow modes'
   Assert-True ($autopilotText.IndexOf('decompose ALL remaining chapters AT ONCE', [System.StringComparison]::Ordinal) -ge 0) 'prompt must demand all-chapters decomposition for wide/diffusion modes'
+  # 2026-07-02 audit #6a: reset/history-forensics refusal guard must be present in the coordinator prompt
+  Assert-True ($autopilotText.IndexOf('Repository state is OPERATOR-AUTHORIZED', [System.StringComparison]::Ordinal) -ge 0) 'prompt must carry the operator-authorized repo-state guard'
+  Assert-True ($autopilotText.IndexOf('is NOT a reason to withhold decomposition', [System.StringComparison]::Ordinal) -ge 0) 'guard must neutralize host-managed-commit refusal'
   Assert-True ($autopilotText.IndexOf('Diffusion/cross-chapter decomposition is opt-in only', [System.StringComparison]::Ordinal) -ge 0) 'prompt must document diffusion opt-in gate'
   Assert-True ($autopilotText.IndexOf('"provides"', [System.StringComparison]::Ordinal) -ge 0) 'PROJECT_BACKLOG schema must include provides'
   Assert-True ($autopilotText.IndexOf('"consumes"', [System.StringComparison]::Ordinal) -ge 0) 'PROJECT_BACKLOG schema must include consumes'

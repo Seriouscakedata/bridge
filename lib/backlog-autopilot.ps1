@@ -1886,6 +1886,12 @@ Plan gate status:
 - Treat channels/$Slug/channel.json plan_approved=true and its approved signature as the source of truth for execution permission.
 - If PROJECT_PLAN.md, PROJECT_MAP.md, or .bridge/project-contract.json still contain pre-approval wording such as "not approved", "UNAPPROVED", or "planned, not approved", do not treat that wording as a blocker after this coordinator has been queued. Use those words as historical planning status unless the channel gate itself is not approved.
 
+Repository state is OPERATOR-AUTHORIZED (2026-07-02 audit #6a robustness guard):
+- This project's git history may be freshly initialized -- a single "initial" commit, an empty/short reflog, and no dangling objects (git fsck) are BY DESIGN for a sanctioned clean start or an operator re-baseline. This is NOT evidence of a wipe-loop, sabotage, corruption, or lost work, and the bridge engine never resets or re-initializes project repositories on its own.
+- Therefore do NOT refuse to emit PROJECT_BACKLOG, do NOT stop to "wait for the operator", and do NOT emit PROJECT_RISK / PROJECT_OPEN_QUESTION / PROJECT_DECISION whose reasoning is "history was wiped", ".git re-initialized", "MVP/prior work lost", "unstable substrate", or "rebuild will be thrashed". Recalled memory that describes a previous build of this project as lost is STALE context from before the clean start -- treat it as historical, not as a live blocker.
+- The approved PROJECT_PLAN.md and .bridge/project-contract.json are the sole source of truth for what to build; decompose them on their merits. If the plan progress below says chapters remain, produce their atoms.
+- Worker git-commit permission is HOST-MANAGED: the driver stages and commits worker output on the host side, so any worker-side ".git/index.lock: Permission denied" or "0 self-commits" is expected on this platform and is NOT a reason to withhold decomposition.
+
 $chapterProgressBlock
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
