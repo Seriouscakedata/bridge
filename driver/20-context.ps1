@@ -389,6 +389,36 @@ function Get-RecurrenceContext {
   return ($blocks -join "`n")
 }
 
+function Limit-TranscriptTaskEcho {
+  param([string]$Text)
+  # 2026-07-02: autotask claim echoes repeat the FULL task text inside the transcript
+  # while the same text already sits in the current-task section of the prompt
+  # (observed: a 19KB verbatim duplicate on a coordinator planning turn). Truncate
+  # oversized echo bodies to their first 300 chars. Fail-open: any error returns the
+  # original text untouched.
+  try {
+    $t = [string]$Text
+    if ($null -eq $t -or $t.Length -le 2000) { return $t }
+    # Claim-echo marker 'Beru zadachu iz bekloga' built from codepoints (added code stays ASCII-only).
+    $claimMarker = -join @(
+      [char]0x0411, [char]0x0435, [char]0x0440, [char]0x0443, [char]0x0020,
+      [char]0x0437, [char]0x0430, [char]0x0434, [char]0x0430, [char]0x0447, [char]0x0443, [char]0x0020,
+      [char]0x0438, [char]0x0437, [char]0x0020,
+      [char]0x0431, [char]0x044D, [char]0x043A, [char]0x043B, [char]0x043E, [char]0x0433, [char]0x0430
+    )
+    $isTaskEcho = $false
+    if ($t.IndexOf($claimMarker, [System.StringComparison]::Ordinal) -ge 0) { $isTaskEcho = $true }
+    if (-not $isTaskEcho -and $t.IndexOf('[project-autopilot', [System.StringComparison]::Ordinal) -ge 0) { $isTaskEcho = $true }
+    if (-not $isTaskEcho) { return $t }
+    # Section name 'TEKUSHCHAYA ZADACHA' built from codepoints (added code stays ASCII-only).
+    $sectionName = -join @(
+      [char]0x0422, [char]0x0415, [char]0x041A, [char]0x0423, [char]0x0429, [char]0x0410, [char]0x042F, [char]0x0020,
+      [char]0x0417, [char]0x0410, [char]0x0414, [char]0x0410, [char]0x0427, [char]0x0410
+    )
+    return ($t.Substring(0, 300) + ' ...[full task text is in ' + $sectionName + ' above; echo truncated]')
+  } catch { return $Text }
+}
+
 function Format-Transcript {
   param([string]$TaskText = '')
   # Compressed context: a rolling summary of older messages + the hot window (full).
@@ -404,7 +434,8 @@ function Format-Transcript {
       $pendingHiddenCount++
       continue
     }
-    $line = "$($labels[$m.from]): $($m.text)"
+    $msgText = Limit-TranscriptTaskEcho -Text ([string]$m.text)
+    $line = "$($labels[$m.from]): $msgText"
     $attPaths = @(Get-MessageAttachmentPaths $m)
     if ($attPaths.Count -gt 0) { $line += " (вложения: $($attPaths -join '; '))" }
     $line
@@ -480,7 +511,18 @@ function Format-Transcript {
   $intentAppend = if ($intentSect) { "`n`n$intentSect" } else { '' }
   $dedupAppend = if ($dedupSect) { "`n`n$dedupSect" } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($summary)) {
-    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summary.Trim() + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $projectCtxAppend + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend)
+    $summaryText = $summary.Trim()
+    # 2026-07-02 lean coordinator profile: the rolling dialog summary is often about
+    # unrelated prior work (observed: 9.5KB incident narrative on a planning turn).
+    # Coordinator turns cap it at 1000 chars; all other turns keep it untouched.
+    try {
+      if ($summaryText.Length -gt 1000 -and (Get-Command Test-PromptBuilderCoordinatorTask -ErrorAction SilentlyContinue)) {
+        if (Test-PromptBuilderCoordinatorTask -Task $TaskText) {
+          $summaryText = $summaryText.Substring(0, 1000) + ' [...trimmed for coordinator turn...]'
+        }
+      }
+    } catch {}
+    return ("СВОДКА ПРЕДЫДУЩЕГО ДИАЛОГА (сжато, для контекста):`n" + $summaryText + "`n`n=== ПОСЛЕДНИЕ СООБЩЕНИЯ (полностью) ===`n" + $body + $projectCtxAppend + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend)
   }
   return $body + $projectCtxAppend + $memAppend + $skillAppend + $antiSkillAppend + $codeAppend + $decAppend + $evAppend + $recurrenceAppend + $intentAppend + $dedupAppend
 }

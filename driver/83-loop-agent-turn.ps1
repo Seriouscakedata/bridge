@@ -210,7 +210,15 @@ BATCH-TIMEOUT-HINT: Этот batch содержит $taskCount независи�
       Add-Message -From system -Text ("🧠 Decision Synthesis: запускаю pipeline depth=" + $(if([string]::IsNullOrWhiteSpace($synthDepth)){'smart'}else{$synthDepth}) + $(if([string]::IsNullOrWhiteSpace($synthDecisionId)){''}else{" id=$synthDecisionId"})) -Kind event | Out-Null
       $turnResult = Normalize-TurnResultContract (Invoke-SynthesisDriverTurn -Task $task -Channel $Channel -Depth $synthDepth -DecisionId $synthDecisionId)
     }
-    elseif ($speaker -eq 'claude') { $turnResult = Normalize-TurnResultContract (Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode) }
+    elseif ($speaker -eq 'claude') {
+      # 2026-07-02 planner-speed: coordinator turns run the deep model at effort 'high' WITHOUT
+      # the ultrathink suffix (xhigh+ultrathink made a single decompose turn take 30+ min).
+      # Shape-check on the claimed task text; any error keeps '' = today's default behavior.
+      $isCoordinatorTurn = $false
+      try { $isCoordinatorTurn = [bool](Test-DriverCoordinatorTaskText -TaskText $task) } catch { $isCoordinatorTurn = $false }
+      $plannerReasoningEffort = if ($isCoordinatorTurn) { 'high' } else { '' }
+      $turnResult = Normalize-TurnResultContract (Invoke-Planner -Prompt $prompt -Model $plannerModel -Mode $mode -ReasoningEffort $plannerReasoningEffort)
+    }
     else {
       $turnResult = Normalize-TurnResultContract (Invoke-Coder -Prompt $prompt -Mode $mode)
       # Track that the coder role actually ran for this task. A Claude fallback counts as

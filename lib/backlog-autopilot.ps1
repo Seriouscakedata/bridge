@@ -1771,6 +1771,127 @@ function Test-ProjectAutopilotHasFrozenContracts {
   return $false
 }
 
+function Get-ProjectAutopilotGitOutput {
+  # 2026-07-02 planner-speed: guarded git capture for prompt-header facts. Runs git via
+  # System.Diagnostics.Process with a short timeout so a hung/missing git can never stall the
+  # coordinator turn. Any fault, timeout, or nonzero exit returns '' -- callers treat empty as
+  # "fact unavailable" and keep going (fail-open).
+  param(
+    [string]$ProjectRoot,
+    [string]$GitArgs,
+    [int]$TimeoutMs = 5000
+  )
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'git'
+    $psi.Arguments = ('-C "' + $ProjectRoot + '" ' + $GitArgs)
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $proc) { return '' }
+    # Async reads drain both pipes so a chatty git cannot deadlock on a full pipe buffer.
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit($TimeoutMs)) {
+      try { $proc.Kill() } catch {}
+      return ''
+    }
+    if ($proc.ExitCode -ne 0) { return '' }
+    [void]$errTask
+    return [string]$outTask.GetAwaiter().GetResult()
+  } catch { return '' }
+}
+
+function Get-ProjectAutopilotClippedText {
+  # 2026-07-02 planner-speed: clip text to ByteCap on a LINE boundary and append an explicit
+  # "[...clipped N of M bytes...]" marker (N = injected bytes, M = full file bytes) so the planner
+  # knows the snapshot is partial. Text at/under the cap is returned untouched.
+  param(
+    [string]$Text,
+    [int]$ByteCap
+  )
+  $enc = [System.Text.Encoding]::UTF8
+  $totalBytes = $enc.GetByteCount($Text)
+  if ($totalBytes -le $ByteCap) { return $Text }
+  $sb = New-Object System.Text.StringBuilder
+  $usedBytes = 0
+  foreach ($line in ($Text -split "(?<=`n)")) {
+    $lineBytes = $enc.GetByteCount($line)
+    if (($usedBytes + $lineBytes) -gt $ByteCap) { break }
+    [void]$sb.Append($line)
+    $usedBytes += $lineBytes
+  }
+  $kept = $sb.ToString().TrimEnd("`r", "`n")
+  return ($kept + "`n[...clipped " + $usedBytes + " of " + $totalBytes + " bytes...]")
+}
+
+function Get-ProjectAutopilotInjectedInputsBlock {
+  # 2026-07-02 planner-speed: snapshot the planning inputs VERBATIM into the coordinator prompt so
+  # the planner does not burn dozens of agentic read/scan tool rounds rediscovering them (the old
+  # read-everything-first directive dominated an observed 34-minute planning turn; on a from-zero
+  # project there is nothing else to scan). PROJECT_MAP.md is injected only on cold start.
+  # project-contract.json is never cut mid-JSON: injected whole up to 24576 bytes, otherwise
+  # skipped with a note. Fail-open: ANY fault returns '' and the caller keeps the classic
+  # read-from-disk directive.
+  param(
+    [string]$ProjectRoot,
+    [bool]$ColdStart = $false
+  )
+  try {
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+    if (-not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) { return '' }
+    $enc = [System.Text.Encoding]::UTF8
+    $headSha = ([string](Get-ProjectAutopilotGitOutput -ProjectRoot $ProjectRoot -GitArgs 'rev-parse --short HEAD')).Trim()
+    $trackedCount = 0
+    $sourceCount = 0
+    $lsRaw = [string](Get-ProjectAutopilotGitOutput -ProjectRoot $ProjectRoot -GitArgs 'ls-files')
+    if (-not [string]::IsNullOrWhiteSpace($lsRaw)) {
+      foreach ($tf in ($lsRaw -split "`n")) {
+        $tft = ([string]$tf).Trim()
+        if ([string]::IsNullOrWhiteSpace($tft)) { continue }
+        $trackedCount++
+        if ($tft -notmatch '\.(md|json)$' -and $tft -notmatch '^\.bridge/') { $sourceCount++ }
+      }
+    }
+    $fileSpecs = @(
+      @{ Rel = 'PROJECT_PLAN.md';               Cap = 24576; Json = $false },
+      @{ Rel = '.bridge\project-contract.json'; Cap = 16384; Json = $true },
+      @{ Rel = 'PROJECT_BRIEF.md';              Cap = 8192;  Json = $false },
+      @{ Rel = '.bridge\specs\acceptance.md';   Cap = 8192;  Json = $false },
+      @{ Rel = '.bridge\constitution.md';       Cap = 4096;  Json = $false }
+    )
+    if ($ColdStart) { $fileSpecs += @{ Rel = 'PROJECT_MAP.md'; Cap = 6144; Json = $false } }
+    $sections = @()
+    foreach ($fs in $fileSpecs) {
+      try {
+        $fullPath = Join-Path $ProjectRoot $fs.Rel
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
+        $raw = [System.IO.File]::ReadAllText($fullPath, $enc)
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $rawBytes = $enc.GetByteCount($raw)
+        $relDisplay = ([string]$fs.Rel) -replace '\\', '/'
+        if ([bool]$fs.Json) {
+          if ($rawBytes -gt 24576) {
+            # Simplest safe rule: never clip JSON mid-stream; an oversized contract is skipped with a note.
+            $sections += ("--- FILE: " + $relDisplay + " (" + $rawBytes + " bytes) ---`n[NOT injected: " + $rawBytes + " bytes exceeds the 24576-byte whole-JSON cap; JSON is never clipped mid-stream -- read this file from disk]")
+            continue
+          }
+          # Whole JSON even above the nominal 16384 cap (16384 < bytes <= 24576): never cut mid-JSON.
+          $sections += ("--- FILE: " + $relDisplay + " (" + $rawBytes + " bytes) ---`n" + $raw.TrimEnd())
+        } else {
+          $body = Get-ProjectAutopilotClippedText -Text $raw -ByteCap ([int]$fs.Cap)
+          $sections += ("--- FILE: " + $relDisplay + " (" + $rawBytes + " bytes) ---`n" + $body.TrimEnd())
+        }
+      } catch {}
+    }
+    if (@($sections).Count -eq 0) { return '' }
+    $header = "INJECTED PROJECT INPUTS (verbatim snapshots taken by the driver at turn start; git HEAD $headSha; repo has $trackedCount tracked files and $sourceCount source files outside .bridge/ and docs):"
+    return ($header + "`n`n" + ($sections -join "`n`n") + "`n")
+  } catch { return '' }
+}
+
 function New-ProjectAutopilotCoordinatorTaskText {
   param(
     [string]$Slug,
@@ -1800,6 +1921,13 @@ function New-ProjectAutopilotCoordinatorTaskText {
       if ($healToWide) { $diffMode = 'wide' }
     } catch { $diffMode = 'wide' }
   }
+  # 2026-07-02 planner-speed: same cold-start boolean as the self-heal above (this channel has
+  # decomposed NO chapter yet), reused for the injected-inputs block and the read directive below.
+  # Guarded: any fault means "assume warm" so the planner keeps its scoped read ability.
+  $coldStartTT = $false
+  try {
+    if (-not [string]::IsNullOrWhiteSpace($Slug)) { $coldStartTT = [bool](Test-ProjectAutopilotColdStart -Channel $Slug) }
+  } catch { $coldStartTT = $false }
   $diffK = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMinIndependentAtoms))
   $diffN = [Math]::Max(1, [Math]::Min(50, [int]$DiffusionMaxWaveSize))
   # 2026-06-27 root-fix: deterministic plan-chapter progress injected into the coordinator prompt.
@@ -1867,6 +1995,21 @@ function New-ProjectAutopilotCoordinatorTaskText {
       }
     }
   } catch {}
+  # 2026-07-02 planner-speed: inject the planning inputs verbatim and swap the read-everything
+  # directive. Cold start = from-zero project: EVERYTHING the planner needs is in the prompt, so
+  # forbid agentic file reads entirely (they dominated an observed 34-minute planning turn). Warm =
+  # scoped reads only (source files the atoms will touch). If the block is empty (missing root,
+  # unreadable files, any fault) keep the classic read-from-disk line -- fail-open.
+  $injectedInputsBlock = ''
+  try { $injectedInputsBlock = [string](Get-ProjectAutopilotInjectedInputsBlock -ProjectRoot $ProjectRoot -ColdStart $coldStartTT) } catch { $injectedInputsBlock = '' }
+  $readDirectiveLine = '- Read the Bridge spec layer first: .bridge/constitution.md, .bridge/specs/*.md, .bridge/changes/*, PROJECT_BRIEF.md, DISCUSS_*.md when present, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.'
+  if (-not [string]::IsNullOrWhiteSpace($injectedInputsBlock)) {
+    if ($coldStartTT) {
+      $readDirectiveLine = '- ALL planning inputs are injected verbatim above (snapshotted at the git HEAD shown there). The repository is a from-zero project: it contains ONLY those planning docs and ZERO source code. Do NOT read files, do NOT run git/Bash, do NOT scan the repo -- everything needed is already in this prompt. Produce the complete PROJECT_BACKLOG for ALL chapters in THIS single response.'
+    } else {
+      $readDirectiveLine = '- The plan inputs (plan/brief/contract/acceptance) are injected verbatim above -- do NOT re-read them. Read ONLY the specific source files your atoms will create or touch (for file-ownership of prior chapters check CHAPTER_*_ATOMS.md), plus git log/status if needed.'
+    }
+  }
   return @"
 [project-autopilot $Slug] [[NORMAL]]
 
@@ -1886,10 +2029,11 @@ Plan gate status:
 - Treat channels/$Slug/channel.json plan_approved=true and its approved signature as the source of truth for execution permission.
 - If PROJECT_PLAN.md, PROJECT_MAP.md, or .bridge/project-contract.json still contain pre-approval wording such as "not approved", "UNAPPROVED", or "planned, not approved", do not treat that wording as a blocker after this coordinator has been queued. Use those words as historical planning status unless the channel gate itself is not approved.
 
+$injectedInputsBlock
 $chapterProgressBlock
 Rules:
 - Do NOT implement feature code in this coordinator task, except small durable planning docs such as CHAPTER_N_ATOMS.md.
-- Read the Bridge spec layer first: .bridge/constitution.md, .bridge/specs/*.md, .bridge/changes/*, PROJECT_BRIEF.md, DISCUSS_*.md when present, PROJECT_MAP.md, PROJECT_PLAN.md, .bridge/project-contract.json, existing CHAPTER_*_ATOMS.md files, README, git log/status, and current code.
+$readDirectiveLine
 - Read the project memory/context supplied in the prompt. Preserve durable decisions, risks, invariants, tests, and open questions.
 $(Get-ProjectContractSchemaInstruction)
 - requirements/capabilities/features do NOT replace explicit scope plus non_goals. user_journeys/journeys/flows/workflows do NOT replace explicit users/roles/personas/actors.

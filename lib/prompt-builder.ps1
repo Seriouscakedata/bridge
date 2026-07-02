@@ -191,6 +191,33 @@ function Get-PromptProgressBlocks {
   }
 }
 
+function Test-PromptBuilderCoordinatorTask {
+  # True when the task text is a Project Autopilot COORDINATOR planning turn.
+  # Same shape lib\backlog-autopilot.ps1 / policy key on: a '[project-autopilot <channel>]'
+  # tag AND the literal coordinator preamble sentence -- both must be present.
+  # Pure string checks, no dependencies, so tests can source this file standalone.
+  param([string]$Task)
+  try {
+    $t = [string]$Task
+    if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+    if ($t -notmatch '\[project-autopilot\s+[^\]]+\]') { return $false }
+    if ($t.IndexOf('Project Autopilot coordinator for channel', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
+    return $true
+  } catch { return $false }
+}
+
+function Get-PromptBuilderCurrentTaskHeader {
+  # Russian section header 'CURRENT TASK FROM USER:' built from codepoints so the
+  # added code in this function stays ASCII-only. Must equal the header used by the
+  # legacy shared prompt block so transcript echo-truncation references resolve.
+  return -join @(
+    [char]0x0422, [char]0x0415, [char]0x041A, [char]0x0423, [char]0x0429, [char]0x0410, [char]0x042F, [char]0x0020,
+    [char]0x0417, [char]0x0410, [char]0x0414, [char]0x0410, [char]0x0427, [char]0x0410, [char]0x0020,
+    [char]0x041E, [char]0x0422, [char]0x0020,
+    [char]0x041F, [char]0x041E, [char]0x041B, [char]0x042C, [char]0x0417, [char]0x041E, [char]0x0412, [char]0x0410, [char]0x0422, [char]0x0415, [char]0x041B, [char]0x042F, [char]0x003A
+  )
+}
+
 function New-SharedPromptBlock {
   param(
     [string]$Task,
@@ -208,6 +235,41 @@ function New-SharedPromptBlock {
   $autoToolsLine = [string]$Context.AutoToolsLine
   $bridgeScopeRules = [string]$Context.BridgeScopeRules
   $planPromptBlock = [string]$ProgressBlocks.PlanPromptBlock
+
+  # 2026-07-02 lean coordinator profile: a Project Autopilot coordinator turn only has to
+  # emit the [[PROJECT_BACKLOG]] JSON marker. The general channel rules (GUI skills,
+  # RUNJOB, web-smoke, tool foundry, PARALLEL dispatch + worked examples, worker routing,
+  # chunking -- ~16.7KB) are useless on that turn and dilute the planning context, so they
+  # are replaced with a short coordinator etiquette block. Non-coordinator tasks fall
+  # through to the untouched legacy block below.
+  if (Test-PromptBuilderCoordinatorTask -Task $Task) {
+    $coordinatorTaskHeader = Get-PromptBuilderCurrentTaskHeader
+    return @"
+You are part of an autonomous AI assistant pair with FULL access to the user's Windows computer.
+Working root: $activeProjectRoot
+
+$activeProjectBlock
+$selfModelPromptBlock
+
+$coordinatorTaskHeader
+$Task
+$AutoScopeLine
+
+COORDINATOR TURN -- LEAN PROFILE (general channel rules are intentionally omitted on this turn):
+- You are the Project Autopilot COORDINATOR for this channel. You plan the project backlog; you do not build.
+- Your ONLY deliverable is the [[PROJECT_BACKLOG]] ... [[/PROJECT_BACKLOG]] marker holding a STRICT JSON array of atoms, followed by the final line STATUS: DONE.
+- Follow the atom schema and constraints from the task text above EXACTLY (slug, title, task, chapter, wave, parallel_group, files, depends_on, acceptance, checks, risk or severity, serial_reason; bridge_self_admission where the task text requires it).
+- Consult the Bridge spec layer when present: .bridge/constitution.md, .bridge/specs/*.md, .bridge/changes/*, .bridge/project-contract.json.
+- Messages labeled [USER] come from the human operator and have top priority; [SYSTEM] are objective driver events.
+- Memory markers are allowed as separate lines: [[REMEMBER: durable fact]], [[IDEA: bridge improvement]], [[PROJECT_FACT: ...]], [[PROJECT_TEST: ...]], [[PROJECT_RISK: ...]], [[PROJECT_INVARIANT: ...]], [[PROJECT_DECISION: ...]], [[PROJECT_OPEN_QUESTION: ...]].
+- Do NOT edit files, do NOT run build or long commands, do NOT dispatch workers, do NOT delegate to the coder on this turn.
+- Channel rule markers not listed here do not apply to this coordinator turn.
+- Reply in Russian (the operator's language); keep technical tokens, paths, JSON and the STATUS line untouched.
+
+DIALOG (recent context):
+$Transcript
+"@
+  }
 
 @"
 Ты часть автономной пары ИИ-ассистентов с ПОЛНЫМ доступом к компьютеру пользователя (Windows).
@@ -318,6 +380,29 @@ function New-ClaudePromptSuffix {
     [string]$ClaudeToolHint,
     [string]$ClaudeActionBlock
   )
+
+  # 2026-07-02 lean coordinator profile: the coordinator's output contract is fixed
+  # (emit the [[PROJECT_BACKLOG]] JSON marker), so the coder/interactive planner
+  # machinery (~21KB) is dead weight here, and the Test-IsLargeTask decompose block
+  # ('2-5 atoms via Add-Idea' + [[DECOMPOSED: N]]) actively CONTRADICTS that contract
+  # (it fires for any task text >1200 chars). Both are skipped for coordinator turns.
+  if (Test-PromptBuilderCoordinatorTask -Task $TaskText) {
+    return @'
+
+YOUR MOVE as the Project Autopilot COORDINATOR (Claude).
+
+Deliverable discipline:
+- Emit the COMPLETE [[PROJECT_BACKLOG]] ... [[/PROJECT_BACKLOG]] JSON marker in THIS response, following the schema and constraints from the task text above.
+- Do not ask questions. Do not delegate to the coder. Do not decompose via Add-Idea -- the JSON marker IS the decomposition.
+- Do not edit files or run build commands on this turn.
+
+STATUS discipline -- the LAST line of your reply must be exactly one STATUS marker:
+- STATUS: DONE -- the complete [[PROJECT_BACKLOG]] marker is present in this reply.
+- STATUS: BLOCKED -- only when a hard blocker makes the marker impossible to emit (missing/unreadable contract or spec files, empty project); name the blocker in one short paragraph. Never use BLOCKED to ask for preferences or clarifications.
+
+Reply in Russian; keep technical tokens, paths, JSON and the STATUS line untouched.
+'@
+  }
 
   $claudeBase = @"
 

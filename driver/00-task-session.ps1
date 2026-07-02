@@ -60,6 +60,19 @@ function Close-ReplayForStateTask {
   }
 }
 
+function Test-DriverCoordinatorTaskText {
+  # 2026-07-02 planner-speed: pure shape-check for a project-autopilot coordinator task text
+  # (same shape lib/backlog-autopilot.ps1 Test-ProjectAutopilotCoordinatorText matches; duplicated
+  # here so driver routing has no lib load-order dependency). Used for explicit deep-model routing
+  # and the coordinator effort override -- unit-tested in tools\test-coordinator-routing.ps1.
+  param([AllowNull()][string]$TaskText)
+  $t = [string]$TaskText
+  if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+  if ($t -notmatch '\[project-autopilot\s+[^\]]+\]') { return $false }
+  if ($t -notmatch 'Project Autopilot coordinator for channel') { return $false }
+  return $true
+}
+
 function Get-PlannerModel {
   param([string]$TaskText, [string]$Mode)
 
@@ -96,6 +109,9 @@ function Get-PlannerModel {
   # Use opusKeywords (architectural intent; legacy name) and explicit [[OPUS]] / [[FABLE]] /
   # [[DEEP-THINK]] markers for premium-model routing.
   # for routing instead.
+
+  # 2026-07-02 planner-speed: coordinator turns explicitly use the deep model (was accidental via the word refactor in its own template)
+  if (Test-DriverCoordinatorTaskText -TaskText $text) { return $deepModel }
 
   foreach ($kw in $complexKeywords) {
     if ($kw -and ($text -imatch [regex]::Escape($kw))) { return $deepModel }

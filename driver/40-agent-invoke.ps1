@@ -1,5 +1,42 @@
-﻿function Invoke-Planner {
-  param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal', [switch]$NoFallback)
+﻿function New-DriverClaudePlannerArgs {
+  # 2026-07-02 planner-speed: pure assembly of the claude planner CLI argument list plus the
+  # decision whether the ultrathink prompt suffix is appended (factored out of Invoke-Planner so
+  # the behavior is unit-testable -- tools\test-coordinator-routing.ps1). Contract:
+  # - ReasoningEffort '' (default): byte-identical to the old inline logic -- premium models
+  #   (opus/fable/mythos) get --effort xhigh AND the ultrathink suffix; other models get neither.
+  # - ReasoningEffort non-empty (coordinator turns pass 'high'): used for --effort INSTEAD of the
+  #   model-class default, and the ultrathink suffix is NOT appended.
+  param(
+    [string]$Model = '',
+    [string]$ReasoningEffort = '',
+    [string]$PlannerCwd = '',
+    [string[]]$ExtraDirs = @(),
+    [string[]]$AllowedTools = @()
+  )
+  # Premium Claude models (Opus/Fable/Mythos) get the heavy architecture-thinking hint.
+  $heavyClaudeModel = ($Model -match '(?i)(opus|fable|mythos)')
+  $ultrathink = $false
+  $effort = ''
+  if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
+    $effort = $ReasoningEffort
+  } elseif ($heavyClaudeModel) {
+    # 2026-06-09: xhigh on premium architecture models. Fable 5 was verified locally to accept this
+    # flag through Claude Code; Sonnet keeps the CLI default for speed.
+    $effort = 'xhigh'
+    $ultrathink = $true
+  }
+  $cliArgs = @('-p','--output-format','stream-json','--verbose','--permission-mode','acceptEdits','--add-dir',$PlannerCwd)
+  foreach ($ed in @($ExtraDirs)) { $cliArgs += @('--add-dir', $ed) }
+  $cliArgs += @('--allowedTools') + @($AllowedTools)
+  if ($Model) {
+    $cliArgs += @('--model', $Model)
+    if (-not [string]::IsNullOrWhiteSpace($effort)) { $cliArgs += @('--effort', $effort) }
+  }
+  return [pscustomobject]@{ args = $cliArgs; ultrathink = $ultrathink; effort = $effort }
+}
+
+function Invoke-Planner {
+  param([string]$Prompt, [string]$Model = '', [string]$Mode = 'normal', [string]$ReasoningEffort = '', [switch]$NoFallback)
   if (-not $NoFallback) {
     # Cross-agent fallback: if Claude is busy in another channel and Codex is free in all
     # other channels, delegate this planner turn to Codex with a planner-prefix prompt.
@@ -24,10 +61,6 @@
   }
   $g = [guid]::NewGuid().ToString('N').Substring(0,8)
   $inF=Join-Path $env:TEMP "claude_in_$g.txt"; $outF=Join-Path $env:TEMP "claude_out_$g.txt"; $errF=Join-Path $env:TEMP "claude_err_$g.txt"
-  # Premium Claude models (Opus/Fable/Mythos) get the heavy architecture-thinking hint.
-  $heavyClaudeModel = ($Model -match '(?i)(opus|fable|mythos)')
-  $effPrompt = if ($heavyClaudeModel) { $Prompt + "`n`nultrathink" } else { $Prompt }
-  [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   $plannerCwd = Get-ActiveProjectRoot
   $plannerExtraDirs = @()
   try {
@@ -51,15 +84,12 @@
   # sonnet zero-byte fallbacks were false kills). stream-json emits the init event in <1s and
   # ticks thinking_tokens/tool events throughout — byte growth now means real liveness.
   # Measured locally (CLI 2.1.170): first bytes at 839ms, thinking streams, result line last.
-  $claudeArgs = @('-p','--output-format','stream-json','--verbose','--permission-mode','acceptEdits','--add-dir',$plannerCwd)
-  foreach ($ed in $plannerExtraDirs) { $claudeArgs += @('--add-dir', $ed) }
-  $claudeArgs += @('--allowedTools') + $allowedTools
-  if ($Model) {
-    $claudeArgs += @('--model', $Model)
-    # 2026-06-09: xhigh on premium architecture models. Fable 5 was verified locally to accept this
-    # flag through Claude Code; Sonnet keeps the CLI default for speed.
-    if ($heavyClaudeModel) { $claudeArgs += @('--effort', 'xhigh') }
-  }
+  # 2026-07-02 planner-speed: args + ultrathink decision come from the pure helper above so the
+  # coordinator effort override ('high', no ultrathink) and the default path share one tested body.
+  $plannerArgsPlan = New-DriverClaudePlannerArgs -Model $Model -ReasoningEffort $ReasoningEffort -PlannerCwd $plannerCwd -ExtraDirs $plannerExtraDirs -AllowedTools $allowedTools
+  $claudeArgs = @($plannerArgsPlan.args)
+  $effPrompt = if ([bool]$plannerArgsPlan.ultrathink) { $Prompt + "`n`nultrathink" } else { $Prompt }
+  [System.IO.File]::WriteAllText($inF, $effPrompt, $Utf8NoBom)
   $reply = ''
   $claudeTimedOut = $false
   $claudeSilentExit = $false
