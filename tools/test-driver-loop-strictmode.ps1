@@ -269,6 +269,27 @@ try {
   }
   $fastLaneReject = @($script:Messages | Where-Object { [string]$_.text -match 'DONE отклон' }).Count -gt 0
   Assert-True -Name '86 fast-lane DONE action-evidence guard fires' -Condition ($case86FastLaneOk -and $fastLaneReject -and $script:plannerStatus -eq 'CONTINUE') -Detail $case86FastLaneErr
+
+  Reset-Harness
+  Set-CommonLoopVars
+  $script:speaker = 'codex'
+  $script:State.doctor_active = $true
+  $script:State.task_did_actions = $true
+  $script:reply = "STATUS: DONE [[VERIFIED: smoke.ps1 OK]]"
+  $script:modeBeforeIncrement = 'normal'
+  $case86DoctorCodexOk = $true
+  $case86DoctorCodexErr = ''
+  try {
+    :mainDriverLoop while ($true) {
+      . $script:DriverLoopCompletionInitialChecksBlock
+      break
+    }
+  } catch {
+    $case86DoctorCodexOk = $false
+    $case86DoctorCodexErr = $_.Exception.Message
+  }
+  $doctorVerifyLoop = @($script:Messages | Where-Object { [string]$_.text -match 'Фаза верификации' }).Count -gt 0
+  Assert-True -Name '86 doctor Codex DONE closes with inline VERIFIED' -Condition ($case86DoctorCodexOk -and -not $doctorVerifyLoop -and $script:plannerStatus -eq 'DONE' -and [bool]$script:fastLaneDone) -Detail $case86DoctorCodexErr
 } catch {
   Write-TestResult -Name 'harness exception' -Ok:$false -Detail $_.Exception.Message
 }

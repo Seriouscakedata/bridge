@@ -1326,6 +1326,21 @@ $script:DriverLoopCompletionInitialChecksBlock = {
       }
     }
 
+    $doctorStatusHits = [regex]::Matches($reply, '(?im)^\s*STATUS:\s*(DONE|CONTINUE)\b.*$')
+    if ($doctorStatusHits.Count -gt 0) {
+      $doctorCoderStatus = $doctorStatusHits[$doctorStatusHits.Count - 1].Groups[1].Value.ToUpper()
+      if ($doctorCoderStatus -eq 'DONE') {
+        $doctorDoneActive = $false
+        try { $doctorDoneActive = [bool](Read-State).doctor_active } catch {}
+        if ($doctorDoneActive) {
+          $plannerStatus = 'DONE'
+          $fastLaneDone = $true
+          try { Add-SessionDecisionEvent -EventType 'convergence' -Meta @{ source='doctor-coder'; ts=(Get-Date).ToString('o') } -Channel $Channel } catch {}
+          Update-State { param($s) $s.task_did_actions=$true; $s.no_progress_count=0 } | Out-Null
+        }
+      }
+    }
+
     # 2026-05-27: Deterministic claim verification for Codex reply. Parses
     # the reply for verifiable assertions (HTTP status, ParseFile OK, git SHA)
     # and checks each against ground truth. NEVER blocks the flow — only
@@ -1852,7 +1867,7 @@ $script:DriverLoopCompletionInitialChecksBlock = {
   }
   if ((($speaker -eq 'claude') -or $fastLaneDone) -and $plannerStatus -eq 'DONE' -and $modeBeforeIncrement -eq 'normal') {
     $didActions = [bool](Read-State).task_did_actions
-    $hasVerify  = $reply -imatch '(?im)^\s*\[\[VERIFIED:\s*.+?\]\]\s*$'
+    $hasVerify  = $reply -imatch '(?is)\[\[VERIFIED:\s*.+?\]\]'
     $vrc        = [int](Read-State).verify_retry_count
     # covered-after-restart: если работа уже закоммичена в прошлой сессии, не требуем новый verify
     if ($didActions -and -not $hasVerify) {

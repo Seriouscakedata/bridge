@@ -97,6 +97,9 @@ try {
   }
   Complete-Doctor
   Assert-True (Test-Path -LiteralPath (Get-DoctorSignalAckPath)) 'Complete-Doctor writes ack for completed watchdog signal'
+  $doctorLog = Join-Path $tmp 'control\doctor.log'
+  $doctorLogText = if (Test-Path -LiteralPath $doctorLog) { [System.IO.File]::ReadAllText($doctorLog, [System.Text.Encoding]::UTF8) } else { '' }
+  Assert-True ($doctorLogText -match 'Doctor complete: no held task') 'Complete-Doctor logs completion when held task is empty'
   [System.IO.File]::WriteAllText($signalPath, 'watchdog_rollback_api_stuck', [System.Text.Encoding]::UTF8)
   Assert-True ($null -eq (Test-DoctorSignal)) 'duplicate watchdog signal for same rollback is ignored'
   Assert-True (-not (Test-Path -LiteralPath $signalPath)) 'duplicate signal is consumed'

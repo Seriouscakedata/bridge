@@ -563,6 +563,8 @@ function Complete-Doctor {
       $s.status='idle'
     }.GetNewClosure()) | Out-Null
     try { Write-DoctorSignalAck -Reason $completeReason | Out-Null } catch {}
+    try { Append-DoctorEvent -Event 'complete' -Reason 'no_held_task' | Out-Null } catch {}
+    try { Write-DoctorLog "Doctor complete: no held task" } catch {}
     return
   }
   Update-State ({ param($s)
