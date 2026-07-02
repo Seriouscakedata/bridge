@@ -19,6 +19,12 @@ if (-not (Test-Path -LiteralPath $runtime)) { try { New-Item -ItemType Directory
 $log = Join-Path $runtime 'ensure-bridge.log'
 function ELog([string]$m) { try { Add-Content -LiteralPath $log -Value ((Get-Date).ToString('o') + ' ' + $m) -Encoding UTF8 } catch {} }
 
+# 2026-07-02: honor the operator kill-switch. When control\stop.flag is raised the operator has
+# deliberately stopped the bridge; the ensure watchdog must NOT resurrect the supervisor (it used
+# to restart within ~5-10 min, fighting an intentional stop). Skip all healing/restart while stopped.
+$stopFlag = Join-Path $root 'control\stop.flag'
+if (Test-Path -LiteralPath $stopFlag) { ELog 'stop.flag present -> operator stop; ensure exits (no heal, no restart)'; return }
+
 $gitExe = 'C:\Program Files\Git\cmd\git.exe'
 if (-not (Test-Path $gitExe)) { $gitExe = 'git' }
 
