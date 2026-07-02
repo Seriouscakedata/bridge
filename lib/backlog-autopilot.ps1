@@ -3318,6 +3318,7 @@ function Add-ProjectBacklogFromMarker {
   #    roots-count floor + any-file-overlap criteria were deterministically red at cold start and
   #    silently discarded every later chapter).
   $collapseReason = ''
+  $fallbackToWide = $false
   if ($diffusionMode -eq 'shadow') {
     # shadow is measure-only and NEVER changes execution: always collapse to the proven serial one-chapter
     # default (the wave-schedule telemetry above already recorded the projected diffusion gain).
@@ -3366,9 +3367,26 @@ function Add-ProjectBacklogFromMarker {
         $collapseReason = 'diffusion-shaping-unavailable'
       }
     } else {
-      $collapseReason = 'diffusion-gate-red'
+      # 2026-07-02 ingest-collapse root #2 (observed live twice: selfie ch2-only, textforge 55->5): a red or
+      # ABSENT strict gate used to collapse the batch to ONE chapter, discarding every other chapter the
+      # planner emitted. But the coordinator PROMPT self-heals diffusion->wide when no stable lock exists,
+      # so the planner legitimately emits a wide all-chapters batch with NO provides/consumes -- then the
+      # strict gate has nothing to freeze (contracts.Count==0 -> gate never even runs) and the old fallback
+      # threw the whole plan away. A red strict gate now falls back to the WIDE schedulability path below:
+      # a valid DAG is ingested WHOLE (hard depends_on serialize dependents); only a genuinely broken graph
+      # still collapses to the earliest chapter.
+      $fallbackToWide = $true
+      try {
+        Write-BacklogJsonLine ([ordered]@{
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          action = 'project-autopilot-diffusion-fallback-wide'
+          channel = [string]$Channel
+          gate_reasons = if ($diffusionGate) { @($diffusionGate.reasons) } else { @('no-contract-metadata') }
+        })
+      } catch {}
     }
-  } elseif ($diffusionMode -eq 'wide') {
+  }
+  if ($diffusionMode -eq 'wide' -or $fallbackToWide) {
     $wideGate = $null
     $wideK = 2; try { $wideK = [int]$cfg.diffusionMinIndependentAtoms } catch {}
     # 2026-07-02 audit: the schedulability gate must see this channel's ALREADY-INGESTED slugs so a
