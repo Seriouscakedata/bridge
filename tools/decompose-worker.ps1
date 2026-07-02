@@ -36,6 +36,19 @@ function Write-WLog {
     Add-Content -LiteralPath $logPath -Value ((Get-Date).ToString('s') + ' ' + $Message) -Encoding UTF8
   } catch {}
 }
+function Write-DecomposeTranscript {
+  # 2026-07-02 audit fix: silent failures of this worker were invisible (worker.log lives under
+  # jobs\decompose and some death paths never reach it). Append a compact start/end transcript
+  # line (timestamp, channel, mode, outcome) under the channel dir so every run is visible.
+  param([string]$Message)
+  try {
+    $chDir = Join-Path (Join-Path $repoRoot 'channels') $Channel
+    if (Test-Path -LiteralPath $chDir) {
+      $line = (Get-Date).ToString('s') + ' channel=' + $Channel + ' ' + $Message
+      Add-Content -LiteralPath (Join-Path $chDir 'background-decompose.log') -Value $line -Encoding UTF8
+    }
+  } catch {}
+}
 function Remove-WorkerLock {
   try {
     $lock = Join-Path (Join-Path (Join-Path $repoRoot 'channels') $Channel) '.decompose-worker.lock'
@@ -68,6 +81,7 @@ try {
   . (Join-Path $repoRoot 'lib\common.ps1')
 } catch {
   Write-WLog ("FATAL bootstrap failed: " + $_.Exception.Message)
+  Write-DecomposeTranscript ("END mode=unknown outcome=fatal-bootstrap " + $_.Exception.Message)
   Remove-WorkerLock
   exit 1
 }
@@ -87,25 +101,35 @@ try {
   } catch {}
   if ([string]::IsNullOrWhiteSpace($projectRoot) -or -not (Test-Path -LiteralPath $projectRoot)) {
     Write-WLog "ABORT no bound project root for channel=$Channel"
+    Write-DecomposeTranscript "END mode=unknown outcome=abort-no-project-root"
     Remove-WorkerLock
     exit 1
   }
 
-  # 2) Coordinator config (max atoms per batch, diffusion mode).
+  # 2) Coordinator config (max atoms per batch, diffusion mode, wave sizing).
+  # 2026-07-02 audit fix: accept 'wide' (was silently downgraded to 'off', so the worker always
+  # built the ONE-chapter prompt) and pass the wave-size knobs through, mirroring the foreground
+  # call in lib/backlog-autopilot.ps1 (New-ProjectAutopilotCoordinatorTaskText -Slug ...).
   $maxTasks = 12
   $diffusionMode = 'off'
+  $diffusionMinAtoms = 2
+  $diffusionMaxWave = 6
   try {
     $paCfg = Get-ProjectAutopilotConfig
     if ([int]$paCfg.maxTasksPerBatch -gt 0) { $maxTasks = [int]$paCfg.maxTasksPerBatch }
     $dm = ([string]$paCfg.diffusionMode).Trim().ToLowerInvariant()
-    if ($dm -in @('off','shadow','diffusion')) { $diffusionMode = $dm }
+    if ($dm -in @('off','shadow','diffusion','wide')) { $diffusionMode = $dm }
+    if ([int]$paCfg.diffusionMinIndependentAtoms -gt 0) { $diffusionMinAtoms = [int]$paCfg.diffusionMinIndependentAtoms }
+    if ([int]$paCfg.diffusionMaxWaveSize -gt 0) { $diffusionMaxWave = [int]$paCfg.diffusionMaxWaveSize }
   } catch {}
+  Write-DecomposeTranscript "START mode=$diffusionMode maxTasks=$maxTasks minIndependentAtoms=$diffusionMinAtoms maxWaveSize=$diffusionMaxWave pid=$PID"
 
   # 3) Build the SAME coordinator prompt the foreground path uses. It already
   #    computes the next undecomposed chapter from PROJECT_PLAN.md + the live backlog.
-  $prompt = New-ProjectAutopilotCoordinatorTaskText -Slug $Channel -ProjectRoot $projectRoot -MaxTasks $maxTasks -DiffusionMode $diffusionMode
+  $prompt = New-ProjectAutopilotCoordinatorTaskText -Slug $Channel -ProjectRoot $projectRoot -MaxTasks $maxTasks -DiffusionMode $diffusionMode -DiffusionMinIndependentAtoms $diffusionMinAtoms -DiffusionMaxWaveSize $diffusionMaxWave
   if ([string]::IsNullOrWhiteSpace($prompt)) {
     Write-WLog "ABORT empty coordinator prompt"
+    Write-DecomposeTranscript "END mode=$diffusionMode outcome=abort-empty-prompt"
     Remove-WorkerLock
     exit 1
   }
@@ -115,6 +139,7 @@ try {
   $codex = Resolve-CodexExe $cfg
   if ([string]::IsNullOrWhiteSpace($codex) -or -not (Test-Path -LiteralPath $codex)) {
     Write-WLog "ABORT codex.exe not found"
+    Write-DecomposeTranscript "END mode=$diffusionMode outcome=abort-no-codex"
     Remove-WorkerLock
     exit 1
   }
@@ -156,6 +181,7 @@ try {
     try { Start-Process -FilePath 'taskkill.exe' -ArgumentList @('/PID', [string]$proc.Id, '/T', '/F') -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null } catch {}
     try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
     Write-WLog "TIMEOUT after ${timeoutMs}ms; tree-killed codex pid=$($proc.Id)"
+    Write-DecomposeTranscript "END mode=$diffusionMode outcome=timeout after=${timeoutMs}ms"
     Remove-WorkerTemp
     Remove-WorkerLock
     exit 2
@@ -170,6 +196,7 @@ try {
   }
   if ([string]::IsNullOrWhiteSpace($reply)) {
     Write-WLog "ABORT empty codex reply"
+    Write-DecomposeTranscript "END mode=$diffusionMode outcome=abort-empty-reply"
     Remove-WorkerTemp
     Remove-WorkerLock
     exit 3
@@ -197,11 +224,15 @@ try {
     try { Add-Message -From system -Text ("Background planner: pre-decomposed next chapter -- added $created approved atom-task(s) for channel '$Channel' without blocking execution.") -Kind event | Out-Null } catch {}
   }
   Write-WLog "DONE channel=$Channel created=$created"
+  Write-DecomposeTranscript "END mode=$diffusionMode outcome=done created=$created markers=$matched"
   Remove-WorkerTemp
   Remove-WorkerLock
   exit 0
 } catch {
   Write-WLog ("FATAL " + $_.Exception.Message)
+  $tmMode = 'unknown'
+  try { if (-not [string]::IsNullOrWhiteSpace([string]$diffusionMode)) { $tmMode = [string]$diffusionMode } } catch {}
+  Write-DecomposeTranscript ("END mode=" + $tmMode + " outcome=fatal " + $_.Exception.Message)
   Remove-WorkerTemp
   Remove-WorkerLock
   exit 1

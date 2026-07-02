@@ -1417,10 +1417,51 @@ $script:DriverLoopCompletionInitialChecksBlock = {
               try { $sid = [string]$_.id } catch {}
               -not [string]::IsNullOrWhiteSpace($sid) -and $quarantineSet.Contains($sid)
             })
-            if ($timedOutBlocks.Count -gt 0) {
-              Add-Message -From system -Text ("[batch-timeout] " + $timedOutBlocks.Count + " parallel worker(s) timed out/quarantined, retrying sequentially...") -Kind event | Out-Null
-              $retryMerged = 0
+            # 2026-07-02 audit: (a) do not re-spawn streams whose work is already delivered --
+            # merged this wave, or declared files fully committed since the task base (empty-diff
+            # duplicate retries re-execute finished work and can conflict with collected output);
+            # (b) carry the batch's used worker ids so the retry excludes the just-failed workers.
+            $retryExcludeWorkerIds = @()
+            try { $retryExcludeWorkerIds = @($parResult.used_worker_ids | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $retryExcludeWorkerIds = @() }
+            $deliveredStreamSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            try { foreach ($dmid in @($parResult.merged_ids)) { $dmidText = [string]$dmid; if (-not [string]::IsNullOrWhiteSpace($dmidText)) { [void]$deliveredStreamSet.Add($dmidText) } } } catch {}
+            $retryCoveredDiff = @()
+            try {
+              if ((Get-Command Get-ParallelTaskBaseCommit -ErrorAction SilentlyContinue) -and (Get-Command Get-ParallelRepoRoot -ErrorAction SilentlyContinue)) {
+                $retryCovBase = [string](Get-ParallelTaskBaseCommit)
+                $retryCovRoot = [string](Get-ParallelRepoRoot)
+                if (-not [string]::IsNullOrWhiteSpace($retryCovBase) -and -not [string]::IsNullOrWhiteSpace($retryCovRoot)) {
+                  $retryCovGit = 'git'
+                  try { if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { $retryCovGit = [string](Get-GitExe) } } catch {}
+                  $retryCoveredDiff = @(& $retryCovGit -C $retryCovRoot diff --name-only $retryCovBase HEAD 2>$null | Where-Object { $_ })
+                }
+              }
+            } catch { $retryCoveredDiff = @() }
+            $skippedDeliveredIds = New-Object 'System.Collections.Generic.List[string]'
+            $retryBlocksFiltered = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($tb in @($timedOutBlocks)) {
+              $tbId = ''
+              try { $tbId = [string]$tb.id } catch {}
+              $tbDelivered = $deliveredStreamSet.Contains($tbId)
+              if (-not $tbDelivered -and @($retryCoveredDiff).Count -gt 0 -and (Get-Command Test-ParallelStreamAlreadyCommitted -ErrorAction SilentlyContinue)) {
+                $tbFiles = @()
+                try { $tbFiles = @($tb.files) } catch {}
+                if ($tbFiles.Count -gt 0) { $tbDelivered = [bool](Test-ParallelStreamAlreadyCommitted -DeclaredFiles $tbFiles -CommittedChangedPaths @($retryCoveredDiff)) }
+              }
+              if ($tbDelivered) { [void]$skippedDeliveredIds.Add($tbId) } else { [void]$retryBlocksFiltered.Add($tb) }
+            }
+            if ($skippedDeliveredIds.Count -gt 0) {
+              Add-Message -From system -Text ("[batch-timeout] skip retry for already-delivered stream(s): " + (($skippedDeliveredIds.ToArray()) -join ', ') + " -- work already merged/committed since task base") -Kind event | Out-Null
+            }
+            $timedOutBlocks = @($retryBlocksFiltered.ToArray())
+            if ($timedOutBlocks.Count -gt 0 -or $skippedDeliveredIds.Count -gt 0) {
+              if ($timedOutBlocks.Count -gt 0) {
+                Add-Message -From system -Text ("[batch-timeout] " + $timedOutBlocks.Count + " parallel worker(s) timed out/quarantined, retrying sequentially...") -Kind event | Out-Null
+              }
+              # Seed accounting with already-delivered streams so they leave the quarantined set.
+              $retryMerged = $skippedDeliveredIds.Count
               $retryMergedIds = New-Object 'System.Collections.Generic.List[string]'
+              foreach ($sdid in $skippedDeliveredIds) { if (-not [string]::IsNullOrWhiteSpace([string]$sdid) -and -not $retryMergedIds.Contains([string]$sdid)) { [void]$retryMergedIds.Add([string]$sdid) } }
               $retryTimeoutMin = [int][Math]::Ceiling($retryTimeoutSec / 60.0)
               if ($retryTimeoutMin -lt 1) { $retryTimeoutMin = 1 }
               foreach ($block in $timedOutBlocks) {
@@ -1429,6 +1470,8 @@ $script:DriverLoopCompletionInitialChecksBlock = {
                   Block      = $block
                   TimeoutMin = $retryTimeoutMin
                   BridgeRoot = [string]$bridgeRoot
+                  # 2026-07-02 audit: worker ids already used (and failed) by this batch.
+                  ExcludeWorkerIds = [string[]]@($retryExcludeWorkerIds)
                 }
                 $retryResult = Invoke-BatchWithPerTaskTimeout `
                   -Tasks @($retryTask) `
@@ -1448,7 +1491,11 @@ $script:DriverLoopCompletionInitialChecksBlock = {
                     try { $singleTimeoutMin = [int]$task.TimeoutMin } catch {}
                     if ($singleTimeoutMin -lt 1) { $singleTimeoutMin = 1 }
                     $singleTaskHash = Get-ParallelDispatchTaskHash
-                    $startup = Start-ParallelDispatchWorkers -Streams @($b) -TaskHash $singleTaskHash
+                    # 2026-07-02 audit: exclude the batch's just-failed workers so the retry
+                    # re-routes to a different worker instead of re-picking the broken one.
+                    $excludeIds = @()
+                    try { $excludeIds = @($task.ExcludeWorkerIds | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch { $excludeIds = @() }
+                    $startup = Start-ParallelDispatchWorkers -Streams @($b) -TaskHash $singleTaskHash -ExcludeWorkerIds @($excludeIds)
                     if (-not $startup.ok) {
                       throw ("parallel retry startup failed for stream " + [string]$b.id + ": " + [string]$startup.reason)
                     }

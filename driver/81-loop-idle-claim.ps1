@@ -21,6 +21,70 @@ function Get-DriverDirtyDeferDecision {
   }
 }
 
+function Get-DriverDirtySalvagePlan {
+  # 2026-07-02 audit: the orphaned-dirty auto-stash silently discarded completed-but-uncommitted
+  # sibling-stream work (domain-filters near-loss: delivered files vanished into the stash and only
+  # survived because a later LLM happened to inspect `git stash list`). This pure function attributes
+  # each dirty `git status --porcelain` line to a known atom by matching the path against the atoms'
+  # declared touch-sets: a matched path gets action 'commit' (salvage-committed by the caller), an
+  # unattributable path keeps action 'stash'. Match rules (case-insensitive, forward slashes): exact
+  # path, dirty path under a declared directory, or a declared file under a collapsed untracked dirty
+  # directory (git status without -uall reports a new dir as one parent entry). No git/file IO here so
+  # the decision stays unit-testable.
+  param(
+    [AllowNull()][string[]]$DirtyLines,
+    [AllowNull()][object[]]$Atoms
+  )
+  $entries = New-Object 'System.Collections.Generic.List[object]'
+  $stashPaths = New-Object 'System.Collections.Generic.List[string]'
+  $commitGroups = [ordered]@{}
+  foreach ($rawLine in @($DirtyLines)) {
+    $line = [string]$rawLine
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.Length -lt 4) { continue }
+    $path = $line.Substring(3).Trim()
+    $arrowIdx = $path.IndexOf(' -> ')
+    if ($arrowIdx -ge 0) { $path = $path.Substring($arrowIdx + 4).Trim() }
+    if ($path.StartsWith('"') -and $path.EndsWith('"') -and $path.Length -ge 2) {
+      $path = $path.Substring(1, $path.Length - 2)
+    }
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    $norm = $path.Replace('\','/').Trim().TrimEnd('/').ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($norm)) { continue }
+    $matchSlug = ''
+    foreach ($atom in @($Atoms)) {
+      if ($null -eq $atom) { continue }
+      $slug = ''
+      try { $slug = ([string]$atom.slug).Trim() } catch { $slug = '' }
+      if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+      $declared = @()
+      try { $declared = @($atom.files) } catch { $declared = @() }
+      foreach ($decl in $declared) {
+        $declNorm = ([string]$decl).Replace('\','/').Trim().TrimEnd('/').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($declNorm)) { continue }
+        if ($norm -eq $declNorm -or $norm.StartsWith($declNorm + '/') -or $declNorm.StartsWith($norm + '/')) { $matchSlug = $slug; break }
+      }
+      if (-not [string]::IsNullOrWhiteSpace($matchSlug)) { break }
+    }
+    if ([string]::IsNullOrWhiteSpace($matchSlug)) {
+      if (-not $stashPaths.Contains($path)) { [void]$stashPaths.Add($path) }
+      [void]$entries.Add([pscustomobject][ordered]@{ path = $path; action = 'stash'; slug = '' })
+    } else {
+      if (-not $commitGroups.Contains($matchSlug)) { $commitGroups[$matchSlug] = New-Object 'System.Collections.Generic.List[string]' }
+      if (-not $commitGroups[$matchSlug].Contains($path)) { [void]$commitGroups[$matchSlug].Add($path) }
+      [void]$entries.Add([pscustomobject][ordered]@{ path = $path; action = 'commit'; slug = $matchSlug })
+    }
+  }
+  $commit = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($groupSlug in @($commitGroups.Keys)) {
+    [void]$commit.Add([pscustomobject][ordered]@{ slug = [string]$groupSlug; paths = @($commitGroups[$groupSlug].ToArray()) })
+  }
+  return [pscustomobject][ordered]@{
+    entries = @($entries.ToArray())
+    commit  = @($commit.ToArray())
+    stash   = @($stashPaths.ToArray())
+  }
+}
+
 function Get-DriverRuntimeMetricDirtyPaths {
   param([AllowNull()][string[]]$DirtyLines)
   $paths = New-Object System.Collections.Generic.List[string]
@@ -1386,7 +1450,82 @@ $script:DriverLoopIdleClaimBlock = {
             # queue identically ($guardRoot already points at the project repo there), and the same
             # >=2-defer gate keeps a live operator edit safe from stashing, but avoids hours of silent idle.
             if ([bool]$dirtyDecision.autostash) {
+              # 2026-07-02 audit: the whole-tree stash below silently discarded completed-but-
+              # uncommitted sibling-stream output (domain-filters near-loss). Before stashing,
+              # attribute the dirty paths to this channel's project-autopilot atoms (pending or
+              # recently done) via their declared touch-sets (files / workpack_touch_set) and COMMIT
+              # the matched paths as deterministic salvage commits; only genuinely unattributable
+              # paths still go to the stash. The whole salvage is fail-open: any error falls back to
+              # the plain stash behavior and never blocks the claim loop.
+              try {
+                $salvageAtoms = New-Object 'System.Collections.Generic.List[object]'
+                if (Get-Command Get-Backlog -ErrorAction SilentlyContinue) {
+                  foreach ($salvageItem in @(Get-Backlog)) {
+                    $salvageFrom = ''
+                    try { $salvageFrom = [string]$salvageItem.from } catch { $salvageFrom = '' }
+                    if ($salvageFrom -ne 'project-autopilot') { continue }
+                    $salvageStatus = ''
+                    try { $salvageStatus = ([string]$salvageItem.status).Trim().ToLowerInvariant() } catch { $salvageStatus = '' }
+                    if ($salvageStatus -notin @('new','approved','claimed','running','working','held','done','auto-resolved')) { continue }
+                    $salvageSlug = ''
+                    try { if (Get-Command Get-BacklogTaskSlug -ErrorAction SilentlyContinue) { $salvageSlug = [string](Get-BacklogTaskSlug -Item $salvageItem) } } catch { $salvageSlug = '' }
+                    if ([string]::IsNullOrWhiteSpace($salvageSlug)) { try { $salvageSlug = [string]$salvageItem.id } catch { $salvageSlug = '' } }
+                    if ([string]::IsNullOrWhiteSpace($salvageSlug)) { continue }
+                    $salvageFiles = New-Object 'System.Collections.Generic.List[string]'
+                    foreach ($salvageProp in @('files','workpack_touch_set')) {
+                      try {
+                        if ($salvageItem.PSObject.Properties.Name -contains $salvageProp) {
+                          foreach ($salvageDecl in @($salvageItem.$salvageProp)) {
+                            $salvageDeclPath = ([string]$salvageDecl).Trim()
+                            if ([string]::IsNullOrWhiteSpace($salvageDeclPath)) { continue }
+                            # touch_set can carry a coarse conflict-group WORD (not a path) -- skip non-path-like values there
+                            if ($salvageProp -eq 'workpack_touch_set' -and $salvageDeclPath -notmatch '[./\\]') { continue }
+                            if (-not $salvageFiles.Contains($salvageDeclPath)) { [void]$salvageFiles.Add($salvageDeclPath) }
+                          }
+                        }
+                      } catch {}
+                    }
+                    if ($salvageFiles.Count -gt 0) { [void]$salvageAtoms.Add([pscustomobject]@{ slug = $salvageSlug; files = @($salvageFiles.ToArray()) }) }
+                  }
+                }
+                if ($salvageAtoms.Count -gt 0) {
+                  $salvagePlan = Get-DriverDirtySalvagePlan -DirtyLines @($dirty | ForEach-Object { [string]$_ }) -Atoms @($salvageAtoms.ToArray())
+                  $salvagedPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                  foreach ($salvageGroup in @($salvagePlan.commit)) {
+                    $salvageGroupPaths = @($salvageGroup.paths)
+                    if ($salvageGroupPaths.Count -eq 0) { continue }
+                    & git -C $guardRoot add -- @salvageGroupPaths 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { continue }
+                    $salvageMsg = ("salvage(driver): {0} leftover outputs" -f [string]$salvageGroup.slug)
+                    & git -C $guardRoot commit -m $salvageMsg -- @salvageGroupPaths 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { continue }
+                    foreach ($salvagedPath in $salvageGroupPaths) { [void]$salvagedPaths.Add(([string]$salvagedPath).Replace('\','/').TrimEnd('/')) }
+                    Add-Message -From system -Text ("Salvage(driver): committed $(@($salvageGroupPaths).Count) leftover path(s) of atom '$([string]$salvageGroup.slug)' instead of stashing them (2026-07-02 audit).") -Kind event | Out-Null
+                    try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='orphaned-dirty-salvage-commit'; slug=[string]$salvageGroup.slug; files=@($salvageGroupPaths); root=$guardRoot }) } catch {}
+                  }
+                  if ($salvagedPaths.Count -gt 0) {
+                    # drop the committed paths from the dirty set so the stash below only sweeps the rest
+                    $dirty = @($dirty | Where-Object {
+                      $salvageLine = [string]$_
+                      if ($salvageLine.Length -lt 4) { $true }
+                      else {
+                        $salvageLinePath = $salvageLine.Substring(3).Trim()
+                        $salvageArrow = $salvageLinePath.IndexOf(' -> ')
+                        if ($salvageArrow -ge 0) { $salvageLinePath = $salvageLinePath.Substring($salvageArrow + 4).Trim() }
+                        if ($salvageLinePath.StartsWith('"') -and $salvageLinePath.EndsWith('"') -and $salvageLinePath.Length -ge 2) { $salvageLinePath = $salvageLinePath.Substring(1, $salvageLinePath.Length - 2) }
+                        (-not $salvagedPaths.Contains($salvageLinePath.Replace('\','/').TrimEnd('/')))
+                      }
+                    })
+                  }
+                }
+              } catch {}
               $autoStashSucceeded = $false
+              if ($dirty.Count -eq 0) {
+                # 2026-07-02 audit: salvage attributed and committed every dirty path -- nothing left
+                # to stash; the queue is unwedged without hiding any work in the stash.
+                $autoStashSucceeded = $true
+                Add-Message -From system -Text ("Salvage(driver): all orphaned dirty paths were attributed and committed; no stash needed, queue unblocked.") -Kind event | Out-Null
+              } else {
               try {
                 $stashMsg = ("bridge auto-stash: orphaned dirty wedged dispatch ({0} files, {1} defers)" -f $dirty.Count, [int]$dirtyDecision.streak)
                 & git -C $guardRoot stash push -u -m $stashMsg 2>$null | Out-Null
@@ -1396,6 +1535,7 @@ $script:DriverLoopIdleClaimBlock = {
                   try { Write-BacklogJsonLine ([ordered]@{ ts=(Get-Date).ToUniversalTime().ToString('o'); action='orphaned-dirty-autostash'; files=$dirty.Count; defers=[int]$dirtyDecision.streak; root=$guardRoot }) } catch {}
                 }
               } catch {}
+              }
               if ($autoStashSucceeded) {
                 try {
                   Update-State ({ param($s)

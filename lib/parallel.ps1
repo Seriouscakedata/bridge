@@ -865,6 +865,9 @@ function Test-CanParallelize {
   $streams = New-Object System.Collections.Generic.List[object]
   $owners = @{}
   $droppedStreams = New-Object System.Collections.Generic.List[string]
+  # 2026-07-02 audit: lazily computed committed diff (task base -> HEAD) used to skip streams
+  # whose work already landed in the repo (main-turn execution or an earlier pass of this task).
+  $committedSinceBaseTC = $null
   foreach ($m in $matches) {
     $id = Normalize-ParallelId $m.Groups['id'].Value
     $body = ([string]$m.Groups['body'].Value).Trim()
@@ -896,6 +899,29 @@ function Test-CanParallelize {
         [void]$droppedStreams.Add($id + ' (all files are outside this repo: ' + ($extFiles -join ', ') + ' -- use external-repo parallel dispatch form)')
         continue
       }
+    }
+
+    # 2026-07-02 audit: do NOT re-dispatch a stream whose declared files are ALREADY fully
+    # committed since the task base (the main coder turn or an earlier pass of this task
+    # delivered them). Duplicate dispatch re-executes finished work, yields empty diffs,
+    # false failed streams and pointless sequential retries.
+    if ($null -eq $committedSinceBaseTC) {
+      $committedSinceBaseTC = @()
+      try {
+        $rpTC = ''
+        try { if (Get-Command Get-ParallelRepoRoot -ErrorAction SilentlyContinue) { $rpTC = [string](Get-ParallelRepoRoot) } } catch {}
+        $baseTC = ''
+        try { if (Get-Command Get-ParallelTaskBaseCommit -ErrorAction SilentlyContinue) { $baseTC = [string](Get-ParallelTaskBaseCommit) } } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($rpTC) -and -not [string]::IsNullOrWhiteSpace($baseTC) -and (Test-Path -LiteralPath $rpTC)) {
+          $gitTC = 'git'
+          try { if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { $gitTC = [string](Get-GitExe) } } catch {}
+          $committedSinceBaseTC = @(& $gitTC -C $rpTC diff --name-only $baseTC HEAD 2>$null | Where-Object { $_ })
+        }
+      } catch { $committedSinceBaseTC = @() }
+    }
+    if (@($committedSinceBaseTC).Count -gt 0 -and (Test-ParallelStreamAlreadyCommitted -DeclaredFiles $files -CommittedChangedPaths @($committedSinceBaseTC))) {
+      [void]$droppedStreams.Add($id + ' (declared files already committed since task base -- skipping duplicate dispatch)')
+      continue
     }
 
     $conflictFile = ''
@@ -1196,6 +1222,12 @@ function Test-ParallelCollectedPathAllowed {
     if ($dn -eq '.git' -or $dn.StartsWith('.git/')) { continue }
     if ([string]::Equals($rel, $dn, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
     if ($rel.StartsWith($dn + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    # 2026-07-02 audit: inverse containment -- git status without -uall collapses untracked NEW
+    # directories into a single 'dir/' entry; when that dir is the PARENT of a declared file the
+    # reported path is inside the touch-set, not outside it. Without this rule healthy streams
+    # were quarantined ('outside touch-set path(s): app/src/main/res/'). Defense-in-depth on top
+    # of the -uall fix in the collect path.
+    if ($dn.StartsWith($rel + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
   }
   return $false
 }
@@ -1208,6 +1240,9 @@ function Test-ParallelCollectedPathAllowedSelfCheck {
     @{ name='dotgit';    rel='.git/config';                     declared=@('.git', 'lib');      expect=$false }
     @{ name='traversal'; rel='../outside.ps1';                  declared=@('lib');              expect=$false }
     @{ name='blank';     rel='';                                declared=@('lib');              expect=$false }
+    # 2026-07-02 audit: collapsed untracked parent dir of a declared file is allowed (inverse rule)
+    @{ name='parentdir';    rel='app/src/main/res/';            declared=@('app/src/main/res/values/strings.xml'); expect=$true  }
+    @{ name='parentdirneg'; rel='app/src/main/resx/';           declared=@('app/src/main/res/values/strings.xml'); expect=$false }
   )
 
   foreach ($case in $cases) {
@@ -1779,6 +1814,25 @@ function Write-ParallelDispatchSpawnMessage {
   } catch {}
 }
 
+function Set-ParallelSharedGradleUserHome {
+  # 2026-07-02 audit: every parallel Android stream cold-started a private GRADLE_USER_HOME
+  # inside its worktree (~300MB of re-derived transforms per stream) because the project's
+  # own gradlew.bat guard is 'if not defined GRADLE_USER_HOME' -- an inherited env var wins.
+  # Point all worker processes (they inherit this process env via Start-Process) at ONE
+  # machine-local shared gradle home so streams share the cache/daemon pool. No-op when the
+  # operator already set GRADLE_USER_HOME. Returns the effective path ('' on failure).
+  $existing = ''
+  try { $existing = [string][Environment]::GetEnvironmentVariable('GRADLE_USER_HOME', 'Process') } catch {}
+  if (-not [string]::IsNullOrWhiteSpace($existing)) { return $existing }
+  $shared = Join-Path $env:USERPROFILE '.bridge-runtime\gradle-user-home'
+  try {
+    if (-not (Test-Path -LiteralPath $shared)) { New-Item -ItemType Directory -Path $shared -Force | Out-Null }
+    [Environment]::SetEnvironmentVariable('GRADLE_USER_HOME', $shared, 'Process')
+    $env:GRADLE_USER_HOME = $shared
+  } catch { return '' }
+  return $shared
+}
+
 function Start-ParallelDispatchWorker {
   param(
     [object]$Stream,
@@ -1792,10 +1846,19 @@ function Start-ParallelDispatchWorker {
     return @{ ok=$false; worker=$null; workerSpec=$null; reason='no worker pool' }
   }
 
+  # 2026-07-02 audit: share one gradle cache/daemon pool across all streams (width tax fix).
+  try { [void](Set-ParallelSharedGradleUserHome) } catch {}
+
   $branch = Get-ParallelDispatchBranchName -StreamId ([string]$Stream.id) -TaskHash $TaskHash
   try {
     $worktree = Get-WorkerWorktree -StreamId $Stream.id -TaskHash $TaskHash
-    $worker = Spawn-Worker -StreamId $Stream.id -Body $Stream.body -Worktree $worktree -BranchName $branch -WorkerSpec $spec
+    # 2026-07-02 audit: the Windows codex sandbox runs as a separate OS user that cannot write
+    # linked-worktree git metadata (index.lock), so codex streams structurally end commits=0 and
+    # were marked failed. Spawn codex workers in host-managed-commit mode (same mechanism the
+    # foundry path uses): the worker only produces files, the host collects/commits them.
+    $spawnParams = @{ StreamId = $Stream.id; Body = $Stream.body; Worktree = $worktree; BranchName = $branch; WorkerSpec = $spec }
+    if (([string]$spec.cli).ToLowerInvariant() -eq 'codex') { $spawnParams.HostManagedCommit = $true }
+    $worker = Spawn-Worker @spawnParams
     Write-ParallelDispatchSpawnMessage -Stream $Stream -WorkerSpec $spec
     return @{ ok=$true; worker=$worker; workerSpec=$spec; reason='' }
   } catch {
@@ -1807,7 +1870,11 @@ function Start-ParallelDispatchWorker {
 function Start-ParallelDispatchWorkers {
   param(
     [object[]]$Streams,
-    [string]$TaskHash
+    [string]$TaskHash,
+    # 2026-07-02 audit: retry callers pass the worker ids that already ran (and failed) this
+    # batch so Select-WorkerForStream re-routes instead of deterministically re-picking the
+    # same broken worker. Soft exclusion: the router falls back if the pool is exhausted.
+    [string[]]$ExcludeWorkerIds = @()
   )
 
   # 2026-06-27: fresh-slate this task's parallel worktrees + wip branches before spawning
@@ -1818,6 +1885,10 @@ function Start-ParallelDispatchWorkers {
 
   $workers = New-Object 'System.Collections.Generic.List[object]'
   $usedIds = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($xid in @($ExcludeWorkerIds)) {
+    $xidText = [string]$xid
+    if (-not [string]::IsNullOrWhiteSpace($xidText) -and -not $usedIds.Contains($xidText)) { [void]$usedIds.Add($xidText) }
+  }
 
   Write-ParallelDispatchTeamPlan -Streams @($Streams)
 
@@ -2346,6 +2417,58 @@ function Get-ParallelCrossStreamClaimedCollisions {
   return @($hits.ToArray())
 }
 
+function Get-ParallelWorktreeChangedPaths {
+  # 2026-07-02 audit: shared collector for a worktree's changed paths (committed diff vs the
+  # task base + working-tree status). '-uall' lists untracked files INDIVIDUALLY instead of
+  # collapsing a new directory into one 'dir/' entry that can never match a file-level
+  # touch-set (false 'outside touch-set' quarantine; parity with the sequential checker).
+  param([string]$GitExe, [string]$Worktree, [string]$BaseCommit)
+  $changed = New-Object System.Collections.Generic.HashSet[string]
+  if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
+    try { @(& $GitExe -C $Worktree diff --name-only $BaseCommit 2>$null) | Where-Object { $_ } | ForEach-Object { $rel = ($_.Trim() -replace '"',''); if ($rel -notmatch '(^|[\\/])\.git([\\/]|-alt)') { [void]$changed.Add($rel) } } } catch {}
+  }
+  try { @(& $GitExe -C $Worktree status --porcelain -uall 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->' -and $p -notmatch '(^|[\\/])\.git([\\/]|-alt)') { [void]$changed.Add($p) } } } catch {}
+  # Return a plain (possibly empty) string array; the comma keeps PowerShell from
+  # unrolling it so callers always get one array object (.Count / foreach safe).
+  return ,([string[]]@($changed))
+}
+
+function Test-ParallelSalvageDecision {
+  # 2026-07-02 audit: pure decision helper -- a failed/partial commits=0 stream is salvageable
+  # (its work can be collected as delivered) when the worktree has real changes AND every
+  # changed path stays inside the declared touch-set. Side-effect-free so tests drive it directly.
+  param([string[]]$ChangedPaths, [string[]]$DeclaredFiles)
+  $paths = @(@($ChangedPaths) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($paths.Count -eq 0) { return $false }
+  if (-not $DeclaredFiles -or @($DeclaredFiles).Count -eq 0) { return $false }
+  foreach ($p in $paths) {
+    if (-not (Test-ParallelCollectedPathAllowed -RelativePath $p -DeclaredFiles $DeclaredFiles)) { return $false }
+  }
+  return $true
+}
+
+function Test-ParallelStreamAlreadyCommitted {
+  # 2026-07-02 audit: pure decision helper -- a stream does not need (re-)dispatch when EVERY
+  # declared file already changed in committed history since the task base commit (the main
+  # coder turn or an earlier pass of the same task delivered it). Re-dispatching such a stream
+  # re-executes finished work and ends in empty diffs / false failed streams.
+  param([string[]]$DeclaredFiles, [string[]]$CommittedChangedPaths)
+  $declared = @(@($DeclaredFiles) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($declared.Count -eq 0) { return $false }
+  $norm = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($p in @($CommittedChangedPaths)) {
+    $n = _NormalizeRelPath $p
+    if ($null -ne $n) { [void]$norm.Add($n) }
+  }
+  if ($norm.Count -eq 0) { return $false }
+  foreach ($f in $declared) {
+    $fn = _NormalizeRelPath $f
+    if ($null -eq $fn) { return $false }
+    if (-not $norm.Contains($fn)) { return $false }
+  }
+  return $true
+}
+
 function Collect-ParallelDispatchWorkerOutput {
   param(
     [hashtable]$Context,
@@ -2358,8 +2481,33 @@ function Collect-ParallelDispatchWorkerOutput {
   try { $workerStatus = [string]$Context.completed[$Worker.id].status } catch {}
 
   if ($workerStatus -eq 'failed' -or $Context.allowedTerminalStatuses -notcontains $workerStatus) {
-    Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
-    return
+    # 2026-07-02 audit: salvage delivered work before discarding a failed/partial stream.
+    # Windows codex sandbox workers structurally cannot 'git commit' in linked worktrees
+    # (see Invoke-ParallelCodexCli note) so they end failed/partial with commits=0 even when
+    # their files are complete. If the worktree has a real diff and EVERY changed path stays
+    # inside the declared touch-set, fall through to the normal host-side collect instead of
+    # quarantining (which discards paid-for work and forces a full sequential re-run).
+    $salvageOk = $false
+    if ($workerStatus -eq 'failed' -or $workerStatus -eq 'partial') {
+      $salvageCommits = -1
+      try { $salvageCommits = @($Context.completed[$Worker.id].commits).Count } catch {}
+      if ($salvageCommits -eq 0) {
+        try {
+          $salvageDeclared = @()
+          try { $salvageDeclared = @($Worker.files | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } catch {}
+          $salvageWt = Get-WorkerWorktree -StreamId $Worker.id -TaskHash $Context.taskHash
+          if ($salvageDeclared.Count -gt 0 -and (Test-Path -LiteralPath $salvageWt)) {
+            $salvageChanged = Get-ParallelWorktreeChangedPaths -GitExe ([string]$Context.gitExe) -Worktree $salvageWt -BaseCommit ([string]$Context.baseCommit)
+            $salvageOk = Test-ParallelSalvageDecision -ChangedPaths @($salvageChanged) -DeclaredFiles $salvageDeclared
+          }
+        } catch { $salvageOk = $false }
+      }
+    }
+    if (-not $salvageOk) {
+      Add-ParallelDispatchQuarantine -Context $Context -StreamId ([string]$Worker.id)
+      return
+    }
+    try { Add-Message -From system -Text ("Salvage stream " + $Worker.id + ": worker reported '" + $workerStatus + "' with 0 commits, but the worktree diff is non-empty and fully inside the declared touch-set - collecting it as delivered instead of quarantining.") -Kind event | Out-Null } catch {}
   }
 
   $declaredFiles = @()
@@ -2377,11 +2525,10 @@ function Collect-ParallelDispatchWorkerOutput {
       return
     }
 
-    $changed = New-Object System.Collections.Generic.HashSet[string]
-    if (-not [string]::IsNullOrWhiteSpace($Context.baseCommit)) {
-      try { @(& $Context.gitExe -C $wtPath diff --name-only $Context.baseCommit 2>$null) | Where-Object { $_ } | ForEach-Object { $rel = ($_.Trim() -replace '"',''); if ($rel -notmatch '(^|[\\/])\.git([\\/]|-alt)') { [void]$changed.Add($rel) } } } catch {}
-    }
-    try { @(& $Context.gitExe -C $wtPath status --porcelain 2>$null) | Where-Object { $_ } | ForEach-Object { $p = ($_.Substring([Math]::Min(3,$_.Length))).Trim().Trim('"'); if ($p -and $p -notmatch '->' -and $p -notmatch '(^|[\\/])\.git([\\/]|-alt)') { [void]$changed.Add($p) } } } catch {}
+    # 2026-07-02 audit: extracted to a shared helper that runs 'status --porcelain -uall'
+    # (parity with the sequential checker) so untracked NEW directories no longer collapse
+    # into a parent 'dir/' entry that false-fails the touch-set matcher.
+    $changed = Get-ParallelWorktreeChangedPaths -GitExe ([string]$Context.gitExe) -Worktree $wtPath -BaseCommit ([string]$Context.baseCommit)
 
     $streamCommits = 0
     try { $streamCommits = @($Context.completed[$Worker.id].commits).Count } catch {}
@@ -3070,6 +3217,16 @@ function Complete-ParallelDispatchResult {
   } catch { $mergedStreamIds = @() }
   $cleanComplete = ($Context.merged -eq $totalStreams -and $qCount -eq 0 -and $totalStreams -gt 0)
   $anyDelivered = ($Context.merged -ge 1)
+  # 2026-07-02 audit: expose the worker ids used by this batch so retry paths (sequential
+  # retry + driver batch-timeout retry) can exclude the workers that just failed.
+  $usedWorkerIds = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    foreach ($uw in @($Context.workers)) {
+      $uwid = ''
+      try { $uwid = [string]$uw.workerId } catch {}
+      if (-not [string]::IsNullOrWhiteSpace($uwid) -and -not $usedWorkerIds.Contains($uwid)) { [void]$usedWorkerIds.Add($uwid) }
+    }
+  } catch {}
   return @{
     ok          = $anyDelivered
     merged      = $Context.merged
@@ -3079,6 +3236,7 @@ function Complete-ParallelDispatchResult {
     total       = $totalStreams
     clean       = $cleanComplete
     reason      = $(if ($cleanComplete) { 'all_delivered' } elseif ($anyDelivered) { 'partial' } else { 'all_failed' })
+    used_worker_ids = @($usedWorkerIds.ToArray())
   }
 }
 
@@ -3598,26 +3756,72 @@ function Invoke-ParallelDispatchSequentialRetry {
 
   if ($zeroCommitIds.Count -eq 0) { return $Result }
 
-  $pf_ids = ($zeroCommitIds.ToArray() -join ', ')
-  try { Add-Message -From system -Text ("⚠️ partial-failure: потоки не создали коммитов: " + $pf_ids + " — последовательный перезапуск.") -Kind event | Out-Null } catch {}
-
-  # Get current HEAD as new base so retry worktrees branch from post-parallel state
-  $gitExe = [string]$Context.gitExe
-  $bridgeRoot = [string]$Context.bridgeRoot
-  $retryBase = ''
-  try { $retryBase = ([string](& $gitExe -C $bridgeRoot rev-parse HEAD 2>$null)).Trim() } catch {}
-  if ([string]::IsNullOrWhiteSpace($retryBase)) {
-    try { Add-Message -From system -Text "❌ partial-failure retry: не удалось определить HEAD — пропуск." -Kind event | Out-Null } catch {}
-    return $Result
+  # 2026-07-02 audit: gate the retry decision on the ACTUAL repo diff for each atom's declared
+  # files, not only the worker-reported commit count. Codex sandbox streams report commits=0
+  # even when their work was collected/committed host-side; re-running them re-executes
+  # finished work (observed empty-diff retries). A stream whose declared files are already
+  # fully committed since the task base is marked delivered instead of re-run.
+  $coveredDeliveredIds = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    $committedSinceBase = @()
+    if (-not [string]::IsNullOrWhiteSpace([string]$Context.baseCommit)) {
+      try { $committedSinceBase = @(& ([string]$Context.gitExe) -C ([string]$Context.bridgeRoot) diff --name-only ([string]$Context.baseCommit) HEAD 2>$null | Where-Object { $_ }) } catch { $committedSinceBase = @() }
+    }
+    if (@($committedSinceBase).Count -gt 0) {
+      $stillZero = New-Object 'System.Collections.Generic.List[string]'
+      foreach ($qid in $zeroCommitIds) {
+        $covStream = $null
+        foreach ($s in @($AllStreams)) { if ([string]$s.id -eq $qid) { $covStream = $s; break } }
+        $covFiles = @()
+        if ($covStream) { try { $covFiles = @($covStream.files) } catch {} }
+        if ($covFiles.Count -gt 0 -and (Test-ParallelStreamAlreadyCommitted -DeclaredFiles $covFiles -CommittedChangedPaths @($committedSinceBase))) {
+          [void]$coveredDeliveredIds.Add($qid)
+        } else {
+          [void]$stillZero.Add($qid)
+        }
+      }
+      $zeroCommitIds = $stillZero
+    }
+  } catch {}
+  if ($coveredDeliveredIds.Count -gt 0) {
+    try { Add-Message -From system -Text ("Sequential retry skipped for stream(s) " + (($coveredDeliveredIds.ToArray()) -join ', ') + ": declared files already fully committed since the task base - marking delivered instead of re-running.") -Kind event | Out-Null } catch {}
   }
 
-  $previousBase = ''
-  try { $previousBase = Get-ParallelTaskBaseCommit } catch {}
-
-  # Update task_base_commit so Get-WorkerWorktree branches from current HEAD
-  try { Update-State { param($s) $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $retryBase -Force } | Out-Null } catch {}
-
   $retryMergedIds = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($cid in $coveredDeliveredIds) { [void]$retryMergedIds.Add($cid) }
+
+  $gitExe = [string]$Context.gitExe
+  $bridgeRoot = [string]$Context.bridgeRoot
+  $previousBase = ''
+  $retryBase = ''
+  if ($zeroCommitIds.Count -gt 0) {
+    $pf_ids = ($zeroCommitIds.ToArray() -join ', ')
+    try { Add-Message -From system -Text ("⚠️ partial-failure: потоки не создали коммитов: " + $pf_ids + " — последовательный перезапуск.") -Kind event | Out-Null } catch {}
+
+    # Get current HEAD as new base so retry worktrees branch from post-parallel state
+    try { $retryBase = ([string](& $gitExe -C $bridgeRoot rev-parse HEAD 2>$null)).Trim() } catch {}
+    if ([string]::IsNullOrWhiteSpace($retryBase)) {
+      try { Add-Message -From system -Text "❌ partial-failure retry: не удалось определить HEAD — пропуск." -Kind event | Out-Null } catch {}
+      # 2026-07-02 audit: covered streams (if any) still get accounted below; retries are skipped.
+      $zeroCommitIds = New-Object 'System.Collections.Generic.List[string]'
+    } else {
+      try { $previousBase = Get-ParallelTaskBaseCommit } catch {}
+      # Update task_base_commit so Get-WorkerWorktree branches from current HEAD
+      try { Update-State { param($s) $s | Add-Member -NotePropertyName task_base_commit -NotePropertyValue $retryBase -Force } | Out-Null } catch {}
+    }
+  }
+
+  # 2026-07-02 audit: exclude the workers this batch already used (including the one that just
+  # failed the stream) so Select-WorkerForStream re-routes the retry to a different worker.
+  # Previously -AlreadyUsedIds @() deterministically re-picked the same broken worker.
+  $usedWorkerIds = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    foreach ($uw in @($Context.workers)) {
+      $uwid = ''
+      try { $uwid = [string]$uw.workerId } catch {}
+      if (-not [string]::IsNullOrWhiteSpace($uwid) -and -not $usedWorkerIds.Contains($uwid)) { [void]$usedWorkerIds.Add($uwid) }
+    }
+  } catch {}
 
   foreach ($qid in $zeroCommitIds) {
     $stream = $null
@@ -3639,11 +3843,16 @@ function Invoke-ParallelDispatchSequentialRetry {
     }
 
     # Spawn single worker (Get-WorkerWorktree now uses updated task_base_commit = HEAD)
-    $startRes = Start-ParallelDispatchWorker -Stream $stream -TaskHash $TaskHash -AlreadyUsedIds @()
+    # 2026-07-02 audit: pass the batch's used worker ids so the retry re-routes (was @()).
+    $startRes = Start-ParallelDispatchWorker -Stream $stream -TaskHash $TaskHash -AlreadyUsedIds @($usedWorkerIds.ToArray())
     if (-not $startRes.ok) {
       try { Add-Message -From system -Text ("❌ Sequential retry spawn failed для " + $qid + ": " + $startRes.reason) -Kind event | Out-Null } catch {}
       continue
     }
+    try {
+      $retryWid = [string]$startRes.workerSpec.id
+      if (-not [string]::IsNullOrWhiteSpace($retryWid) -and -not $usedWorkerIds.Contains($retryWid)) { [void]$usedWorkerIds.Add($retryWid) }
+    } catch {}
 
     $retryWorker = $startRes.worker
     $retryCompleted = Wait-ParallelDispatchResults -Workers @($retryWorker) -TaskHash $TaskHash -TimeoutMin $TimeoutMin -PollSec $PollSec
@@ -3663,6 +3872,9 @@ function Invoke-ParallelDispatchSequentialRetry {
       try { Add-Message -From system -Text ("❌ Sequential retry: поток " + $qid + " снова без коммитов (" + $retryRes.reason + ").") -Kind event | Out-Null } catch {}
     }
   }
+
+  # 2026-07-02 audit: record retry workers too so downstream retry paths can exclude them.
+  try { $Result['used_worker_ids'] = @($usedWorkerIds.ToArray()) } catch {}
 
   if ($retryMergedIds.Count -eq 0) {
     if (-not [string]::IsNullOrWhiteSpace($previousBase) -and $previousBase -ne $retryBase) {

@@ -88,6 +88,16 @@ function Test-DirectCoderTask {
   # / discussion tasks where a coordinating plan genuinely matters. Universal: any channel, any task.
   param([string]$TaskText)
   if ([string]::IsNullOrWhiteSpace($TaskText)) { return $false }
+  # 2026-07-02 audit fix (belt-and-suspenders for the turn-0 batch guard in 82-loop-turn-setup.ps1):
+  # a workpack-batch task must NEVER take the direct-coder fast path -- one codex turn would execute
+  # the whole N-atom batch inline in the main tree, and the deterministic parallel dispatch would
+  # then re-execute it in worktrees (duplicate work). Match the STABLE ASCII parts of the generated
+  # batch text (New-BacklogWorkpackBatchTaskText, lib/backlog-workpack.ps1): a leading bracketed
+  # autotask tag ending in 'workpack-batch]' (the Russian prefix is tolerated by the wildcard), or
+  # 2+ '[[PARALLEL:' block markers. Protected serial batches ('protected-serial-workpack' tag,
+  # single '[[PARALLEL:*]]' mention) deliberately match NEITHER rule and keep their routing.
+  if ($TaskText -match '(?is)^\s*\[[^\]]*workpack-batch\]') { return $false }
+  try { if ([regex]::Matches($TaskText, '\[\[PARALLEL:').Count -ge 2) { return $false } } catch {}
   $tgt = ''
   try { if (Get-Command Get-BacklogTaskTargetFile -ErrorAction SilentlyContinue) { $tgt = [string](Get-BacklogTaskTargetFile -Text $TaskText) } } catch {}
   if ([string]::IsNullOrWhiteSpace($tgt)) { return $false }

@@ -2266,6 +2266,8 @@ function Get-NextApprovedIdea {
   # first, then score desc, then ts asc. So audit criticals get pulled before warnings,
   # warnings before info, info before plain ideas.
   $skipped = New-Object 'System.Collections.Generic.List[string]'
+  # 2026-07-02 audit: dedupe dep-gate skip log lines across the backlog re-read iterations of one call.
+  $depGateLogged = New-Object 'System.Collections.Generic.HashSet[string]'
   while ($true) {
     # SYSTEMIC GUARD 2026-05-31/06-04: even an APPROVED control-plane task does not auto-run unless
     # the operator delegated it (tag 'operator') OR it has deterministic bridge_self_admission.
@@ -2283,6 +2285,53 @@ function Get-NextApprovedIdea {
                   @{Expression={ Get-IdeaNetNewPenaltyRank -Idea $_ }},
                   @{Expression={ $s=0.0; try{$s=[double]$_.score}catch{}; -$s }},
                   @{Expression={[string]$_.ts}})
+    # 2026-07-02 audit: serial-fallback direct claim bypassed depends_on -- the workpack frontier
+    # honors dependencies, but when it returns no batch the driver falls through to THIS plain claim,
+    # which used to ignore them (live: the final APK acceptance atom was claimed and 'verified' BEFORE
+    # its integration dependency landed, so its green result proved nothing). Skip candidates whose
+    # declared dependencies are not ready and take the NEXT ready candidate instead (never idle a queue
+    # that still has ready work); if none are ready this tick, return $null as a normal 'nothing
+    # claimable now'. Only items that actually carry dependency data (depends_on / dependencies) are
+    # checked, so plain non-project ideas are unaffected; if the workpack dep helpers are not loaded,
+    # fail open to the previous behavior.
+    if ((Get-Command Test-BacklogTaskDependenciesReady -ErrorAction SilentlyContinue) -and
+        (Get-Command Get-BacklogSlugStatusMap -ErrorAction SilentlyContinue) -and
+        (Get-Command Get-BacklogTerminalFailedSlugs -ErrorAction SilentlyContinue)) {
+      $depStatusMap = $null
+      $depTerminalSlugs = $null
+      try {
+        $depStatusMap = Get-BacklogSlugStatusMap -Items $allItems
+        $depTerminalSlugs = Get-BacklogTerminalFailedSlugs -Items $allItems
+      } catch { $depStatusMap = $null }
+      if ($null -ne $depStatusMap) {
+        $depReadyItems = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($depCandidate in @($items)) {
+          $hasDepData = $false
+          foreach ($depField in @('depends_on','dependencies')) {
+            $depValues = @()
+            try { if ($depCandidate.PSObject.Properties.Name -contains $depField) { $depValues = @($depCandidate.$depField) } } catch { $depValues = @() }
+            if (@($depValues | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) { $hasDepData = $true; break }
+          }
+          if (-not $hasDepData) { [void]$depReadyItems.Add($depCandidate); continue }
+          $depCheck = $null
+          try { $depCheck = Test-BacklogTaskDependenciesReady -Item $depCandidate -StatusBySlug $depStatusMap -TerminalFailedSlugs $depTerminalSlugs } catch { $depCheck = $null }
+          if ($null -eq $depCheck -or [bool]$depCheck.ready) { [void]$depReadyItems.Add($depCandidate); continue }
+          $depItemId = ''
+          try { $depItemId = [string]$depCandidate.id } catch { $depItemId = '' }
+          if ($depGateLogged.Add($depItemId)) {
+            try {
+              Write-BacklogJsonLine ([ordered]@{
+                ts = (Get-Date).ToUniversalTime().ToString('o')
+                action = 'single-claim-dep-gate-skip'
+                item_id = $depItemId
+                unmet = @($depCheck.unmet)
+              })
+            } catch {}
+          }
+        }
+        $items = @($depReadyItems.ToArray())
+      }
+    }
     if ($items.Count -eq 0) { return $null }
 
     $candidate = $items[0]

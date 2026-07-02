@@ -78,7 +78,9 @@ function Get-ProjectAutopilotConfig {
 
   $cfg.enabled = ConvertTo-BacklogPackBool -Value $cfg.enabled -Default $true
   $cfg.cooldownMinutes = ConvertTo-BacklogPackInt -Value $cfg.cooldownMinutes -Default 5 -Min 1 -Max 240
-  $cfg.maxTasksPerBatch = ConvertTo-BacklogPackInt -Value $cfg.maxTasksPerBatch -Default 12 -Min 1 -Max 50
+  # 2026-07-02 audit (silent truncation): clamp ceiling raised 50 -> 200 so a configured budget above 50
+  # (settings ask for 60) is honored instead of being silently cut at the ingest '-First $max'.
+  $cfg.maxTasksPerBatch = ConvertTo-BacklogPackInt -Value $cfg.maxTasksPerBatch -Default 12 -Min 1 -Max 200
   $cfg.emptyCoordinatorLimit = ConvertTo-BacklogPackInt -Value $cfg.emptyCoordinatorLimit -Default 3 -Min 1 -Max 20
   $cfg.diffusionMode = ([string]$cfg.diffusionMode).Trim().ToLowerInvariant()
   if ($cfg.diffusionMode -notin @('off','shadow','diffusion','wide')) { $cfg.diffusionMode = 'off' }
@@ -391,8 +393,16 @@ function Get-ProjectAutopilotBinding {
 }
 
 function Get-ProjectAutopilotBacklogPressure {
+  # 2026-07-02 audit (per-channel pressure): `runnable` must count PROJECT-AUTOPILOT items of THIS
+  # channel only (mirror the per-channel project filter the chapter counters use). Get-Backlog spans
+  # channels, and the old any-item count let one unrelated parked operator/approved item keep
+  # runnable>0 forever, silently blocking all chapter planning at the 'backlog-not-empty' gate.
+  # Global status counts stay in the result as telemetry (runnable_any keeps the old semantics).
+  param([string]$Channel = '')
+  if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-ProjectAutopilotSlug }
+  $chanKey = (([string]$Channel).Trim().ToLowerInvariant())
   $items = @(Get-Backlog)
-  $approved = 0; $running = 0; $new = 0; $held = 0; $autopilotOpen = 0
+  $approved = 0; $running = 0; $new = 0; $held = 0; $autopilotOpen = 0; $runnable = 0; $runnableAny = 0
   foreach ($it in $items) {
     $st = [string](Get-BacklogPackObjectValue -Obj $it -Name 'status' -Default '')
     $tags = @()
@@ -401,14 +411,21 @@ function Get-ProjectAutopilotBacklogPressure {
     elseif ($st -eq 'running') { $running++ }
     elseif ($st -eq 'new') { $new++ }
     elseif ($st -eq 'held') { $held++ }
-    if (($st -eq 'approved' -or $st -eq 'running') -and ($tags -contains 'project-autopilot')) { $autopilotOpen++ }
+    if ($st -eq 'approved' -or $st -eq 'running') {
+      $runnableAny++
+      $fromKey = [string](Get-BacklogPackObjectValue -Obj $it -Name 'from' -Default '')
+      $projKey = (([string](Get-BacklogPackObjectValue -Obj $it -Name 'project' -Default '')).Trim().ToLowerInvariant())
+      if ($fromKey -eq 'project-autopilot' -and $projKey -eq $chanKey) { $runnable++ }
+      if ($tags -contains 'project-autopilot') { $autopilotOpen++ }
+    }
   }
   return [pscustomobject]@{
     approved = $approved
     running = $running
     new = $new
     held = $held
-    runnable = ($approved + $running)
+    runnable = $runnable
+    runnable_any = $runnableAny
     autopilot_open = $autopilotOpen
   }
 }
@@ -1017,27 +1034,63 @@ function Get-ProjectAutopilotEarliestChapterTaskSet {
 }
 
 function Test-ProjectAutopilotWideGate {
-  # 2026-06-30 "cross-chapter wide" gate -- the first, simplest diffusion step. Wide parallelizes ONLY
-  # INDEPENDENT atoms across chapters; DEPENDENT atoms serialize naturally via depends_on in the executor
-  # frontier (Resolve-BacklogWorkpackFrontier selects waves by depends_on + touch-set, NOT by chapter).
-  # So wide needs ONLY: an acyclic depends_on graph, disjoint file ownership among atoms, and at least K
-  # independent atoms. It does NOT need frozen interface contracts / stubs / stitching tests (those exist
-  # solely to parallelize DEPENDENT atoms, which wide never does), and it does NOT cap the total emit (the
-  # frontier caps the runnable WAVE via workpackExec.maxItems; the emit may span all chapters).
-  param([object[]]$Tasks = @(), [int]$MinIndependentAtoms = 2)
+  # 2026-06-30 "cross-chapter wide" gate -- the first, simplest diffusion step. DEPENDENT atoms serialize
+  # naturally via depends_on in the executor frontier (Resolve-BacklogWorkpackFrontier selects waves by
+  # depends_on + touch-set, NOT by chapter), and same-wave touch-set overlaps are serialized at dispatch.
+  # 2026-07-02 audit (wide-gate collapse-to-earliest-chapter): the old criteria -- 'independent' counted
+  # as atoms with NO incoming hard edge (>= floor) plus ZERO pairwise file overlap -- were deterministically
+  # RED for a real cold-start all-chapters DAG (one scaffold root, ordered overlaps), so the ingest
+  # collapsed the batch to chapter 1 and DISCARDED every later chapter the planner had already emitted
+  # (observed live 2026-07-01: atoms=14 independent=1 -> kept=6 dropped=8 -> one-chapter-per-turn
+  # serialization, ~35-55 min lost per run). Because the frontier already serializes dependents and
+  # ordered overlaps, a VALID DAG must be ingested WHOLE. The gate is therefore a SCHEDULABILITY check:
+  # every atom's depends_on resolves (within the batch or against already-ingested backlog slugs passed
+  # in KnownSlugs) AND the depends_on graph is acyclic. The MinIndependentAtoms floor and file overlaps
+  # are kept as TELEMETRY in the result (first_wave_runnable / floor_met / file_conflict_count) -- they
+  # are never a red trigger anymore.
+  param([object[]]$Tasks = @(), [int]$MinIndependentAtoms = 2, [string[]]$KnownSlugs = @())
   $reasons = New-Object 'System.Collections.Generic.List[string]'
   $graph = New-ProjectAutopilotUnifiedGraph -Tasks @($Tasks) -Contracts @() -AllowContractSoftEdges:$false
   if (-not [bool]$graph.acyclic) { [void]$reasons.Add('graph-cyclic') }
-  if (@($graph.file_conflicts).Count -gt 0) { [void]$reasons.Add('file-conflict-unresolved') }
+  # Schedulability: a dep is resolvable when its target is IN this batch or ALREADY INGESTED (KnownSlugs).
+  $batchSlugs = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($n in @($graph.nodes)) {
+    $ns = ([string]$n.slug).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($ns)) { [void]$batchSlugs.Add($ns) }
+  }
+  $resolvable = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($k in @($KnownSlugs)) {
+    $kk = ([string]$k).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($kk)) { [void]$resolvable.Add($kk) }
+  }
+  foreach ($bs in $batchSlugs) { [void]$resolvable.Add($bs) }
+  $unresolved = New-Object 'System.Collections.Generic.List[string]'
+  $firstWave = 0
+  foreach ($n in @($graph.nodes)) {
+    $waitsOnBatch = $false
+    foreach ($dep in @($n.depends_on)) {
+      $dk = ([string]$dep).Trim().ToLowerInvariant()
+      if ([string]::IsNullOrWhiteSpace($dk)) { continue }
+      if (-not $resolvable.Contains($dk)) { [void]$unresolved.Add(([string]$n.slug) + '->' + $dk) }
+      if ($batchSlugs.Contains($dk)) { $waitsOnBatch = $true }
+    }
+    if (-not $waitsOnBatch) { $firstWave++ }
+  }
+  if ($unresolved.Count -gt 0) { [void]$reasons.Add('depends-on-unresolved') }
+  # Telemetry only (NOT red triggers): old roots-count + the floor, and pairwise file overlaps.
   $hardTargets = @($graph.edges | Where-Object { [string]$_.edge_type -eq 'hard' } | ForEach-Object { [string]$_.to } | Sort-Object -Unique)
   $independent = @($graph.nodes | Where-Object { $hardTargets -notcontains [string]$_.slug })
-  if ($independent.Count -lt [int]$MinIndependentAtoms) { [void]$reasons.Add('independent-atom-count-below-floor') }
   return [pscustomobject]@{
     enabled = ($reasons.Count -eq 0)
     fallback = ($reasons.Count -gt 0)
     reasons = @($reasons.ToArray())
     graph = $graph
     independent_atom_count = [int]$independent.Count
+    first_wave_runnable = [int]$firstWave
+    min_independent_floor = [int]$MinIndependentAtoms
+    floor_met = ([int]$firstWave -ge [int]$MinIndependentAtoms)
+    unresolved_depends_on = @($unresolved.ToArray() | Select-Object -First 12)
+    file_conflict_count = [int]@($graph.file_conflicts).Count
     wave_size = [int]$Tasks.Count
   }
 }
@@ -1727,7 +1780,9 @@ function New-ProjectAutopilotCoordinatorTaskText {
     [int]$DiffusionMinIndependentAtoms = 2,
     [int]$DiffusionMaxWaveSize = 6
   )
-  $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
+  # 2026-07-02 audit (silent truncation): prompt-side clamp follows the raised 200 ingest cap so the
+  # coordinator's stated atom budget matches what Add-ProjectBacklogFromMarker will actually accept.
+  $max = [Math]::Max(1, [Math]::Min(200, [int]$MaxTasks))
   $diffMode = ([string]$DiffusionMode).Trim().ToLowerInvariant()
   if ($diffMode -notin @('off','shadow','diffusion','wide')) { $diffMode = 'off' }
   # Diffusion self-heal (2026-07-01): strict 'diffusion' (freeze/stub/stitch) only adds value over 'wide' when a
@@ -2131,7 +2186,8 @@ function Start-ProjectAutopilotIfNeeded {
     }
   } catch {}
 
-  $pressure = Get-ProjectAutopilotBacklogPressure
+  # 2026-07-02 audit: pass the bound channel explicitly (per-channel runnable filter).
+  $pressure = Get-ProjectAutopilotBacklogPressure -Channel $slug
   # 2026-06-28 fix (problem-hunt defect #2 — double-decompose): decompose-ahead is owned SOLELY by the
   # detached background worker (Invoke-BackgroundDecomposeAheadIfNeeded) when decomposeAheadLimit > 1.
   # The foreground path must NEVER decompose ahead: a foreground coordinator is a blocking ~15-min agent
@@ -2196,8 +2252,16 @@ function Start-ProjectAutopilotIfNeeded {
     try {
       $lastTs = [datetime]::Parse([string]$last.ts).ToUniversalTime()
       $ageMin = ((Get-Date).ToUniversalTime() - $lastTs).TotalMinutes
-      if ($ageMin -lt [int]$cfg.cooldownMinutes) {
-        return [pscustomobject]@{ queued=$false; reason='cooldown'; cooldown_remaining_minutes=[int]([int]$cfg.cooldownMinutes - [Math]::Floor($ageMin)); pressure=$pressure }
+      # 2026-07-02 audit (cooldown tax): when the LAST recorded coordinator outcome actually CREATED
+      # atoms, the full cooldown throttles nothing useful -- it is a pure chapter-boundary tax (observed
+      # ~5 min per boundary). Shrink it to 30s in that case; keep the full cooldown for empty/error
+      # streaks, where it is the retry-storm throttle.
+      $effCooldownMin = [double][int]$cfg.cooldownMinutes
+      try {
+        if ([int](Get-BacklogPackObjectValue -Obj $last -Name 'last_outcome_created' -Default 0) -gt 0) { $effCooldownMin = 0.5 }
+      } catch {}
+      if ($ageMin -lt $effCooldownMin) {
+        return [pscustomobject]@{ queued=$false; reason='cooldown'; cooldown_remaining_minutes=[int][Math]::Ceiling($effCooldownMin - $ageMin); pressure=$pressure }
       }
     } catch {}
   } else {
@@ -2230,7 +2294,41 @@ function Start-ProjectAutopilotIfNeeded {
   }
 
   if (-not (Test-ProjectAutopilotProjectClean -ProjectRoot $root)) {
-    return [pscustomobject]@{ queued=$false; reason='project-dirty-or-git-unavailable'; pressure=$pressure }
+    # 2026-07-02 audit (silent gates): this skip used to be invisible -- the reason existed only in a
+    # return object nobody reads, so one stray untracked file (or a git timeout) froze ALL planning at
+    # the next boundary indefinitely with no operator signal. Emit a skip event carrying the dirty file
+    # list, plus a one-shot operator message throttled by a channel marker file (6h; mirrors the
+    # .plan-gate-notified pattern in driver/81-loop-idle-claim.ps1, implemented locally here).
+    $dirtyList = @()
+    try {
+      $gitDG = 'git'
+      try { if (Get-Command Get-GitExe -ErrorAction SilentlyContinue) { $gitDG = Get-GitExe } } catch { $gitDG = 'git' }
+      $dgRes = Invoke-BacklogProcess -FilePath $gitDG -Arguments @('-c', "safe.directory=$root", '-C', $root, 'status', '--porcelain') -WorkingDirectory $root -TimeoutSec 30
+      if (-not $dgRes.TimedOut -and $dgRes.ExitCode -eq 0) {
+        $dirtyList = @($dgRes.Output | ForEach-Object { [string]$_ -split "\r?\n" } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 12)
+      } else {
+        $dirtyList = @('(git status unavailable: timeout or non-zero exit)')
+      }
+    } catch { $dirtyList = @('(git status unavailable: ' + $_.Exception.Message + ')') }
+    try {
+      Write-BacklogJsonLine ([ordered]@{
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+        action = 'project-autopilot-dirty-gate-skip'
+        channel = $slug
+        project_root = $root
+        dirty = @($dirtyList)
+      })
+    } catch {}
+    try {
+      $dirtyMark = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $slug) '.dirty-gate-notified'
+      $dirtyDue = $true
+      try { if ((Test-Path -LiteralPath $dirtyMark) -and (((Get-Date) - (Get-Item -LiteralPath $dirtyMark).LastWriteTime).TotalHours -lt 6)) { $dirtyDue = $false } } catch {}
+      if ($dirtyDue) {
+        try { Set-Content -LiteralPath $dirtyMark -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ASCII } catch {}
+        Add-Message -From system -Text ("Project Autopilot: planning for '" + $slug + "' is BLOCKED -- project worktree is dirty or git is unavailable (" + $root + "). Dirty: " + ((@($dirtyList) | Select-Object -First 6) -join '; ') + ". Commit or clean the project repo to resume planning.") -Kind event | Out-Null
+      }
+    } catch {}
+    return [pscustomobject]@{ queued=$false; reason='project-dirty-or-git-unavailable'; pressure=$pressure; dirty=@($dirtyList) }
   }
 
   # 2026-06-28 (upfront-speed #2): retire the redundant FOREGROUND coordinator whenever decompose-ahead is
@@ -2928,7 +3026,40 @@ function Test-ShouldBackgroundDecompose {
 function Invoke-BackgroundDecomposeAheadIfNeeded {
   param([string]$Channel)
   $decision = Test-ShouldBackgroundDecompose -Channel $Channel
-  if (-not $decision.should) { return $decision }
+  if (-not $decision.should) {
+    # 2026-07-02 audit (silent negative path): every should=false reason used to be discarded (the driver
+    # pipes this call to Out-Null), so a misconfigured/wedged background planner was invisible -- nothing
+    # in the system could say WHY no atoms appeared. Emit a 'background-decompose-skipped' event, throttled
+    # by a channel marker file: only on reason TRANSITIONS or a 6h heartbeat (mirrors the .bg-noplan-warned
+    # marker pattern above) so idle ticks with a stable reason (e.g. flag-off) do not spam the journal.
+    try {
+      $skipReason = [string]$decision.reason
+      $skipMark = Join-Path (Join-Path (Join-Path (Get-BridgeRoot) 'channels') $Channel) '.bg-decompose-skipped'
+      $lastReason = ''
+      $ageHours = [double]999
+      try {
+        if (Test-Path -LiteralPath $skipMark) {
+          $lastReason = (((Get-Content -LiteralPath $skipMark -Raw -ErrorAction SilentlyContinue) | Out-String)).Trim()
+          $ageHours = ((Get-Date) - (Get-Item -LiteralPath $skipMark).LastWriteTime).TotalHours
+        }
+      } catch {}
+      if (($lastReason -ne $skipReason) -or ($ageHours -ge 6)) {
+        try { Set-Content -LiteralPath $skipMark -Value $skipReason -Encoding ASCII } catch {}
+        Write-BacklogJsonLine ([ordered]@{
+          ts = (Get-Date).ToUniversalTime().ToString('o')
+          action = 'background-decompose-skipped'
+          channel = [string]$Channel
+          reason = $skipReason
+          runnable = [int]$decision.runnable
+          in_flight = [int]$decision.chapters_in_flight
+          limit = [int]$decision.limit
+          decomposed = [int]$decision.decomposed
+          total = [int]$decision.total_chapters
+        }) | Out-Null
+      }
+    } catch {}
+    return $decision
+  }
   $spawn = Start-BackgroundProjectDecompose -Channel $Channel
   if ($spawn.started) {
     try {
@@ -2953,8 +3084,32 @@ function Add-ProjectBacklogFromMarker {
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = Get-ProjectAutopilotSlug }
   if ([string]::IsNullOrWhiteSpace($Channel)) { $Channel = 'main' }
   $isBridgeSelfBacklog = (([string]$Channel).Trim().ToLowerInvariant() -eq 'main')
-  $max = [Math]::Max(1, [Math]::Min(50, [int]$MaxTasks))
-  $tasks = @(Get-ProjectAutopilotTaskArrayFromMarker -Block $Block | Select-Object -First $max)
+  # 2026-07-02 audit (silent truncation): hard cap raised 50 -> 200. A wide all-chapters emit for a
+  # larger project legitimately exceeds 50 atoms; the old silent '-First $max' dropped the tail chapters
+  # AND left the kept atoms' depends_on dangling (the dangling-dep guard then runs dependents PREMATURELY,
+  # it does not block them). Config maxTasksPerBatch is still respected via $MaxTasks. When the cap
+  # actually drops atoms, emit a LOUD event + operator message instead of losing them without a trace.
+  $max = [Math]::Max(1, [Math]::Min(200, [int]$MaxTasks))
+  $parsedTasks = @(Get-ProjectAutopilotTaskArrayFromMarker -Block $Block)
+  $tasks = @($parsedTasks | Select-Object -First $max)
+  if ($parsedTasks.Count -gt $tasks.Count) {
+    $truncDropped = $parsedTasks.Count - $tasks.Count
+    try {
+      Write-BacklogJsonLine ([ordered]@{
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+        action = 'project-backlog-truncated'
+        channel = [string]$Channel
+        before = [int]$parsedTasks.Count
+        kept = [int]$tasks.Count
+        dropped = [int]$truncDropped
+        max_tasks = [int]$max
+        source = [string]$Source
+      })
+    } catch {}
+    try {
+      Add-Message -From system -Text ("Project Autopilot: PROJECT_BACKLOG batch for '" + [string]$Channel + "' exceeded the ingest cap: " + [int]$parsedTasks.Count + " atoms emitted, cap " + [int]$max + " -> " + [int]$truncDropped + " atoms DROPPED (their depends_on links may now dangle). Raise projectAutopilotMaxTasksPerBatch or split the emit.") -Kind event | Out-Null
+    } catch {}
+  }
   if ($tasks.Count -eq 0) { return [pscustomobject]@{ created=0; skipped=0; errors=@('no valid JSON tasks found'); ids=@() } }
   # 2026-06-27 Phase-1 diffusion: clean over-declared per-atom file ownership BEFORE the diffusion gate
   # and backlog write, so independent atoms are not falsely serialized by a shared (over-declared) touch set.
@@ -2966,7 +3121,15 @@ function Add-ProjectBacklogFromMarker {
   try {
     $cfg = Get-ProjectAutopilotConfig
     $diffusionMode = ([string]$cfg.diffusionMode).Trim().ToLowerInvariant()
-    if ($diffusionMode -in @('shadow','diffusion')) {
+    # 2026-07-02 audit (strict-diffusion catch-22): mode 'wide' now ALSO enters this section, but ONLY for
+    # contract synthesis + the freeze-manifest/lock write. Previously the freeze-lock writer ran solely on
+    # the shadow/diffusion path, wide never froze anything, and the coordinator self-heal rewrites
+    # diffusion->wide whenever no stable lock exists -- so strict diffusion was a fixed-point catch-22,
+    # permanently unreachable from every starting state. With wide writing the locks, the NEXT coordinator
+    # sees Test-ProjectAutopilotHasFrozenContracts=true and strict mode can engage. Wide DISPATCH is
+    # unchanged: no shaping, no depends_on rewriting, no stitch atoms (guards below), and the
+    # contracts.Count -eq 0 early-skip keeps zero-metadata batches free (the ch0 hang fix).
+    if ($diffusionMode -in @('shadow','diffusion','wide')) {
       $projectRoot = ''
       try {
         if (Get-Command Get-ChannelProjectBinding -ErrorAction SilentlyContinue) {
@@ -3027,8 +3190,9 @@ function Add-ProjectBacklogFromMarker {
       # behaviour) vs contract-soft (the diffusion projection) -- and emit PROJECT_WAVE_SCHEDULE.json (into
       # the channel runtime dir, NOT the project worktree) + a telemetry marker. Pure in-memory graph work
       # on $tasks; never throws; changes NO execution (the collapse/dispatch logic below is untouched).
+      # 2026-07-02 audit: shadow/diffusion only -- wide entered this section solely for synthesis+freeze.
       try {
-        if (Get-Command Invoke-ProjectAutopilotShadowPlanner -ErrorAction SilentlyContinue) {
+        if (($diffusionMode -in @('shadow','diffusion')) -and (Get-Command Invoke-ProjectAutopilotShadowPlanner -ErrorAction SilentlyContinue)) {
           $planOutDir = Join-Path (Join-Path (Get-BridgeRoot) 'channels') ([string]$Channel)
           $planSummary = Invoke-ProjectAutopilotShadowPlanner -Tasks $tasks -Contracts $contracts -OutputDir $planOutDir -Channel $Channel
           if ($planSummary) {
@@ -3065,67 +3229,76 @@ function Add-ProjectBacklogFromMarker {
             mode = $diffusionMode
             manifest = $freezeManifest
           })
-          $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
-          # Step 8 (disk re-read fix): the reader above returns ONLY on-disk contracts and DISCARDS the
-          # in-memory synthesized ones, so on cold start $contracts would drop back to empty right before the
-          # gate. RE-MERGE the synthesized entries (real disk contracts still win by id), then upgrade each
-          # contract whose freeze manifest entry has lock_written==true to stable=$true: disk contracts get
-          # stable from the re-read as before; synthesized contracts get it ONLY from the freeze manifest we
-          # just wrote (their in-memory entries carry stable=$false). Without this the gate would redden on
-          # 'contract-unstable' even after a successful freeze.
-          try {
-            $reIds = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($c in @($contracts)) {
-              $rid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
-              if (-not [string]::IsNullOrWhiteSpace($rid)) { [void]$reIds.Add($rid) }
-            }
-            $reMerged = New-Object 'System.Collections.Generic.List[object]'
-            foreach ($c in @($contracts)) { $reMerged.Add($c) | Out-Null }
-            foreach ($sc in @($synthesizedContracts)) {
-              $sid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $sc -Name 'id' -Default ''))
-              if ([string]::IsNullOrWhiteSpace($sid) -or $reIds.Contains($sid)) { continue }
-              [void]$reIds.Add($sid)
-              $reMerged.Add($sc) | Out-Null
-            }
-            $contracts = @($reMerged.ToArray())
-            $lockedIds = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($fmEntry in @($freezeManifest.contracts)) {
-              if ([bool](Get-BacklogPackObjectValue -Obj $fmEntry -Name 'lock_written' -Default $false)) {
-                $lid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $fmEntry -Name 'id' -Default ''))
-                if (-not [string]::IsNullOrWhiteSpace($lid)) { [void]$lockedIds.Add($lid) }
+          # 2026-07-02 audit (strict-diffusion catch-22): the post-freeze re-read + stable upgrade below
+          # feed only the shadow/diffusion GATE + shaping; wide dispatch never consults them, so wide
+          # stops here -- the freeze locks written above are its whole purpose.
+          if ($diffusionMode -in @('shadow','diffusion')) {
+            $contracts = @(Get-ProjectAutopilotInterfaceContracts -ProjectRoot $projectRoot -Channel $Channel)
+            # Step 8 (disk re-read fix): the reader above returns ONLY on-disk contracts and DISCARDS the
+            # in-memory synthesized ones, so on cold start $contracts would drop back to empty right before the
+            # gate. RE-MERGE the synthesized entries (real disk contracts still win by id), then upgrade each
+            # contract whose freeze manifest entry has lock_written==true to stable=$true: disk contracts get
+            # stable from the re-read as before; synthesized contracts get it ONLY from the freeze manifest we
+            # just wrote (their in-memory entries carry stable=$false). Without this the gate would redden on
+            # 'contract-unstable' even after a successful freeze.
+            try {
+              $reIds = New-Object 'System.Collections.Generic.HashSet[string]'
+              foreach ($c in @($contracts)) {
+                $rid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
+                if (-not [string]::IsNullOrWhiteSpace($rid)) { [void]$reIds.Add($rid) }
               }
-            }
-            foreach ($c in @($contracts)) {
-              $cid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
-              # AUTHORITATIVE: THIS tick's freeze is the sole source of stability at the gate. Force stable to
-              # match the freeze manifest -- both SET (synthesized/frozen now) AND CLEAR (a disk contract that
-              # arrived stable=true from a STALE prior-tick lock whose provider/consumer atoms are NOT in this
-              # batch, so it was NOT re-frozen now). Without the CLEAR the gate could green on a contract this
-              # batch never froze while shaping (keyed on freeze_ready+lock_written) ignores it -- a dishonest
-              # gate/shaping divergence. Cost: a legitimately-frozen prior-decompose contract whose provider is
-              # already built (not in this batch) also degrades that batch to serial -- SAFE (never worse than
-              # serial), and cold start (all-synthesized, no disk contracts) is unaffected.
-              $c | Add-Member -Force -NotePropertyName stable -NotePropertyValue ([bool]$lockedIds.Contains($cid))
-            }
-          } catch {}
+              $reMerged = New-Object 'System.Collections.Generic.List[object]'
+              foreach ($c in @($contracts)) { $reMerged.Add($c) | Out-Null }
+              foreach ($sc in @($synthesizedContracts)) {
+                $sid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $sc -Name 'id' -Default ''))
+                if ([string]::IsNullOrWhiteSpace($sid) -or $reIds.Contains($sid)) { continue }
+                [void]$reIds.Add($sid)
+                $reMerged.Add($sc) | Out-Null
+              }
+              $contracts = @($reMerged.ToArray())
+              $lockedIds = New-Object 'System.Collections.Generic.HashSet[string]'
+              foreach ($fmEntry in @($freezeManifest.contracts)) {
+                if ([bool](Get-BacklogPackObjectValue -Obj $fmEntry -Name 'lock_written' -Default $false)) {
+                  $lid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $fmEntry -Name 'id' -Default ''))
+                  if (-not [string]::IsNullOrWhiteSpace($lid)) { [void]$lockedIds.Add($lid) }
+                }
+              }
+              foreach ($c in @($contracts)) {
+                $cid = ConvertTo-ProjectAutopilotSlug ([string](Get-BacklogPackObjectValue -Obj $c -Name 'id' -Default ''))
+                # AUTHORITATIVE: THIS tick's freeze is the sole source of stability at the gate. Force stable to
+                # match the freeze manifest -- both SET (synthesized/frozen now) AND CLEAR (a disk contract that
+                # arrived stable=true from a STALE prior-tick lock whose provider/consumer atoms are NOT in this
+                # batch, so it was NOT re-frozen now). Without the CLEAR the gate could green on a contract this
+                # batch never froze while shaping (keyed on freeze_ready+lock_written) ignores it -- a dishonest
+                # gate/shaping divergence. Cost: a legitimately-frozen prior-decompose contract whose provider is
+                # already built (not in this batch) also degrades that batch to serial -- SAFE (never worse than
+                # serial), and cold start (all-synthesized, no disk contracts) is unaffected.
+                $c | Add-Member -Force -NotePropertyName stable -NotePropertyValue ([bool]$lockedIds.Contains($cid))
+              }
+            } catch {}
+          }
         }
-        # Step 9 (option B): the raw coordinator batch has NO consolidation/stitch atom, so the gate's
-        # stitching-tests-present check reddens ('stitching-tests-missing') even with good frozen contracts.
-        # New-ProjectAutopilotShapedBatch (invoked immediately below on a GREEN diffusion gate) DETERMINISTICALLY
-        # appends exactly such a stitch atom right after this gate call, so assert StitchingTestsPresent here.
-        $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -StitchingTestsPresent $true -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
-        Write-BacklogJsonLine ([ordered]@{
-          ts = (Get-Date).ToUniversalTime().ToString('o')
-          action = 'project-autopilot-diffusion-gate'
-          channel = [string]$Channel
-          mode = $diffusionMode
-          enabled = [bool]$diffusionGate.enabled
-          fallback = ($diffusionMode -eq 'diffusion' -and -not [bool]$diffusionGate.enabled)
-          reasons = @($diffusionGate.reasons)
-          atoms = [int]$diffusionGate.wave_size
-          independent_atoms = [int]$diffusionGate.independent_atom_count
-          freeze_manifest_id = if ($freezeManifest) { [string]$freezeManifest.manifest_id } else { '' }
-        })
+        # 2026-07-02 audit: the heavy diffusion gate is shadow/diffusion-only; wide uses its own light
+        # schedulability gate (Test-ProjectAutopilotWideGate) in the dispatch section below, unchanged.
+        if ($diffusionMode -in @('shadow','diffusion')) {
+          # Step 9 (option B): the raw coordinator batch has NO consolidation/stitch atom, so the gate's
+          # stitching-tests-present check reddens ('stitching-tests-missing') even with good frozen contracts.
+          # New-ProjectAutopilotShapedBatch (invoked immediately below on a GREEN diffusion gate) DETERMINISTICALLY
+          # appends exactly such a stitch atom right after this gate call, so assert StitchingTestsPresent here.
+          $diffusionGate = Test-ProjectAutopilotDiffusionGate -Tasks $tasks -Contracts $contracts -ProjectRoot $projectRoot -OptIn:($true) -StitchingTestsPresent $true -MinIndependentAtoms ([int]$cfg.diffusionMinIndependentAtoms) -MaxWaveSize ([int]$cfg.diffusionMaxWaveSize)
+          Write-BacklogJsonLine ([ordered]@{
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            action = 'project-autopilot-diffusion-gate'
+            channel = [string]$Channel
+            mode = $diffusionMode
+            enabled = [bool]$diffusionGate.enabled
+            fallback = ($diffusionMode -eq 'diffusion' -and -not [bool]$diffusionGate.enabled)
+            reasons = @($diffusionGate.reasons)
+            atoms = [int]$diffusionGate.wave_size
+            independent_atoms = [int]$diffusionGate.independent_atom_count
+            freeze_manifest_id = if ($freezeManifest) { [string]$freezeManifest.manifest_id } else { '' }
+          })
+        }
       }
     }
   } catch {}
@@ -3139,8 +3312,11 @@ function Add-ProjectBacklogFromMarker {
   #    long enough that the driver heartbeat timed out and the channel froze ~90s after start.
   #  - wide: the executor ALREADY EXISTS -- Resolve-BacklogWorkpackFrontier runs INDEPENDENT atoms across
   #    chapters in parallel and serializes DEPENDENT ones via depends_on, no chapter gating. So wide
-  #    collapses ONLY when its LIGHT gate is red (cyclic depends_on, a same-wave file conflict, or too few
-  #    independent atoms); a GREEN wide gate lets the whole cross-chapter batch through to the write loop.
+  #    collapses ONLY for a genuinely BROKEN graph (cyclic depends_on, or a depends_on that resolves
+  #    neither in-batch nor against this channel's already-ingested slugs); a GREEN (schedulable) wide
+  #    gate lets the whole cross-chapter batch through to the write loop (2026-07-02 audit: the old
+  #    roots-count floor + any-file-overlap criteria were deterministically red at cold start and
+  #    silently discarded every later chapter).
   $collapseReason = ''
   if ($diffusionMode -eq 'shadow') {
     # shadow is measure-only and NEVER changes execution: always collapse to the proven serial one-chapter
@@ -3195,7 +3371,17 @@ function Add-ProjectBacklogFromMarker {
   } elseif ($diffusionMode -eq 'wide') {
     $wideGate = $null
     $wideK = 2; try { $wideK = [int]$cfg.diffusionMinIndependentAtoms } catch {}
-    try { $wideGate = Test-ProjectAutopilotWideGate -Tasks $tasks -MinIndependentAtoms $wideK } catch {}
+    # 2026-07-02 audit: the schedulability gate must see this channel's ALREADY-INGESTED slugs so a
+    # batch atom may depend on a previously-emitted atom without reddening the gate.
+    $knownChannelSlugs = @()
+    try {
+      $chanKeyWide = (([string]$Channel).Trim().ToLowerInvariant())
+      $knownChannelSlugs = @(Get-Backlog | Where-Object {
+        ([string](Get-BacklogPackObjectValue -Obj $_ -Name 'from' -Default '') -eq 'project-autopilot') -and
+        ((([string](Get-BacklogPackObjectValue -Obj $_ -Name 'project' -Default '')).Trim().ToLowerInvariant()) -eq $chanKeyWide)
+      } | ForEach-Object { [string](Get-BacklogPackObjectValue -Obj $_ -Name 'slug' -Default '') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    } catch { $knownChannelSlugs = @() }
+    try { $wideGate = Test-ProjectAutopilotWideGate -Tasks $tasks -MinIndependentAtoms $wideK -KnownSlugs $knownChannelSlugs } catch {}
     $wideReasons = if ($wideGate) { @($wideGate.reasons) } else { @('wide-gate-error') }
     $wideIndep = if ($wideGate) { [int]$wideGate.independent_atom_count } else { 0 }
     try {
@@ -3207,6 +3393,12 @@ function Add-ProjectBacklogFromMarker {
         reasons = @($wideReasons)
         atoms = [int]$tasks.Count
         independent_atoms = $wideIndep
+        # 2026-07-02 audit: MinIndependentAtoms floor demoted to telemetry (never a red trigger).
+        first_wave_runnable = [int]$(if ($wideGate) { $wideGate.first_wave_runnable } else { 0 })
+        min_independent_floor = [int]$wideK
+        floor_met = [bool]($wideGate -and $wideGate.floor_met)
+        file_conflicts = [int]$(if ($wideGate) { $wideGate.file_conflict_count } else { 0 })
+        unresolved_depends_on = @($(if ($wideGate) { $wideGate.unresolved_depends_on } else { @() }))
       })
     } catch {}
     if (-not ($wideGate -and [bool]$wideGate.enabled)) { $collapseReason = 'wide-gate-red' }

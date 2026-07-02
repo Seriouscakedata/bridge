@@ -346,23 +346,34 @@ try {
   Assert-True (-not [bool]$r1.paused) 'first empty outcome should not pause when limit=2'
   Assert-True ([int]$r1.empty_coordinator_streak -eq 1) 'first empty outcome should set streak=1'
 
-  $r2 = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-2' -Created 0
-  Assert-True ([bool]$r2.paused) 'second empty outcome should pause'
-  Assert-True ([int]$r2.empty_coordinator_streak -eq 2) 'second empty outcome should set streak=2'
+  # 2026-07-01 pause-guard: a COLD-START channel (no chapter decomposed yet) must NEVER pause on an
+  # empty-coordinator streak - empty at cold start means failure-to-start, not scope-exhausted.
+  $r2cold = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-2-cold' -Created 0
+  Assert-True (-not [bool]$r2cold.paused) 'cold-start channel must NOT pause even at streak limit (pause-guard)'
+  Assert-True ([int]$r2cold.empty_coordinator_streak -eq 2) 'cold-start second empty outcome should still count streak=2'
+
+  # Seed one decomposed chaptered atom -> channel is no longer cold-start -> pause machinery applies again.
+  $seedAtom = ('{"id":"seed-ch1","from":"project-autopilot","project":"' + $script:TestChannel + '","chapter":"Chapter 1 - seed","status":"done","text":"seed","slug":"seed-ch1"}')
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug $script:TestChannel), $seedAtom + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  $r2 = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-3' -Created 0
+  Assert-True ([bool]$r2.paused) 'post-cold-start empty streak at limit should pause (scope exhausted)'
+  Assert-True ([int]$r2.empty_coordinator_streak -ge 2) 'post-cold-start empty outcome should keep streak at/above limit'
 
   $start = Start-ProjectAutopilotIfNeeded -Reason 'idle-empty-backlog'
   Assert-True (-not [bool]$start.queued) 'paused autopilot must not queue a coordinator'
   Assert-True ([string]$start.reason -eq 'paused-empty-scope') ("expected paused-empty-scope, got " + [string]$start.reason)
   Assert-True ($script:Messages.Count -ge 1) 'pause should be visible in chat messages'
 
-  $dup = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-2' -Created 0
+  $dup = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-3' -Created 0
   Assert-True (-not [bool]$dup.recorded) 'duplicate coordinator outcome should be idempotent'
 
-  $r3 = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-3' -Created 3
+  $r3 = Record-ProjectAutopilotCoordinatorOutcome -Channel $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -CoordinatorId 'coord-4' -Created 3
   Assert-True (-not [bool]$r3.paused) 'created atoms should resume autopilot'
   Assert-True ([int]$r3.empty_coordinator_streak -eq 0) 'created atoms should reset empty streak'
 
-  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug $script:TestChannel), '', (New-Object System.Text.UTF8Encoding($false)))
+  # 2026-07-02: keep the seed chaptered atom so the legacy-streak fixture is NOT cold-start
+  # (the cold-start pause-guard would otherwise correctly refuse to pause a never-started project).
+  [System.IO.File]::WriteAllText((Get-ChannelBacklogPath -Slug $script:TestChannel), $seedAtom + "`n", (New-Object System.Text.UTF8Encoding($false)))
   $coordinatorText = New-ProjectAutopilotCoordinatorTaskText -Slug $script:TestChannel -ProjectRoot (Join-Path $script:TestBridgeRoot 'project') -MaxTasks 4
   Add-Idea -Text $coordinatorText -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'done' -Severity 'critical' -Project $script:TestChannel -Scope 'project' -SkipCurator | Out-Null
   Add-Idea -Text $coordinatorText -From 'project-autopilot' -Tags @('project-autopilot','auto-generated') -Status 'done' -Severity 'critical' -Project $script:TestChannel -Scope 'project' -SkipCurator | Out-Null

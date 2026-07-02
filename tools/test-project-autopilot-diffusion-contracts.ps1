@@ -174,7 +174,10 @@ try {
   Assert-True (@($conflictGate.reasons) -contains 'file-conflict-unresolved') 'file conflict reason must be reported'
 
   $autopilotText = [System.IO.File]::ReadAllText((Join-Path $root 'lib\backlog-autopilot.ps1'), [System.Text.Encoding]::UTF8)
-  Assert-True ($autopilotText.IndexOf('Default decomposition is still ONE next chapter/wave', [System.StringComparison]::Ordinal) -ge 0) 'prompt must preserve one-chapter default'
+  # 2026-07-01/02: decomposition scope is mode-aware. off/shadow keep the one-chapter default;
+  # wide/diffusion demand ALL remaining chapters in one PROJECT_BACKLOG. Assert both branches exist.
+  Assert-True ($autopilotText.IndexOf('Default decomposition is ONE next chapter/wave', [System.StringComparison]::Ordinal) -ge 0) 'prompt must preserve one-chapter default for off/shadow modes'
+  Assert-True ($autopilotText.IndexOf('decompose ALL remaining chapters AT ONCE', [System.StringComparison]::Ordinal) -ge 0) 'prompt must demand all-chapters decomposition for wide/diffusion modes'
   Assert-True ($autopilotText.IndexOf('Diffusion/cross-chapter decomposition is opt-in only', [System.StringComparison]::Ordinal) -ge 0) 'prompt must document diffusion opt-in gate'
   Assert-True ($autopilotText.IndexOf('"provides"', [System.StringComparison]::Ordinal) -ge 0) 'PROJECT_BACKLOG schema must include provides'
   Assert-True ($autopilotText.IndexOf('"consumes"', [System.StringComparison]::Ordinal) -ge 0) 'PROJECT_BACKLOG schema must include consumes'

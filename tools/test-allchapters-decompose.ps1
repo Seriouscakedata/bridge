@@ -48,15 +48,20 @@ function Atom { param([string]$Proj,[string]$Chapter) [pscustomobject]@{ from='p
 function Coord { param([string]$Mode) New-ProjectAutopilotCoordinatorTaskText -Slug 'testch' -ProjectRoot $tmp -MaxTasks 12 -DiffusionMode $Mode -DiffusionMinIndependentAtoms 2 -DiffusionMaxWaveSize 12 }
 
 # ---- A: channel filter -- other channel's chapters must NOT inflate testch's count ----
+# 2026-07-02: assertion updated to the current prompt. 'diffusion' with no stable frozen contract
+# self-heals to 'wide' (2026-07-01), and the 2026-07-01 planner-compliance fix replaced the singular
+# 'NEXT chapter to decompose NOW' anchor with the all-chapters 'CHAPTERS REMAINING: Chapter N through
+# Chapter M' directive in wide/diffusion. The channel-filter intent is unchanged: next must be
+# Chapter 1 (other-project atoms ignored), i.e. the remaining span starts at Chapter 1.
 $script:BL = @( (Atom 'other' 'Chapter 1'), (Atom 'other' 'Chapter 2') )  # different project
 $pA = Coord 'diffusion'
-Assert-True ($pA -match 'NEXT chapter to decompose NOW: Chapter 1\b') "channel filter: other-project atoms ignored -> next=Chapter 1"
+Assert-True ($pA -match 'CHAPTERS REMAINING: Chapter 1 through Chapter 3\b') "channel filter: other-project atoms ignored -> remaining starts at Chapter 1"
 Assert-True ($pA -notmatch 'all .* approved plan chapters are already decomposed') "channel filter: NOT falsely 'all decomposed'"
 
 # ---- B: own channel's decomposed chapter IS counted ----
 $script:BL = @( (Atom 'testch' 'Chapter 1'), (Atom 'other' 'Chapter 2'), (Atom 'other' 'Chapter 3') )
 $pB = Coord 'diffusion'
-Assert-True ($pB -match 'NEXT chapter to decompose NOW: Chapter 2\b') "own decomposed ch1 counted, other channels ignored -> next=Chapter 2"
+Assert-True ($pB -match 'CHAPTERS REMAINING: Chapter 2 through Chapter 3\b') "own decomposed ch1 counted, other channels ignored -> remaining starts at Chapter 2"
 
 # ---- C: diffusion scope = ALL chapters + contract clause ----
 $script:BL = @()

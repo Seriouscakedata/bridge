@@ -1,4 +1,21 @@
-﻿$script:DriverLoopTurnSetupBlock = {
+﻿function Test-DriverBatchForcesClaudeSpeaker {
+  # 2026-07-02 audit fix (turn-0 speaker misroute): a claimed PARALLEL workpack-batch task must be
+  # routed to the claude planner path at turn 0 -- that path owns the deterministic parallel
+  # dispatch block. Without this guard the codex fast paths (skip_planner / Test-DirectCoderTask)
+  # can grab the batch and one codex turn executes the whole N-atom batch INLINE in the main tree,
+  # after which the parallel dispatch re-executes everything in worktrees (duplicate work,
+  # touch-set conflicts). Pure predicate: no state reads/writes, testable in isolation.
+  param($State, [int]$TaskTurn = 0)
+  if ($TaskTurn -ne 0) { return $false }
+  if ($null -eq $State) { return $false }
+  $batchActive = $false; $batchMode = ''; $batchDispatched = $false
+  try { $batchActive = [bool]$State.workpack_batch_active } catch {}
+  try { $batchMode = [string]$State.workpack_batch_mode } catch {}
+  try { $batchDispatched = [bool]$State.workpack_batch_dispatched } catch {}
+  return ($batchActive -and ($batchMode -ne 'serial') -and (-not $batchDispatched))
+}
+
+$script:DriverLoopTurnSetupBlock = {
   $task = [string]$state.current_task
   $tt   = [int]$state.task_turn
   $mode = if ($state.task_mode) { [string]$state.task_mode } else { 'normal' }
@@ -6,11 +23,22 @@
   $forceCoder = $false
   try { $forceCoder = [bool]$state.force_coder } catch {}
   $skipPlanner = [bool]$state.skip_planner
+  # 2026-07-02 audit fix: active undispatched parallel workpack batch must land on the claude
+  # planner path (it contains the deterministic dispatch block). Guard sits ABOVE both codex
+  # fast-path branches below.
+  $batchForcesClaude = $false
+  try {
+    $batchGuardState = $null
+    try { $batchGuardState = Read-State } catch {}
+    if ($null -eq $batchGuardState) { $batchGuardState = $state }
+    $batchForcesClaude = [bool](Test-DriverBatchForcesClaudeSpeaker -State $batchGuardState -TaskTurn $tt)
+  } catch {}
   $speaker = if ($forceCoder) { 'codex' }
               elseif ($forcePlanner) { 'claude' }
               elseif ($mode -eq 'synthesis') { 'claude' }
               elseif ($mode -eq 'research') { 'claude' }
               elseif ($mode -eq 'study') { Get-StudySpeaker -TaskTurn $tt -StudySubtype ([string]$state.study_subtype) -StudyPhase ([string]$state.study_phase) }
+              elseif ($batchForcesClaude) { 'claude' }
               elseif ($skipPlanner -and $mode -eq 'normal' -and $tt -eq 0) { 'codex' }
               elseif ($tt -eq 0 -and $mode -eq 'normal' -and (Test-DirectCoderTask -TaskText $task)) { 'codex' }
               elseif ($tt -eq 0) { 'claude' }
