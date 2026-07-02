@@ -1,4 +1,4 @@
-﻿{
+{
     "slug":  "textforge",
     "name":  "TextForge",
     "description":  "Fresh parallel-harness run (clone of stress-forge plan) to validate diffusion speed fixes",
@@ -6,8 +6,8 @@
     "created":  "2026-07-02T10:04:59.2591293+03:00",
     "archived":  false,
     "plan_approved":  true,
-    "plan_approved_at":  "2026-06-29T04:25:08.0388054Z",
-    "plan_approved_signature":  "9d33b8ea3dc7829eb806ca6afdb27ad5d4ebe7b0658870c38c45b0d13721c6a6",
+    "plan_approved_at":  "2026-07-02T11:04:08.3822782Z",
+    "plan_approved_signature":  "19fe8c6fc8363a4f037700ec87e0f1f360706e68138749e6c866b1608eab1130",
     "plan_approved_signature_version":  "bridge-spec-v1",
     "plan_approved_files":  [
                                 "PROJECT_BRIEF.md",
@@ -18,6 +18,7 @@
                                 ".bridge\\project-contract.json"
                             ],
     "plan_spec_profile":  "lite",
+    "plan_approved_git_head":  "af9e2e0d483869b4cf50dc581e7fdab939f5e0d9",
     "plan_contract_path":  "C:\\Users\\rafie\\bridge-projects\\textforge\\.bridge\\project-contract.json",
     "plan_contract_score":  100,
     "plan_contract_required_sections":  [
@@ -30,6 +31,5 @@
                                             "checks",
                                             "risk",
                                             "parallel_policy"
-                                        ],
-    "plan_approved_git_head":  "1dc0aa2d9ef47212ab4a5771dfa68ea25683025a"
+                                        ]
 }
