@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $scriptPath = Join-Path $PSScriptRoot 'compact-backlog.ps1'
 if (-not (Test-Path -LiteralPath $scriptPath)) {

@@ -1,4 +1,4 @@
-param()
+﻿param()
 # Tests the upfront-speed#2 cold-start carve-out in Test-ShouldBackgroundDecompose + the foreground
 # retirement in Start-ProjectAutopilotIfNeeded (lib/backlog-autopilot.ps1). The carve-out is deadlock-
 # critical: when the foreground coordinator is retired (decomposeAheadLimit>1), the background worker MUST

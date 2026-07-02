@@ -1,0 +1,10 @@
+{
+    "lock_schema_version":  1,
+    "contract_id":  "user-api",
+    "version":  "0.0.0-synth",
+    "canonical_hash":  "6012f2c913f4bcd7f842efd5f1a3b7e5330703a5afa6310e99e41a66535644fa",
+    "stable":  true,
+    "source_path":  "",
+    "generated_stub_hash":  "ecbf0e42e1274b6498ca0cb379b181a158722e32129d4140ebd62406dbb0cd68",
+    "frozen_at":  "2026-07-01T08:55:48.2782133Z"
+}

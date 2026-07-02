@@ -1,4 +1,4 @@
-param()
+﻿param()
 # 2026-06-29 Option-A fix verification: planner<->approval-gate contract-schema alignment.
 # Proves (1) the schema instruction teaches the EXACT gate keys + traps, (2) a wrong-keyed
 # contract shaped like the selfie-styler failure is rejected, (3) a contract shaped like the

@@ -1,4 +1,4 @@
-# Regression: the cross-stream conflict guard (zero-conflict enforcement for wide parallel waves).
+﻿# Regression: the cross-stream conflict guard (zero-conflict enforcement for wide parallel waves).
 # Get-ParallelCrossStreamClaimedCollisions returns the subset of a stream's actual changed files that an
 # EARLIER stream this wave already delivered. The collect path quarantines a stream with any collision so
 # two streams never silently last-write-wins the same bridge-root file (closes the G4/G5/G6 hole).

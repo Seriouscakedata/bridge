@@ -1,4 +1,4 @@
-# Background project-autopilot decompose worker.
+﻿# Background project-autopilot decompose worker.
 #
 # Purpose: decompose the NEXT undecomposed project chapter into backlog atoms
 # OUT-OF-BAND, in a detached process, so the channel's main driver loop keeps

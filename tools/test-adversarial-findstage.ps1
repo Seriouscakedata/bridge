@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'adversarial-audit.ps1')
 

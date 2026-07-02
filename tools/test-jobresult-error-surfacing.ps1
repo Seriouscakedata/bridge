@@ -1,4 +1,4 @@
-param()
+﻿param()
 # 2026-06-29: verifies Get-JobResult surfaces the FIRST error section (not just the last 3000
 # chars), so build-tool failures whose cause precedes a long trailing dump (e.g. gradle's
 # runtime-classpath tree) are visible to the agents instead of being truncated away.

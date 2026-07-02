@@ -1,4 +1,4 @@
-# Regression: the frontier's touch-set (Get-BacklogWorkpackItemEditTouches) must prefer the NARROWED
+﻿# Regression: the frontier's touch-set (Get-BacklogWorkpackItemEditTouches) must prefer the NARROWED
 # declared touch-set (workpack_touch_set/touch_set, path-like) over the over-listed 'files' array, so
 # independent atoms (whose 'files' lists read-for-context files) don't falsely collide and serialize.
 # Speed lever #4 (2026-06-28). The control-plane gate is unaffected (policy.ps1:80 reads $Item.files direct).

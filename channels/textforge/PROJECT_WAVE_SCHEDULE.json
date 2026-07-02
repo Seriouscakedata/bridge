@@ -1,0 +1,315 @@
+{
+    "schema":  "project-wave-schedule/v1",
+    "channel":  "textforge",
+    "generated_at":  "2026-07-02T11:23:01.0445443Z",
+    "schedule":  {
+                     "atom_count":  55,
+                     "contract_count":  0,
+                     "acyclic":  true,
+                     "file_conflicts":  [
+
+                                        ],
+                     "dangling_consumes":  [
+
+                                           ],
+                     "classification":  {
+                                            "independent":  [
+                                                                "pkg-scaffold",
+                                                                "core-errors",
+                                                                "core-transform"
+                                                            ],
+                                            "contract_parallel":  [
+
+                                                                  ],
+                                            "hard_dependent":  [
+                                                                   "core-registry",
+                                                                   "core-pipeline",
+                                                                   "t-upper",
+                                                                   "t-lower",
+                                                                   "t-reverse",
+                                                                   "t-strip",
+                                                                   "t-title",
+                                                                   "t-swapcase",
+                                                                   "t-rot13",
+                                                                   "t-capitalize",
+                                                                   "t-remove-vowels",
+                                                                   "t-double-chars",
+                                                                   "t-trim-spaces",
+                                                                   "t-no-spaces",
+                                                                   "t-snake-case",
+                                                                   "t-kebab-case",
+                                                                   "t-shout",
+                                                                   "t-whisper",
+                                                                   "t-dedupe-chars",
+                                                                   "t-count-words",
+                                                                   "t-first-word",
+                                                                   "t-last-word",
+                                                                   "t-repeat-twice",
+                                                                   "t-add-prefix",
+                                                                   "t-add-suffix",
+                                                                   "t-caesar",
+                                                                   "t-count-chars",
+                                                                   "t-count-vowels",
+                                                                   "t-reverse-words",
+                                                                   "t-sort-words",
+                                                                   "t-sort-chars",
+                                                                   "t-unique-chars",
+                                                                   "t-alternate-case",
+                                                                   "t-replace-spaces",
+                                                                   "t-leetspeak",
+                                                                   "t-pig-latin",
+                                                                   "t-camel-case",
+                                                                   "t-pascal-case",
+                                                                   "t-hex-encode",
+                                                                   "t-b64-encode",
+                                                                   "t-squeeze",
+                                                                   "t-mirror",
+                                                                   "engine-loader",
+                                                                   "engine-compose",
+                                                                   "engine-validate",
+                                                                   "cli-entrypoint",
+                                                                   "test-all-transforms",
+                                                                   "test-registry",
+                                                                   "test-pipeline",
+                                                                   "test-compose",
+                                                                   "test-launch",
+                                                                   "test-concurrent"
+                                                               ],
+                                            "file_conflict":  [
+
+                                                              ]
+                                        },
+                     "hard":  {
+                                  "stats":  {
+                                                "wave_count":  7,
+                                                "wave_sizes":  [
+                                                                   3,
+                                                                   26,
+                                                                   16,
+                                                                   1,
+                                                                   5,
+                                                                   3,
+                                                                   1
+                                                               ],
+                                                "first_wave_size":  3,
+                                                "max_wave_size":  26,
+                                                "parallelism_pct":  89,
+                                                "scheduled":  55,
+                                                "cyclic_leftover":  [
+
+                                                                    ]
+                                            },
+                                  "waves":  [
+                                                {
+                                                    "wave":  1,
+                                                    "atoms":  [
+                                                                  "core-errors",
+                                                                  "core-transform",
+                                                                  "pkg-scaffold"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  2,
+                                                    "atoms":  [
+                                                                  "core-pipeline",
+                                                                  "core-registry",
+                                                                  "t-add-prefix",
+                                                                  "t-add-suffix",
+                                                                  "t-caesar",
+                                                                  "t-capitalize",
+                                                                  "t-count-words",
+                                                                  "t-dedupe-chars",
+                                                                  "t-double-chars",
+                                                                  "t-first-word",
+                                                                  "t-kebab-case",
+                                                                  "t-last-word",
+                                                                  "t-lower",
+                                                                  "t-no-spaces",
+                                                                  "t-remove-vowels",
+                                                                  "t-repeat-twice",
+                                                                  "t-reverse",
+                                                                  "t-rot13",
+                                                                  "t-shout",
+                                                                  "t-snake-case",
+                                                                  "t-strip",
+                                                                  "t-swapcase",
+                                                                  "t-title",
+                                                                  "t-trim-spaces",
+                                                                  "t-upper",
+                                                                  "t-whisper"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  3,
+                                                    "atoms":  [
+                                                                  "t-alternate-case",
+                                                                  "t-b64-encode",
+                                                                  "t-camel-case",
+                                                                  "t-count-chars",
+                                                                  "t-count-vowels",
+                                                                  "t-hex-encode",
+                                                                  "t-leetspeak",
+                                                                  "t-mirror",
+                                                                  "t-pascal-case",
+                                                                  "t-pig-latin",
+                                                                  "t-replace-spaces",
+                                                                  "t-reverse-words",
+                                                                  "t-sort-chars",
+                                                                  "t-sort-words",
+                                                                  "t-squeeze",
+                                                                  "t-unique-chars"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  4,
+                                                    "atoms":  [
+                                                                  "engine-loader"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  5,
+                                                    "atoms":  [
+                                                                  "engine-compose",
+                                                                  "engine-validate",
+                                                                  "test-concurrent",
+                                                                  "test-pipeline",
+                                                                  "test-registry"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  6,
+                                                    "atoms":  [
+                                                                  "cli-entrypoint",
+                                                                  "test-all-transforms",
+                                                                  "test-compose"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  7,
+                                                    "atoms":  [
+                                                                  "test-launch"
+                                                              ]
+                                                }
+                                            ]
+                              },
+                     "soft":  {
+                                  "stats":  {
+                                                "wave_count":  7,
+                                                "wave_sizes":  [
+                                                                   3,
+                                                                   26,
+                                                                   16,
+                                                                   1,
+                                                                   5,
+                                                                   3,
+                                                                   1
+                                                               ],
+                                                "first_wave_size":  3,
+                                                "max_wave_size":  26,
+                                                "parallelism_pct":  89,
+                                                "scheduled":  55,
+                                                "cyclic_leftover":  [
+
+                                                                    ]
+                                            },
+                                  "waves":  [
+                                                {
+                                                    "wave":  1,
+                                                    "atoms":  [
+                                                                  "core-errors",
+                                                                  "core-transform",
+                                                                  "pkg-scaffold"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  2,
+                                                    "atoms":  [
+                                                                  "core-pipeline",
+                                                                  "core-registry",
+                                                                  "t-add-prefix",
+                                                                  "t-add-suffix",
+                                                                  "t-caesar",
+                                                                  "t-capitalize",
+                                                                  "t-count-words",
+                                                                  "t-dedupe-chars",
+                                                                  "t-double-chars",
+                                                                  "t-first-word",
+                                                                  "t-kebab-case",
+                                                                  "t-last-word",
+                                                                  "t-lower",
+                                                                  "t-no-spaces",
+                                                                  "t-remove-vowels",
+                                                                  "t-repeat-twice",
+                                                                  "t-reverse",
+                                                                  "t-rot13",
+                                                                  "t-shout",
+                                                                  "t-snake-case",
+                                                                  "t-strip",
+                                                                  "t-swapcase",
+                                                                  "t-title",
+                                                                  "t-trim-spaces",
+                                                                  "t-upper",
+                                                                  "t-whisper"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  3,
+                                                    "atoms":  [
+                                                                  "t-alternate-case",
+                                                                  "t-b64-encode",
+                                                                  "t-camel-case",
+                                                                  "t-count-chars",
+                                                                  "t-count-vowels",
+                                                                  "t-hex-encode",
+                                                                  "t-leetspeak",
+                                                                  "t-mirror",
+                                                                  "t-pascal-case",
+                                                                  "t-pig-latin",
+                                                                  "t-replace-spaces",
+                                                                  "t-reverse-words",
+                                                                  "t-sort-chars",
+                                                                  "t-sort-words",
+                                                                  "t-squeeze",
+                                                                  "t-unique-chars"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  4,
+                                                    "atoms":  [
+                                                                  "engine-loader"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  5,
+                                                    "atoms":  [
+                                                                  "engine-compose",
+                                                                  "engine-validate",
+                                                                  "test-concurrent",
+                                                                  "test-pipeline",
+                                                                  "test-registry"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  6,
+                                                    "atoms":  [
+                                                                  "cli-entrypoint",
+                                                                  "test-all-transforms",
+                                                                  "test-compose"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  7,
+                                                    "atoms":  [
+                                                                  "test-launch"
+                                                              ]
+                                                }
+                                            ]
+                              },
+                     "projected":  {
+                                       "first_wave_gain":  0,
+                                       "wave_count_reduction":  0,
+                                       "parallelism_pct_hard":  89,
+                                       "parallelism_pct_soft":  89
+                                   }
+                 }
+}

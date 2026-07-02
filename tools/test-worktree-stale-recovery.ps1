@@ -1,4 +1,4 @@
-param()
+﻿param()
 # Verifies the 2026-06-29 latency root-fix in lib/parallel.ps1 Get-WorkerWorktree: a STALE worktree
 # registration left by a prior failed/quarantined run of the same task hash must NOT cause `git worktree
 # add` to throw (which forced the slow planner fallback + a quarantine). The fix prunes stale registrations

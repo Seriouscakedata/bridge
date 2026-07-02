@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Deduplicates a backlog.jsonl file by 'id' (last-line-wins), in-place.
 .DESCRIPTION

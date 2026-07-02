@@ -1,4 +1,4 @@
-param()
+﻿param()
 $ErrorActionPreference='Stop'
 . "C:\Users\rafie\OneDrive\Documents\bridge\lib\common.ps1" *> $null
 $fail=0

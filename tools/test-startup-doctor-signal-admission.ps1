@@ -1,4 +1,4 @@
-# test-startup-doctor-signal-admission.ps1 - startup admission for watchdog repair.signal before normal resume
+﻿# test-startup-doctor-signal-admission.ps1 - startup admission for watchdog repair.signal before normal resume
 param([string]$BridgeRoot = $null)
 
 $ErrorActionPreference = 'Stop'

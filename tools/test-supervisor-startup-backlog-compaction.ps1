@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $bridgeRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $bridgeRoot 'lib\startup-maintenance.ps1')

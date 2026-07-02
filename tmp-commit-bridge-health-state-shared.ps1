@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $scriptPath = $MyInvocation.MyCommand.Path
 $root = 'C:\Users\rafie\OneDrive\Documents\bridge'

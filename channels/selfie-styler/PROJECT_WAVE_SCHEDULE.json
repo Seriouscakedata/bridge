@@ -1,0 +1,138 @@
+{
+    "schema":  "project-wave-schedule/v1",
+    "channel":  "selfie-styler",
+    "generated_at":  "2026-07-01T16:56:19.7376574Z",
+    "schedule":  {
+                     "atom_count":  8,
+                     "contract_count":  0,
+                     "acyclic":  true,
+                     "file_conflicts":  [
+
+                                        ],
+                     "dangling_consumes":  [
+
+                                           ],
+                     "classification":  {
+                                            "independent":  [
+                                                                "ch3-8-gradle-deps",
+                                                                "ch4-style-screen",
+                                                                "ch5-apply-screen",
+                                                                "ch6-result-screen"
+                                                            ],
+                                            "contract_parallel":  [
+
+                                                                  ],
+                                            "hard_dependent":  [
+                                                                   "ch3-camera-screen",
+                                                                   "ch7-navhost-integration",
+                                                                   "ch7-flow-viewmodel-test",
+                                                                   "ch8-apk-build"
+                                                               ],
+                                            "file_conflict":  [
+
+                                                              ]
+                                        },
+                     "hard":  {
+                                  "stats":  {
+                                                "wave_count":  4,
+                                                "wave_sizes":  [
+                                                                   4,
+                                                                   1,
+                                                                   1,
+                                                                   2
+                                                               ],
+                                                "first_wave_size":  4,
+                                                "max_wave_size":  4,
+                                                "parallelism_pct":  57,
+                                                "scheduled":  8,
+                                                "cyclic_leftover":  [
+
+                                                                    ]
+                                            },
+                                  "waves":  [
+                                                {
+                                                    "wave":  1,
+                                                    "atoms":  [
+                                                                  "ch3-8-gradle-deps",
+                                                                  "ch4-style-screen",
+                                                                  "ch5-apply-screen",
+                                                                  "ch6-result-screen"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  2,
+                                                    "atoms":  [
+                                                                  "ch3-camera-screen"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  3,
+                                                    "atoms":  [
+                                                                  "ch7-navhost-integration"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  4,
+                                                    "atoms":  [
+                                                                  "ch7-flow-viewmodel-test",
+                                                                  "ch8-apk-build"
+                                                              ]
+                                                }
+                                            ]
+                              },
+                     "soft":  {
+                                  "stats":  {
+                                                "wave_count":  4,
+                                                "wave_sizes":  [
+                                                                   4,
+                                                                   1,
+                                                                   1,
+                                                                   2
+                                                               ],
+                                                "first_wave_size":  4,
+                                                "max_wave_size":  4,
+                                                "parallelism_pct":  57,
+                                                "scheduled":  8,
+                                                "cyclic_leftover":  [
+
+                                                                    ]
+                                            },
+                                  "waves":  [
+                                                {
+                                                    "wave":  1,
+                                                    "atoms":  [
+                                                                  "ch3-8-gradle-deps",
+                                                                  "ch4-style-screen",
+                                                                  "ch5-apply-screen",
+                                                                  "ch6-result-screen"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  2,
+                                                    "atoms":  [
+                                                                  "ch3-camera-screen"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  3,
+                                                    "atoms":  [
+                                                                  "ch7-navhost-integration"
+                                                              ]
+                                                },
+                                                {
+                                                    "wave":  4,
+                                                    "atoms":  [
+                                                                  "ch7-flow-viewmodel-test",
+                                                                  "ch8-apk-build"
+                                                              ]
+                                                }
+                                            ]
+                              },
+                     "projected":  {
+                                       "first_wave_gain":  0,
+                                       "wave_count_reduction":  0,
+                                       "parallelism_pct_hard":  57,
+                                       "parallelism_pct_soft":  57
+                                   }
+                 }
+}

@@ -1,4 +1,4 @@
-# test-parallel-mixed-split.ps1 -- unit tests for Get-ParallelDispatchBatchMixedSplitPlan
+﻿# test-parallel-mixed-split.ps1 -- unit tests for Get-ParallelDispatchBatchMixedSplitPlan
 # Pure planner: on a MIXED parallel result, split into merged-done / requeue / hold (attempt-capped).
 # Does NOT spawn workers or touch state; purely exercises the split logic.
 param()

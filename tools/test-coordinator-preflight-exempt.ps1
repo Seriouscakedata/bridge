@@ -1,4 +1,4 @@
-# Regression: the project-autopilot COORDINATOR must NOT be auto-held by the pre-flight danger gate.
+﻿# Regression: the project-autopilot COORDINATOR must NOT be auto-held by the pre-flight danger gate.
 # Root cause (2026-06-28): Test-AutonomousTaskSafe false-positives on the coordinator's own teaching
 # template -- verb 'skip' ("do not skip a chapter") + noun 'auth' (a JSON schema example value
 # "auth|gallery|chat|...") trip the "disable/bypass a protective mechanism" AND-rule -> risk=high ->

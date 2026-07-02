@@ -1,4 +1,4 @@
-param()
+﻿param()
 # 2026-06-30 verifies the "cross-chapter wide" diffusion step:
 #  - Test-ProjectAutopilotWideGate: light gate (acyclic + disjoint files + >=K independent), NO contracts.
 #  - Get-ProjectAutopilotEarliestChapterTaskSet: safe collapse to the earliest chapter.

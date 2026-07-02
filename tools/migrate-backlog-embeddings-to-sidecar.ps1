@@ -1,4 +1,4 @@
-param([switch]$DryRun)
+﻿param([switch]$DryRun)
 # 2026-06-30 one-time migration: move inline `embedding` vectors out of every channel's backlog.jsonl
 # into a sibling backlog-embeddings.jsonl sidecar. The inline vectors were ~88% of a 26MB backlog, so
 # every locked read-modify-write parsed+serialized ~22MB and storm-wedged the global bridge lock.

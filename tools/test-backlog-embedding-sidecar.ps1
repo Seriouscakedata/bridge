@@ -1,4 +1,4 @@
-param()
+﻿param()
 # 2026-06-30 verifies embeddings live in the backlog-embeddings.jsonl sidecar, NOT inline in
 # backlog.jsonl -- the fix for the global-lock contention storm (inline vectors were ~88% of a 26MB
 # backlog, so every locked RMW parsed+serialized ~22MB and wedged the bridge).
