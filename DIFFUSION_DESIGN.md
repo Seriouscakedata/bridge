@@ -11,6 +11,64 @@ Follow-up architect packet for cross-chapter diffusion:
 decomposition pass, durable `PROJECT_WAVE_SCHEDULE`, safety classifier, bounded corrective loop, and
 shadow -> limited -> full rollout. It is docs-only and does not approve behavior changes.
 
+---
+
+## Implementation status & live results (2026-07-03) — READ THIS FIRST
+
+The design below (2026-06-27/28) is the aspirational contract-diffusion plan. Since then the simpler
+**WIDE** path was built and PROVEN end-to-end, and the planner was made fast. This section is the current
+ground truth; the older sections are the still-valid reference for the harder contract-parallel P2+ work.
+
+### What actually works now (proven live)
+- **`diffusionMode` now has FOUR modes: off / shadow / diffusion / `wide`.** WIDE was the breakthrough: the
+  coordinator decomposes the ENTIRE project (all chapters) into ONE flat atom graph up front, and the frontier
+  runs every independent atom in parallel across chapters — no contracts, no stubs, no freeze. Dependent atoms
+  wait on `depends_on`; the dependent tail (integration + tests) stitches at the end. This is the practical
+  realization of "forget chapters, go straight to atoms, decompose everything at once."
+- **Swarm PROVEN** (project `textforge`, a Python parallel-stress plan, 55 atoms / 5 chapters): 55/55 atoms
+  done, 0 failed, **peak 25-26 concurrent workers** (pool cap 16 cycles them in batches), 51 tests green,
+  clean merge (0 conflicts, 0 duplicate classes, 40 plugins, 60 files), working app. The wide plugin wave
+  (24 independent atoms) built in ~5 min; the dependent tail (engine + tests) ran narrow, by design.
+- **Planner is fast now: ~34 min -> ~5.9 min per planning turn** (bridge's own `turns.jsonl`: sec 1993 ->
+  351, ~5.7x). Root: the whole planning turn was ONE agentic claude.exe call whose time was eaten by dozens
+  of internal file-read rounds + max reasoning + a bloated ~98KB prompt. Fix = inject PLAN/BRIEF/contract/
+  acceptance VERBATIM into the coordinator task + "do NOT read files, repo is empty, emit the full backlog in
+  ONE response" on cold start; lean coordinator prompt profile (rules+suffix 27K->5.2K chars, task-echo
+  de-duplicated); coordinator explicitly routed to the deep model at `--effort high` WITHOUT `ultrathink`
+  (previously the deep model was chosen by accident because the template contained the word "refactor").
+
+### The four roots that used to block "all chapters at once" (now understood/fixed)
+1. **Ingest collapsed the plan to ONE chapter.** A red/absent strict diffusion gate (no contracts -> gate=null)
+   collapsed the whole batch to the earliest chapter, DISCARDING the rest. Fix: a red strict gate now falls
+   back to **WIDE schedulability** (the whole valid DAG is ingested; collapse only for a genuinely broken
+   graph — cycle / dangling dep). This was the main "all chapters" killer.
+2. **Planner refuses on a contaminated repo.** A smart planner does git forensics (reflog/fsck/backup dirs) and
+   correctly REFUSES to rebuild over apparent-wiped work. This is correct safety, not a bug — measure from a
+   genuinely fresh repo (full `rm -rf .git && git init`, no history/backups/memory).
+3. **Worker git-archaeology.** Dangling objects after a reset make a worker "rescue" a lost commit, refuse its
+   atom, and stall the whole dependent front. Fix: after any reset run `git reflog expire --all && git gc
+   --prune=now` (fsck dangling = 0) and purge fresh panic entries from the channel memory.
+4. **Slow planning (~34 min).** Fixed as above.
+
+### Known remaining defect (NOT yet fixed) — next priority
+- **`batch-mixed-requeue-cap`.** In a MIXED workpack batch (some atoms done, some not), an INDEPENDENT atom
+  (own file, deps met) burns its retry counter alongside a failing batch-mate (a contention atom looping in
+  the zombie-reaper) and gets held after 3 attempts, blocking everything downstream. Observed on textforge:
+  two independent plugins were unfairly held and blocked engine + tests. Fix candidate: in mixed-requeue do
+  not burn attempts on atoms that never actually started/failed — decouple an atom's fate from its batch-mate.
+
+### GIT STATUS — IMPORTANT (2026-07-03)
+The fixes above (`cb7ce1b` ingest-collapse, `01e9028` planner-speed, `cf5a158` 14 audit fixes, `edef163`
+stop-flag/halt) are **NOT on `master`.** On 2026-07-02 the bridge's own watchdog auto-rollback reset `master`
+to fork-point `039a0be` (triggered by a pre-existing OOM-lint on `ConvertTo-Json -Depth 12`, unrelated to
+this work) and discarded all of it as collateral. The work is preserved on branch
+**`rescue/planner-speed-work`** (tag `rescue-20260703-planner-speed`, tip `edef163`). `master` (tip `18f65a0`)
+does NOT contain these diffusion improvements. To restore: reset `master` to `edef163` and cherry-pick the one
+useful doctor commit `a15c9f8` (JSON depth 12->10) so a restart does not re-trigger the same rollback. See
+memory note `watchdog-rollback-discarded-operator-work`.
+
+---
+
 ## Scope correction after critic review
 
 Commit `7a1a2b0` was auto-titled as a workpack batch that completed seven independent approved backlog

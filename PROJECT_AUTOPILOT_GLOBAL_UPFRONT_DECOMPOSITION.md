@@ -2,6 +2,14 @@
 
 Status: architect-review packet, no behavior change approved.
 
+> **UPDATE 2026-07-03:** the practical version of this global upfront decomposition now WORKS via the
+> `wide` diffusion mode — the coordinator emits ALL chapters as one flat atom graph and the frontier runs
+> independent atoms across chapters in parallel (proven live on `textforge`: 55/55 atoms, peak ~25-26
+> workers; planner turn ~34 min -> ~5.9 min). See the "Implementation status & live results (2026-07-03)"
+> section at the top of `DIFFUSION_DESIGN.md` for the current ground truth, the four solved roots, the one
+> remaining defect (`batch-mixed-requeue-cap`), and the GIT STATUS (this work is on branch
+> `rescue/planner-speed-work`, rolled back off `master` by the watchdog — not yet restored).
+
 Decision synthesis: `channels/main/decisions/dec-20260627-205201-edcd7f`.
 Builds on: `dec-20260627-161352-c39b46`, `DIFFUSION_DESIGN.md`,
 `New-ProjectAutopilotUnifiedGraph`,
